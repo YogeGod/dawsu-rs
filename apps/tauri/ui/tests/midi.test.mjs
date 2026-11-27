@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
@@ -130,7 +130,9 @@ test("both modals start closed and register their opener for menus.js", () => {
 test("Keysounds shows the no-plug-ins message, Preferences lists MIDI ports and scans VST3", () => {
   const keysounds = source("KeysoundsModal.svelte");
   assert.match(keysounds, /invoke\("keysounds_action", \{ payload \}\)/);
-  assert.match(keysounds, /\{NO_PLUGINS\}/);
+  // The host's state shows under the Inspector's instrument row, not in a row of its own.
+  assert.match(keysounds, /status: keysoundsStatus\(summary, track, instruments, NO_PLUGINS, sidecarStatus\(summary\)\)/);
+  assert.match(source("keysounds/InspectorKeysounds.svelte"), /\{model\.status\.text\}/);
   const preferences = source("PreferencesModal.svelte") + "\n" + source("preferences/MidiVstTab.svelte");
   assert.match(preferences, /\{ id: "midi", label: "MIDI Input & VST3" \}/);
   assert.match(preferences, /invoke\("midi_action", \{ action: \{ kind: "input_ports" \} \}\)/);
@@ -277,7 +279,8 @@ test("Generate [Keysounds] toasts the written file and the synced count", () => 
 test("the Keysounds modal wires every piano roll gesture to its keysounds_action", () => {
   const keysounds = [
     "KeysoundsModal.svelte",
-    "keysounds/KeysoundTrackBar.svelte",
+    "keysounds/InspectorKeysounds.svelte",
+    "keysounds/KeysoundTrackList.svelte",
     "keysounds/KeysoundRollSurface.svelte",
     "keysounds/KeysoundVelocitySurface.svelte",
   ].map(source).join("\n");
@@ -292,8 +295,10 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
     /event\.key === "Delete" \|\| event\.key === "Backspace"/,
     /send\(keysoundsSetVelocity\(trackId, index, velocity\)\)/,
     /onpointerdown=\{\(\) => preview\(pitch\)\}/, // the keyboard plays
-    /keysoundsQuantize\(id, QUANTIZE_MS\)/,
-    /keysoundsTranspose\(id, -12\)/, /keysoundsTranspose\(id, -1\)/, /keysoundsTranspose\(id, 1\)/, /keysoundsTranspose\(id, 12\)/,
+    /snapToGrid: \(\) => trackAction\(id => keysoundsSnapToGrid\(id\)\)/,
+    /transpose: semitones => trackAction\(id => keysoundsTranspose\(id, semitones\)\)/,
+    /on\("transpose", -12\)/, /on\("transpose", -1\)/, /on\("transpose", 1\)/, /on\("transpose", 12\)/,
+    /rename: \(id, name\) => \{ if \(!loading\) send\(keysoundsRenameTrack\(id, name\)\); \}/,
     /send\(keysoundsLoadVst3\(trackId, plugin\)\)/,
     /payload: keysoundsGenerate\(\)[\s\S]*?showToast\(toast\)/,
     /Generate \[Keysounds\]/,
@@ -309,6 +314,10 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
     /bridge\.callAction\("keysoundsRoll", "ramp", drawn\)/,
     /send\(keysoundsVelocityRamp\(trackId, first\.startMs, first\.endMs, first\.startVel, first\.endVel, first\.curve\)\)/,
   ]) assert.match(keysounds, wiring);
+  // The two bars are gone: every control they had is in the track list, the Inspector or a menu.
+  const parts = readdirSync(new URL("../src/parts/", import.meta.url), { recursive: true }).map(String);
+  assert.ok(!parts.some(name => /KeysoundSetupBar|KeysoundTrackBar/.test(name)));
+  assert.doesNotMatch(keysounds, /KeysoundSetupBar|KeysoundTrackBar|>Undo<|>Redo<|Save \.dawsuks/);
   // Inline workspace must not wrap the piano roll in a floating modal backdrop.
   assert.doesNotMatch(source("KeysoundsModal.svelte"), /class="ks-backdrop"/);
   // A press that lands on a note drags it and returns before a new note is placed.

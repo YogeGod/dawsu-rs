@@ -24,6 +24,8 @@
     onaddnote,
     ondragnote,
     deleteNote,
+    // The track list, drawn left of the key column.
+    side = null,
   } = $props();
 
   let surface = $state(null);
@@ -171,6 +173,7 @@
 
 <div class="ks-roll">
   <div class="ks-side">
+    {@render side?.()}
     <div class="ks-keys" style:--ks-row={rowHeight + "px"}>
       {#each rows as row (pitches[row])}
         {@const pitch = pitches[row]}
@@ -201,6 +204,7 @@
     display: flex;
     justify-content: flex-end;
     min-width: 0;
+    overflow: hidden;
     background: var(--editor-panel);
     border-right: 1px solid var(--editor-border);
     box-sizing: border-box;

@@ -8,9 +8,11 @@
   const lane = $derived(model.lane);
   const tint = $derived(laneTint(lane));
   let open = $state(true);
+  // No lanes show in Keysounds mode: the section stays in the page, hidden, for the ids menus click.
+  const keysounds = $derived(bridge.mode === "keysounds");
 </script>
 
-<div class="insp">
+<div class="insp" hidden={keysounds}>
   <InspectorHead title="Lane" body="inspector-lane-body" bind:open />
   <!-- Folded, the buttons stay in the page: the lane menu clicks Lane colour and Replace sample by id. -->
   <div id="inspector-lane-body" hidden={!open}>

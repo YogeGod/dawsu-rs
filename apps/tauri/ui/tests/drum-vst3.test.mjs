@@ -14,6 +14,7 @@ import { laneHandlers } from "../src/lib/laneHandlers.js";
 import { attachLanes } from "../src/editor/lanes.js";
 import DrumDetectWindow from "../src/parts/DrumDetectWindow.svelte";
 import LaneHeaders from "../src/parts/LaneHeaders.svelte";
+import MidiVstTab from "../src/parts/preferences/MidiVstTab.svelte";
 
 const fakeStorage = (entries = {}) => {
   const data = new Map(Object.entries(entries));
@@ -211,17 +212,17 @@ test("syncDrumVst3Track sends atomic sync_drum_track via keysounds_action withou
   assert.deepEqual(lastCall.payload, { kind: "preview_note", trackId: 0, pitch: 46, velocity: 110, durationMs: 200 });
 });
 
-test("DrumDetectWindow, KeysoundsModal, and Drum Map Setup expose the Use VST3 sounds for drum map toggle", () => {
+test("DrumDetectWindow, Preferences and Drum Map Setup expose the Use VST3 sounds for drum map toggle", () => {
   const { body } = render(DrumDetectWindow);
   assert.match(body, /Use VST3 sounds for drum map/);
   assert.match(body, /aria-label="VST3 drum instrument"/);
 
-  const keysounds = [
-    "../src/parts/KeysoundsModal.svelte",
-    "../src/parts/keysounds/KeysoundTrackBar.svelte",
-  ].map(file => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
-  assert.match(keysounds, /Use VST3 sounds for drum map/);
-  assert.match(keysounds, /syncDrumVst3Track/);
+  // Keysounds mode's own checkbox moved to Preferences › MIDI Input & VST3, on the same saved setting.
+  const read = file => readFileSync(new URL(file, import.meta.url), "utf8");
+  assert.doesNotMatch(read("../src/parts/KeysoundsModal.svelte") + read("../src/parts/keysounds/InspectorKeysounds.svelte"),
+    /Use VST3 sounds for drum map/);
+  const preferences = read("../src/parts/preferences/MidiVstTab.svelte");
+  assert.match(preferences, /writeDrumVst3\(storage\(\), \{ \.\.\.readDrumVst3\(storage\(\)\), enabled: checked \}\)/);
 
   const lanes = readFileSync(new URL("../src/editor/lanes.js", import.meta.url), "utf8");
   assert.match(lanes, /Use VST3 sounds for drum map/);
@@ -333,4 +334,26 @@ test("LaneHeaders renders a clickable VST tag when vstRouted/vstBypassed is set 
   bridge.lanes = laneHeadersModel;
   const afterHtml = render(LaneHeaders).body;
   assert.match(afterHtml, /<button type="button" class="vst-tag[^"]*\bbypassed\b[^"]*"[^>]*aria-pressed="false"[^>]*>VST<\/button>/);
+});
+
+test("Preferences shows the drum map VST3 setting an earlier version saved, and keeps its instrument", () => {
+  const before = globalThis.localStorage;
+  const checkbox = html => html.match(/<input[^>]*type="checkbox"[^>]*>(?=\s*<span[^>]*>Use VST3 sounds for drum map)/)?.[0];
+  try {
+    globalThis.localStorage = fakeStorage();
+    assert.doesNotMatch(checkbox(render(MidiVstTab).body), /\schecked/);
+    globalThis.localStorage = fakeStorage({
+      [DRUM_VST3_KEY]: JSON.stringify({ enabled: true, pluginId: "uid-ad2", pluginName: "Addictive Drums 2", pluginPath: "C:/ad2.vst3" }),
+    });
+    const html = render(MidiVstTab).body;
+    assert.match(checkbox(html), /\schecked/);
+    assert.match(html, /Drum map rows play through Addictive Drums 2\./);
+    // Switching it off writes only the flag: the instrument picked elsewhere stays.
+    const storage = globalThis.localStorage;
+    writeDrumVst3(storage, { ...readDrumVst3(storage), enabled: false });
+    assert.deepEqual(readDrumVst3(storage),
+      { enabled: false, pluginId: "uid-ad2", pluginName: "Addictive Drums 2", pluginPath: "C:/ad2.vst3" });
+  } finally {
+    globalThis.localStorage = before;
+  }
 });

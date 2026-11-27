@@ -303,8 +303,8 @@ test("each menu groups the editor's existing commands like the design, with no s
   const popup = get("editor-menu");
   const open = name => { get("menu-" + name).click(); return menuLabels(popup); };
   assert.deepEqual(open("file"), [
-    "Open map…", "Open from osu!", "Import .osz…", "Import MIDI…", "Import mania hitsounds…", "Open map folder", "—",
-    "Save", "Reload in osu!", "Revert to saved…", "Revert mapset to original…", "Undo revert", "Export…", "Export MIDI…", "—",
+    "Open map…", "Open from osu!", "Import .osz…", "Import MIDI…", "Import mania hitsounds…", "Open keysound project…", "Open map folder", "—",
+    "Save", "Save keysound project", "Reload in osu!", "Revert to saved…", "Revert mapset to original…", "Undo revert", "Export…", "Export MIDI…", "—",
     "Start screen", "Folders…", "—", "Preferences…",
   ]);
   assert.deepEqual(open("edit"), [
@@ -956,4 +956,99 @@ test("paletteMenu handles null target safely for lane actions and asks confirmat
   assert.equal(modals[0].kind, "shared-base-apply-all");
   assert.equal(calls.some(c => Array.isArray(c) && c[0] === "shared_base_action"), false, "no apply_all IPC before confirm");
   assert.ok(scene);
+});
+
+test("File opens and saves the keysound project through the Keysounds host, in any mode", () => {
+  const { get, calls, context } = fixture();
+  context.keysoundsUi = (...args) => calls.push({ keysoundsUi: args });
+  const popup = get("editor-menu");
+  for (const [label, action] of [["Open keysound project…", "openProject"], ["Save keysound project", "saveProject"]]) {
+    get("menu-file").click();
+    const row = popup.children.find(child => child.textContent === label);
+    assert.equal(row.disabled, false, label);
+    row.click();
+    assert.deepEqual(calls.at(-1), { keysoundsUi: [action] });
+  }
+});
+
+test("in Keysounds mode Undo and Redo follow the keysound history and no row edits the hidden hitsounds", () => {
+  const { get, calls, context, scene, window, menusApi } = fixture();
+  context.keysoundsUi = (...args) => calls.push({ keysoundsUi: args });
+  Object.assign(scene, { history: ["Draw hit", "Move 4 hits"], historyPosition: 2, range: [0, 1000], placement: 3 });
+  let keysounds = { canUndo: true, canRedo: false, loading: false };
+  window.dawsuUi.mode = () => "keysounds";
+  window.dawsuUi.keysounds = () => keysounds;
+  const popup = get("editor-menu");
+  const row = label => popup.children.find(child => child.textContent === label);
+
+  get("menu-edit").click();
+  // The hitsound history is not what these two change here, so it is not named.
+  assert.deepEqual(menuLabels(popup).slice(0, 2), ["Undo", "Redo"]);
+  assert.equal(row("Undo").disabled, false);
+  assert.equal(row("Redo").disabled, true, "nothing to redo in the keysound history");
+  for (const label of ["Cut", "Copy", "Paste at playhead", "Duplicate", "Delete", "Select all", "Quantize…", "Repeat…",
+    "Pattern stamp…", "Edit range…", "Scale by volume…", "Place sound set…", "Save selection as sound set…",
+    "Sound set placement…", "Protect hitnormals from deletion"]) {
+    assert.equal(row(label).disabled, true, label);
+  }
+  row("Undo").click();
+  assert.deepEqual(calls, [{ keysoundsUi: ["undo"] }], "the keysound history, and no hitsound undo");
+
+  keysounds = { canUndo: false, canRedo: true, loading: false };
+  get("menu-edit").click();
+  assert.equal(row("Undo").disabled, true);
+  row("Redo").click();
+  assert.deepEqual(calls.at(-1), { keysoundsUi: ["redo"] });
+  // While the host waits for Rust neither runs.
+  keysounds = { canUndo: true, canRedo: true, loading: true };
+  get("menu-edit").click();
+  assert.equal(row("Undo").disabled, true);
+  assert.equal(row("Redo").disabled, true);
+
+  // Saving, playing and the view still work; rows that write hits or lanes elsewhere do not.
+  get("menu-file").click();
+  assert.equal(row("Save").disabled, false);
+  assert.equal(row("Revert to saved…").disabled, true);
+  get("menu-playback").click();
+  assert.equal(row("Play / pause").disabled, false);
+  assert.equal(row("Locators to selection").disabled, true);
+  get("menu-map").click();
+  for (const label of ["Generate hitsound difficulty…", "Copy hitsounds…", "Add lane…", "Add bookmark"]) {
+    assert.equal(row(label).disabled, true, label);
+  }
+  get("menu-view").click();
+  assert.equal(row("Zoom in").disabled, false);
+
+  // The command palette runs rows through the same rules.
+  const { paletteMenu } = menusApi;
+  const item = id => commandList.items.find(entry => entry.id === id);
+  const before = calls.length;
+  for (const id of ["paste", "selectAll", "delete", "laneDelete", "laneReplaceSample"]) {
+    assert.equal(paletteMenu.isEnabled(item(id)), false, id);
+    assert.equal(paletteMenu.runItem(item(id)), false, id);
+  }
+  assert.equal(paletteMenu.isEnabled(commandList.paletteOnly.find(entry => entry.id === "paletteShowDefaultLanes")), false);
+  assert.equal(calls.length, before, "nothing ran");
+  keysounds = { canUndo: true, canRedo: false, loading: false };
+  assert.equal(paletteMenu.runItem(item("undo")), true);
+  assert.deepEqual(calls.at(-1), { keysoundsUi: ["undo"] });
+
+  // Back in Hitsounds mode Undo is the editor's own again.
+  window.dawsuUi.mode = () => "hitsounds";
+  get("menu-edit").click();
+  assert.deepEqual(menuLabels(popup).slice(0, 2), ["Undo · Move 4 hits", "Redo"]);
+  row("Undo · Move 4 hits").click();
+  assert.deepEqual(calls.at(-1), { id: "undo" });
+  get("menu-edit").click();
+  assert.equal(row("Paste at playhead").disabled, false);
+});
+
+test("every row Keysounds mode keeps on is a real row that does not edit hits", () => {
+  const ids = new Set([...commandList.items, ...commandList.paletteOnly].map(item => item.id));
+  for (const id of commandList.keysoundsSafe) assert.ok(ids.has(id), id);
+  for (const id of ["undo", "redo", "cut", "copy", "paste", "duplicate", "delete", "selectAll", "quantize", "repeat",
+    "patternStamp", "editRange", "scaleByVolume", "placeSoundSet", "protect", "revert", "generate", "copyHitsounds",
+    "addLane", "addBookmark", "newDifficulty", "hsMode"]) {
+    assert.ok(!commandList.keysoundsSafe.includes(id), id);
+  }
 });

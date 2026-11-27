@@ -1,5 +1,6 @@
 <script>
   import { scanSummary } from "../../lib/midi.js";
+  import { readDrumVst3, writeDrumVst3 } from "../../lib/drumVst3.js";
 
   let {
     midiPorts = [],
@@ -18,6 +19,14 @@
     onpicksoundfont = null,
     onauditionsoundfont = null,
   } = $props();
+
+  // "Use VST3 sounds for drum map": the same saved setting Drum Map Setup and the drum detection
+  // window switch (lib/drumVst3.js), so one set there shows here and the other way round.
+  const storage = () => { try { return globalThis.localStorage; } catch { return null; } };
+  let drumVst3 = $state(readDrumVst3(storage()));
+  function toggleDrumVst3(checked) {
+    drumVst3 = writeDrumVst3(storage(), { ...readDrumVst3(storage()), enabled: checked });
+  }
 </script>
 
 <div class="pref-group">
@@ -72,6 +81,13 @@
       </ul>
     {/if}
   {/if}
+  <label class="pref-check">
+    <input type="checkbox" checked={drumVst3.enabled} onchange={event => toggleDrumVst3(event.currentTarget.checked)} />
+    <span>Use VST3 sounds for drum map</span>
+  </label>
+  <p class="pref-caption">
+    Drum map rows play through {drumVst3.pluginName || "the instrument picked in Keysounds mode or Drum Map Setup"}.
+  </p>
 </div>
 
 {#if onpicksoundfont}

@@ -185,6 +185,7 @@ export function buildEntries({
   shortcuts = null,
   scene = null,
   view = null,
+  keysounds = false,
   isEnabled = null,
   isChecked = null,
 } = {}) {
@@ -207,7 +208,7 @@ export function buildEntries({
       const keys = shortcutInfo?.keys ?? [];
       if (item.command) seenCommands.add(item.command);
 
-      const historyAction = item.history === undefined ? null : historyStep(item.history);
+      const historyAction = item.history === undefined || keysounds ? null : historyStep(item.history);
       const label = historyAction ? `${item.label} · ${historyAction}` : item.label;
       const enabled = typeof isEnabled === "function"
         ? Boolean(isEnabled(item))
@@ -236,7 +237,8 @@ export function buildEntries({
     if (!shortcutInfo?.label) continue;
     const keys = shortcutInfo.keys ?? [];
     const rule = KEY_ONLY_ENABLED_RULES[commandId] ?? "edit";
-    const enabled = evaluateEnabledRule(rule, { scene, view });
+    // These run from their keys only, and Keysounds mode holds those keys: off there, as the keys are.
+    const enabled = !keysounds && evaluateEnabledRule(rule, { scene, view });
     entries.push({
       id: `cmd:${commandId}`,
       label: shortcutInfo.label,

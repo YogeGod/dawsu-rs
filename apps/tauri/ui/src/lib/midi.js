@@ -109,6 +109,13 @@ export function keysoundsAdd(name, plugin) {
   return payload;
 }
 export const keysoundsDelete = trackId => ({ kind: "delete_track", trackId });
+// Rust trims the name too and rejects an empty one; an empty one is not sent.
+export function keysoundsRenameTrack(trackId, name) {
+  const trimmed = String(name ?? "").trim();
+  return trackId == null || !trimmed ? null : { kind: "rename_track", trackId, name: trimmed };
+}
+// Snaps every note start with the editor's own snap setting (Rust reads it).
+export const keysoundsSnapToGrid = trackId => ({ kind: "snap_notes_to_grid", trackId });
 
 // Piano roll payloads. Rust reads pitch, velocity, noteIndex and semitones as whole numbers (a
 // fraction falls back to its default), so they are rounded here.

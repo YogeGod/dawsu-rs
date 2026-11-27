@@ -8,11 +8,14 @@
   import { activeBarMs, rhythmPresets, rhythmStampAction } from "../lib/rhythmGallery.js";
   import { osuVolumeToMidiVelocity, velocityTier } from "../lib/velocityLane.js";
   import InspectorHead from "./InspectorHead.svelte";
+  import InspectorKeysounds from "./keysounds/InspectorKeysounds.svelte";
 
   const on = inspectorHandlers((...args) => bridge.callAction("inspectorAction", ...args));
   const model = $derived(bridge.inspector ?? emptyInspector);
   const selection = $derived(model.selection);
   let open = $state(true);
+  // Keysounds mode shows its own section here; this one stays in the page, hidden, for the ids menus click.
+  const keysounds = $derived(bridge.mode === "keysounds");
 
   const parsedVol = $derived(parseVolumeDisplay(selection?.volume));
   let sliderDraft = $state(null);
@@ -70,7 +73,8 @@
   const showChecked = value => box => syncChecked(box, value());
 </script>
 
-<div class="insp insp-first">
+{#if keysounds}<InspectorKeysounds />{/if}
+<div class="insp insp-first" hidden={keysounds}>
   <InspectorHead title="Selection" body="inspector-selection-body" bind:open />
   <div id="inspector-selection-body" hidden={!open}>
     <p class="insp-summary">{selection?.summary ?? "Nothing selected"}</p>

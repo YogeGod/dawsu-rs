@@ -73,6 +73,9 @@ export class Bridge {
   // The keysound roll that paint() draws while Keysounds mode shows a track, else null. Plain data:
   // the roll's parts replace or patch it and then ask for a paint; nothing renders from it.
   keysoundRoll = null;
+  // Keysounds mode's tracks, toggles and history state, handed over whole by KeysoundsModal.svelte
+  // for the Inspector section, the toolbar pills and the Edit menu; null until its first answer.
+  keysounds = $state.raw(null);
   microHud = $state.raw(null);
   spectrumOpen = $state(false);
   spectrum = $state.raw(null);
@@ -303,6 +306,7 @@ export class Bridge {
     nodeGraphViewer: () => this.nodeGraphViewer,
     bottomTab: () => this.bottomTab,
     keysoundRoll: () => this.keysoundRoll,
+    keysounds: () => this.keysounds,
     mode: () => this.mode,
     hitCard: card => this.setHitCard(card),
     volumeBubble: next => this.setVolumeBubble(next),

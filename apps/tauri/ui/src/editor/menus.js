@@ -66,21 +66,32 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     return !!getScene() && !getView().busy && !getDrag();
   }
 
+  // Keysounds mode covers the hitsound lanes: only the rows commands.js names as safe stay on, and
+  // Undo and Redo follow the keysound history (KeysoundsModal.svelte hands its state to the bridge).
+  const inKeysounds = () => ui()?.mode?.() === "keysounds";
+  const keysoundsSafe = item => !!ui()?.commands?.keysoundsSafe?.includes(item?.id);
+  const canEditHits = () => canEditFromMenu() && !inKeysounds();
+  const keysoundHistory = key => {
+    const keysounds = ui()?.keysounds?.();
+    return !getView().busy && !!keysounds?.[key] && !keysounds.loading;
+  };
+
   // Rules a row's `enabled` or `checked` names in ui/src/lib/commands.js; `target` is the right-clicked lane.
   const laneAllowed = predicate => target => {
     const row = laneMenuRow(target);
-    return row !== -1 && predicate(getScene().lanes[row], row);
+    return row !== -1 && !inKeysounds() && predicate(getScene().lanes[row], row);
   };
   const menuRules = {
-    edit: canEditFromMenu,
+    edit: (_, item) => canEditFromMenu() && (!inKeysounds() || keysoundsSafe(item)),
     idle: () => !getView().busy && !getDrag(),
     document: () => !!getScene() && !getView().busy,
-    selection: () => canEditFromMenu() && !!getScene().selection?.count,
-    range: () => canEditFromMenu() && !!getScene().range,
-    placement: () => canEditFromMenu() && getScene().placement != null,
-    undo: () => canEditFromMenu() && getScene().historyPosition !== 0,
-    redo: () => canEditFromMenu() && getScene().historyPosition !== getScene().history?.length,
-    deleteLane: () => canEditFromMenu() && !!deletableLane(),
+    selection: () => canEditHits() && !!getScene().selection?.count,
+    range: () => canEditHits() && !!getScene().range,
+    placement: () => canEditHits() && getScene().placement != null,
+    undo: () => (inKeysounds() ? keysoundHistory("canUndo") : canEditFromMenu() && getScene().historyPosition !== 0),
+    redo: () => (inKeysounds() ? keysoundHistory("canRedo")
+      : canEditFromMenu() && getScene().historyPosition !== getScene().history?.length),
+    deleteLane: () => canEditHits() && !!deletableLane(),
     // File › Revert mapset to original…: only once dawsu! has a first-open copy of this mapset.
     originalSnapshot: () => !!getScene() && !!getView().hasDocument && !!getView().hasOriginalSnapshot && !getView().busy && !getDrag(),
     // File › Undo revert: enabled while a pre-revert backup exists for this mapset.
@@ -200,6 +211,8 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     importManiaHitsounds: () => importManiaHitsounds(),
     exportMidi: () => exportMidi(),
     openKeysounds: () => { ui()?.setMode?.("keysounds"); openModal("openKeysounds"); },
+    openKeysoundProject: () => callAction("keysoundsUi", "openProject"),
+    saveKeysoundProject: () => callAction("keysoundsUi", "saveProject"),
     openSharedBase: () => openModal("openSharedBase"),
     openStemSeparation: () => openModal("openStemSeparation"),
     openNewDifficulty: () => callAction("inspectorAction", "new"),
@@ -310,6 +323,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
       menuCalls[item.paletteAction]?.();
       return;
     }
+    if (inKeysounds() && (item.id === "undo" || item.id === "redo")) {
+      callAction("keysoundsUi", item.id);
+      return;
+    }
     const [kind, first, second, third] = item.run ?? ["command", item.command];
     if (kind === "command") command(first);
     else if (kind === "click") $(first)?.click();
@@ -374,7 +391,8 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
         }
         continue;
       }
-      const action = item.history === undefined ? null : step(item.history);
+      // The history names hitsound edits; in Keysounds mode Undo and Redo change keysound notes.
+      const action = item.history === undefined || inKeysounds() ? null : step(item.history);
       rows.push({ type: "item", entry: entry(item, { label: action ? item.label + " · " + action : item.label }) });
     }
     while (rows.length && rows[rows.length - 1].type === "separator") rows.pop();

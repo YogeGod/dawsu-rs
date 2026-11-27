@@ -85,3 +85,43 @@ test("a pressed or current pill keeps its look on hover, over style.css's button
   assert.match(rule[2], /background:\s*var\(--editor-selected\)/);
   assert.match(rule[2], /color:\s*var\(--editor-accent\)/);
 });
+
+test("Keysounds mode swaps the Audition well for Ghosts, Object lines and Typing", () => {
+  const roll = (more = {}) => ({
+    showGhosts: true, showObjectLines: false, typing: { enabled: false, basePitch: 60, velocity: 100 }, ...more,
+  });
+  try {
+    bridge.mode = "hitsounds";
+    bridge.keysounds = roll();
+    assert.deepEqual(labels(shown(AuditionPill, { audition: true })), ["Audition", "Object lines"]);
+
+    bridge.mode = "keysounds";
+    let html = shown(AuditionPill, { audition: true, objectLines: true });
+    assert.deepEqual(labels(html), ["Ghosts", "Object lines", "Typing"]);
+    // Its Object lines pill is the roll's own switch, not the hitsound timeline's.
+    assert.deepEqual(pressed(html), ["Ghosts"]);
+    // Off, Typing shows no octave or velocity; on, it reads both.
+    bridge.keysounds = roll({ showObjectLines: true, typing: { enabled: true, basePitch: 48, velocity: 90 } });
+    html = shown(AuditionPill, {});
+    assert.deepEqual(labels(html), ["Ghosts", "Object lines", "TypingC3 · v90"]);
+    assert.deepEqual(pressed(html), ["Ghosts", "Object lines", "TypingC3 · v90"]);
+    // Until the mode's first answer from Rust the pills take no input.
+    bridge.keysounds = null;
+    assert.equal([...shown(AuditionPill, {}).matchAll(/<button[^>]*\sdisabled/g)].length, 3);
+  } finally {
+    bridge.mode = "hitsounds";
+    bridge.keysounds = null;
+  }
+});
+
+test("the Keysounds pills toggle the roll's switches through the host's action", async () => {
+  const { readFileSync } = await import("node:fs");
+  const pill = readFileSync(new URL("../src/parts/AuditionPill.svelte", import.meta.url), "utf8");
+  const host = readFileSync(new URL("../src/parts/KeysoundsModal.svelte", import.meta.url), "utf8");
+  for (const name of ["toggleGhosts", "toggleObjectLines", "toggleTyping"]) {
+    assert.match(pill, new RegExp(`toggle\\("${name}"\\)`));
+    assert.match(host, new RegExp(`${name}:`));
+  }
+  assert.match(pill, /bridge\.callAction\("keysoundsUi", name\)/);
+  assert.match(host, /bridge\.registerAction\("keysoundsUi", \(action, \.\.\.args\) => ui\[action\]\?\.\(\.\.\.args\)\)/);
+});

@@ -276,6 +276,22 @@
   box-shadow: inset 2px 0 0 var(--editor-accent);
 }
 
+/* The keysound project has changes File › Save keysound project has not written: a dot on the
+   Keysounds mode button, which shows in every mode (KeysoundsModal.svelte sets the attribute). */
+#keysounds-view[data-unsaved] {
+  position: relative;
+}
+#keysounds-view[data-unsaved]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--editor-warning);
+}
+
 /* Keysounds mode: the piano roll covers the lanes inside #scroll. The ruler, the bottom panel and
    the overview keep their own rows, so the roll shares the editor's time axis. */
 .keysounds-workspace,

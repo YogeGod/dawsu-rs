@@ -272,6 +272,29 @@ test("Keysounds mode covers only the lanes: the ruler, bottom panel and overview
   assert.match(css, /#volume-controller-panel\[data-bottom="volume"\] > #keysounds-velocity\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*2;/);
 });
 
+test("Keysounds mode's chrome: track list in the lane column, pills on the toolbar, unsaved dot on the mode button", async () => {
+  const part = name => readFile(new URL(`../ui/src/parts/${name}.svelte`, import.meta.url), "utf8");
+  const css = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
+  const page = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
+  // The track list is the roll's side column, left of the keys, as wide as the lane headers.
+  const surface = await part("keysounds/KeysoundRollSurface");
+  assert.match(surface, /<div class="ks-side">\s*\{@render side\?\.\(\)\}\s*<div class="ks-keys"/);
+  assert.match(surface, /\.ks-side \{[^}]*flex: 0 0 var\(--lanes\);/);
+  const host = await part("KeysoundsModal");
+  assert.match(host, /<KeysoundRollSurface[^]*?side=\{trackList\}/);
+  // No track: the list alone, and no roll handed to paint().
+  assert.match(host, /\{:else if !track\}[^]*?<div class="ks-none-side">\{@render trackList\(\)\}<\/div>[^]*?\{:else\}\s*<KeysoundRollSurface/);
+  // The pills take the Audition well's place, in Keysounds mode only.
+  assert.match(page, /<div data-ui-mount="audition"><\/div>/);
+  const pills = await part("AuditionPill");
+  assert.match(pills, /const keysounds = \$derived\(bridge\.mode === "keysounds"\);/);
+  assert.match(pills, /\{#if keysounds\}[^]*Ghosts[^]*Object lines[^]*Typing[^]*\{:else\}[^]*Audition/);
+  // The unsaved mark shows in every mode: it is on the mode button, not inside the workspace.
+  assert.match(css, /#keysounds-view\[data-unsaved\]::after\s*\{[^}]*background:\s*var\(--editor-warning\);/);
+  assert.match(host, /button\.toggleAttribute\("data-unsaved", dirty\)/);
+  assert.match(page, /<button id="keysounds-view"/);
+});
+
 test("Tab follows the active bindings and remains focus navigation when unbound", async () => {
   const { listeners, calls, evaluate, settle } = await frontend();
   const handle = listeners.get("keydown");

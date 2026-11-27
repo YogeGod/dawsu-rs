@@ -29,6 +29,8 @@ export const items = [
   { id: "importMidi", label: "Import MIDI…", icon: "Music", run: ["call", "openMidiImport"], enabled: "document" },
   { id: "importManiaHitsounds", label: "Import mania hitsounds…", icon: "Music", run: ["call", "importManiaHitsounds"], enabled: "document" },
   { id: "exportMidi", label: "Export MIDI…", icon: "Music", run: ["call", "exportMidi"], enabled: "document" },
+  { id: "openKeysoundProject", label: "Open keysound project…", icon: "FolderOpen", run: ["call", "openKeysoundProject"], enabled: "document" },
+  { id: "saveKeysoundProject", label: "Save keysound project", icon: "Save", run: ["call", "saveKeysoundProject"], enabled: "document" },
   { id: "openFolder", label: "Open map folder", icon: "Folder", command: "openFolder" },
   { id: "save", label: "Save", icon: "Save", command: "save" },
   { id: "reloadInOsu", label: "Reload in osu!", icon: "RotateCcw", run: ["call", "reloadInOsu"], enabled: "document" },
@@ -153,7 +155,7 @@ export const items = [
 // Where each row sits. "-" is a divider; one at the start or end of a menu, or next to another, is
 // left out (Map has no Difficulty row, and so no divider under it, without a sibling difficulty).
 export const menus = {
-  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "importManiaHitsounds", "openFolder", "-", "save", "reloadInOsu", "revert", "revertOriginal", "undoRevert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
+  file: ["openMap", "openFromOsu", "importOsz", "importMidi", "importManiaHitsounds", "openKeysoundProject", "openFolder", "-", "save", "saveKeysoundProject", "reloadInOsu", "revert", "revertOriginal", "undoRevert", "export", "exportMidi", "-", "startScreen", "folders", "-", "preferences"],
   edit: [
     "undo", "redo", "-",
     "cut", "copy", "paste", "duplicate", "delete", "selectAll", "-",
@@ -186,6 +188,20 @@ export const menus = {
   tool: ["toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp"],
   lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneCloneVariant", "laneAlternate", "laneAdd", "laneDelete"],
 };
+
+// Keysounds mode covers the hitsound lanes, so a row that edits hits there would change what the
+// mapper cannot see. In that mode menus.js turns off every row whose rule is "edit" (the default),
+// "selection", "range", "placement" or a lane rule, except the rows named here: they play, save,
+// or change the view. Undo and Redo go to the keysound history instead.
+export const keysoundsSafe = [
+  "openFolder", "save",
+  "play", "stop", "goToStart", "goToEnd", "playbackStart", "returnOnStop", "follow", "cycle", "playLocatorRange", "speed", "muteSong",
+  "difficulty",
+  "browser", "inspector", "volumePanel", "laneNames", "songWaveform", "objectLines", "zoomIn", "zoomOut", "fit", "editLayout", "viewSettings",
+  "quickStart",
+  "toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp",
+  "paletteSnapModeGrid", "paletteSnapModeRelative", "paletteSnapModeObjects",
+];
 
 // Catalogue commands no menu row stands for, so no menu shows their keys. They run from their keys
 // only; the shortcut editor lists them all under their Rust description.

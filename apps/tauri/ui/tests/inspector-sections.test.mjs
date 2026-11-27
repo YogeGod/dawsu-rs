@@ -230,3 +230,115 @@ test("each control sends the action app.js's inspectorAction runs", () => {
     ["insert", 70], ["toggle", "protect", true], ["laneColour"],
   ]);
 });
+
+const keysoundsModel = (more = {}) => ({
+  open: true, loading: false,
+  tracks: [{ id: 4, name: "Lead", instrument: "Vital", noteCount: 128 }, { id: 7, name: "Bass", instrument: "", noteCount: 0 }],
+  trackId: 4, track: { id: 4, name: "Lead", instrument: "Vital", noteCount: 128 },
+  notesCount: 128, anyNotes: true,
+  instruments: [{ id: "vital", name: "Vital", vendor: "Matt Tytel" }], pluginId: "vital", sidecarAvailable: true,
+  status: { text: "VST3 host ready · 1 instrument loaded.", tone: "ready" },
+  chordCount: 0, canUndo: true, canRedo: false, dirty: false,
+  scaleRoot: 0, scaleKind: "minor", foldToScale: true, showGhosts: true, showObjectLines: true,
+  typing: { enabled: false, basePitch: 60, velocity: 100 }, ...more,
+});
+function keysoundsShown(keysounds, scene = { path: "Hard.osu", snap: true }) {
+  bridge.set({ busy: false }, scene);
+  bridge.mode = "keysounds";
+  bridge.keysounds = keysounds;
+  bridge.inspector = model({ selection: selection(), lane: lane() });
+  try {
+    return [InspectorSelection, InspectorLane].map(part => render(part).body).join("\n");
+  } finally {
+    bridge.mode = "hitsounds";
+    bridge.keysounds = null;
+  }
+}
+
+test("Keysounds mode shows its section in Selection's place and hides Selection and Lane without unmounting them", () => {
+  const html = keysoundsShown(keysoundsModel());
+  assert.match(html, /aria-controls="inspector-keysounds-body"[^>]*>[^]*?Keysounds\s*<\/button>/);
+  // Selection and Lane stay in the page for the ids the menus click, hidden.
+  assert.match(html, /<div class="insp insp-first[^"]*" hidden/);
+  assert.match(html, /<div class="insp[^"]*" hidden[^>]*>[^]*id="lane-colour"/);
+  assert.ok(byId(html, "replace-sample"));
+  // Out of Keysounds mode neither is hidden and the Keysounds section is gone.
+  const plain = shown(model({ selection: selection(), lane: lane() }));
+  assert.doesNotMatch(plain, /inspector-keysounds-body|<div class="insp[^"]*" hidden/);
+});
+
+test("the Keysounds section holds every control the two old bars had", () => {
+  const html = keysoundsShown(keysoundsModel());
+  for (const label of [
+    "Active keysound track", "VST3 instrument", "Scale root", "Scale", "Fold rows to scale",
+    "Transpose down an octave", "Transpose down a semitone", "Transpose up a semitone", "Transpose up an octave",
+    "Delete Lead", "More Generate options",
+  ]) assert.match(html, new RegExp(`aria-label="${label}"`), label);
+  for (const text of [
+    "Load VST3", "Scan VST3", "Load SFZ / SF2…", "Delete track", "Snap to grid", "Trim overlaps", "Strum", "Humanise",
+    "Sync to objects", "Generate [Keysounds]",
+  ]) assert.ok(button(html, text), text);
+  assert.match(html, /1 · Lead<\/option>[^]*2 · Bass<\/option>/);
+  assert.match(html, /Vital · 128 notes/);
+  assert.match(html, /VST3 host ready · 1 instrument loaded\./);
+  assert.doesNotMatch(html, /Quantize 125 ms|Use VST3 sounds for drum map/);
+  // A SoundFont track with more than one preset adds its preset row.
+  const soundfont = { id: 4, name: "Lead", instrument: "Piano.sf2", noteCount: 2, isSoundfont: true,
+    soundfontPresets: ["Grand", "Upright"], soundfontPreset: 1 };
+  assert.match(keysoundsShown(keysoundsModel({ track: soundfont })), /aria-label="SoundFont preset"/);
+});
+
+test("the Keysounds section greys out what cannot run", () => {
+  const html = keysoundsShown(keysoundsModel());
+  assert.ok(!disabled(button(html, "Snap to grid").tag));
+  assert.ok(!disabled(button(html, "Generate [Keysounds]").tag));
+  // Snap off: Rust would refuse, so the button is off and says why.
+  const snapOff = keysoundsShown(keysoundsModel(), { path: "Hard.osu", snap: false });
+  assert.ok(disabled(button(snapOff, "Snap to grid").tag));
+  assert.match(button(snapOff, "Snap to grid").tag, /title="Turn Snap on to snap notes to the grid"/);
+  // No notes in the track: the note tools are off; no notes anywhere: Generate is off.
+  const empty = keysoundsShown(keysoundsModel({ notesCount: 0, anyNotes: false }));
+  for (const text of ["Snap to grid", "Trim overlaps", "Strum", "Humanise", "Sync to objects", "Generate [Keysounds]"]) {
+    assert.ok(disabled(button(empty, text).tag), text);
+  }
+  // A chromatic scale has nothing to fold to.
+  assert.match(keysoundsShown(keysoundsModel({ scaleKind: "chromatic" })), /aria-label="Fold rows to scale"[^>]*\sdisabled/);
+  // No tracks: the picker says so and offers one, and the track's own buttons are off.
+  const none = keysoundsShown(keysoundsModel({ tracks: [], trackId: null, track: null, notesCount: 0, anyNotes: false }));
+  assert.match(none, /No tracks/);
+  assert.ok(button(none, "New track"));
+  assert.ok(disabled(button(none, "Delete track").tag));
+  // Before the mode's first answer every control is off.
+  const loading = keysoundsShown(null);
+  assert.ok(disabled(button(loading, "Scan VST3").tag));
+  assert.ok(disabled(button(loading, "Generate [Keysounds]").tag));
+});
+
+test("the chord row shows only while chords need resolving, above Generate in the pinned footer", () => {
+  assert.doesNotMatch(keysoundsShown(keysoundsModel()), /to resolve/);
+  const html = keysoundsShown(keysoundsModel({ chordCount: 3 }));
+  assert.match(html, /class="insp-ks-foot[^"]*"[^]*3 chords to resolve[^]*Generate \[Keysounds\]/);
+  const part = source("keysounds/InspectorKeysounds");
+  // The Generate ▾ menu keeps Bounce & Deduplicate.
+  assert.match(part, /role="menuitem" onclick=\{\(\) => \{ generateMenu = false; on\("openBounce"\); \}\}>Bounce &amp; Deduplicate…/);
+  assert.match(part, /on\("openChords"\)/);
+  // Pinned to the Inspector's bottom edge: sticky, last, with the section's boxes given up.
+  assert.match(part, /\.insp-ks-foot \{[^}]*position: sticky;[^}]*bottom: 0;[^}]*order: 99;[^}]*margin-top: auto;/);
+  const css = readFileSync(new URL("../src/parts/inspector.css", import.meta.url), "utf8");
+  assert.match(part, /class="insp-ks-foot" \{@attach pinToInspector\}/);
+  assert.match(part, /box\.setAttribute\("data-keysounds-foot", ""\)/);
+  assert.match(css, /\.inspector-part\[data-keysounds-foot\],[^{]*\[data-ui-mount\]\[data-keysounds-foot\] \{\s*display: contents;/);
+});
+
+test("each Keysounds control sends the action the host runs by that name", () => {
+  const part = source("keysounds/InspectorKeysounds");
+  const host = source("KeysoundsModal");
+  const names = new Set([...part.matchAll(/\bon\("(\w+)"/g)].map(match => match[1]));
+  for (const name of [
+    "selectTrack", "addTrack", "setPlugin", "selectPreset", "loadVst3", "scan", "loadSoundfont", "deleteTrack", "snapToGrid",
+    "trim", "strum", "humanise", "syncToObjects", "transpose", "setScaleRoot", "setScaleKind", "toggleFold", "openChords",
+    "generate", "openBounce",
+  ]) assert.ok(names.has(name), name);
+  const handlers = host.slice(host.indexOf("const ui = {"), host.indexOf("$effect(() => {\n    bridge.keysounds"));
+  for (const name of names) assert.match(handlers, new RegExp(`\\b${name}\\b`), name);
+});

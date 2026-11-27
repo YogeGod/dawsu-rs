@@ -503,3 +503,12 @@
   background: var(--editor-control);
   color: var(--editor-white);
 }
+
+/* Keysounds mode: Generate's footer (InspectorKeysounds.svelte) pins to the Inspector's bottom edge.
+   A sticky box cannot leave its section, so the Selection section and its mount give up their own
+   boxes while the footer is there (it marks both): the Inspector itself then lays the footer out,
+   last. No :has() here: the target includes WebKit without it. */
+#editor-inspector > .inspector-part[data-keysounds-foot],
+#editor-inspector > .inspector-part > [data-ui-mount][data-keysounds-foot] {
+  display: contents;
+}

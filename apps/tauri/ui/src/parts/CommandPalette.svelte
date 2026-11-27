@@ -43,6 +43,7 @@
       shortcuts,
       scene,
       view,
+      keysounds: bridge.mode === "keysounds",
       isEnabled: paletteMenu?.isEnabled ?? null,
       isChecked: paletteMenu?.isChecked ?? null,
     });
