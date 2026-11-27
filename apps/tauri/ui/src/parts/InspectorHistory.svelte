@@ -11,6 +11,9 @@
   const steps = $derived(historyRows(list, position));
   let open = $state(false);
   let box = $state();
+  // These are hitsound edits. Keysounds mode hides the hits, so a step cannot be picked there
+  // (Edit › Undo and Redo follow the keysound history in that mode).
+  const keysounds = $derived(bridge.mode === "keysounds");
   // When the position changes (an undo, a redo, a new step), the current step comes into view.
   $effect(() => {
     if (position >= 0 && box) scrollNearest(box, box.querySelector("[aria-current]"));
@@ -24,7 +27,7 @@
     <div id="history" class="insp-steps" bind:this={box}>
       {#each steps as step (step.position)}
         <button type="button" class="insp-step" class:insp-undone={step.undone}
-          aria-current={step.current ? "step" : undefined} title={step.label}
+          aria-current={step.current ? "step" : undefined} title={step.label} disabled={keysounds}
           onclick={() => on.history(step.position)}>{step.label}</button>
       {/each}
     </div>

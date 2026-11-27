@@ -194,13 +194,20 @@ export const menus = {
 // "selection", "range", "placement" or a lane rule, except the rows named here: they play, save,
 // or change the view. Undo and Redo go to the keysound history instead.
 export const keysoundsSafe = [
-  "openFolder", "save",
+  "openFolder", "save", "startScreen",
   "play", "stop", "goToStart", "goToEnd", "playbackStart", "returnOnStop", "follow", "cycle", "playLocatorRange", "speed", "muteSong",
   "difficulty",
   "browser", "inspector", "volumePanel", "laneNames", "songWaveform", "objectLines", "zoomIn", "zoomOut", "fit", "viewSettings",
   "quickStart",
   "toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp",
   "paletteSnapModeGrid", "paletteSnapModeRelative", "paletteSnapModeObjects",
+];
+
+// Rows whose own rule would leave them on in Keysounds mode, but which change the hidden hits or
+// replace the whole mapset: off there whatever their rule says.
+export const keysoundsOff = [
+  "sharedBase", "paletteCaptureSharedBase", "paletteToggleSharedBase", "paletteApplySharedBaseAll",
+  "revertOriginal", "undoRevert",
 ];
 
 // Catalogue commands no menu row stands for, so no menu shows their keys. They run from their keys

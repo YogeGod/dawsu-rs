@@ -1217,6 +1217,38 @@ try {
       `the track menu is not at the pointer: ${JSON.stringify([menuAt, row])}`);
     await page().keyboard.press("Escape");
     await until(() => !document.querySelector(".ks-track-menu"), null, "Escape did not close the track menu");
+    // The menu sits on the page itself, outside the list: its rows still act on the track.
+    await page().mouse.click(row.x + 60, row.y + 20, { button: "right" });
+    await page().locator(".ks-track-menu button").filter({ hasText: "Rename" }).click();
+    await page().locator(".ks-track-rename").fill("Lead 2");
+    await page().keyboard.press("Enter");
+    await until(() => document.querySelector(".ks-track-name")?.textContent === "Lead 2" && !document.querySelector(".ks-track-menu"),
+      null, "Rename in the track menu did not rename the track");
+
+    // The menus drop over the roll: no File row may be covered by it (Save keysound project is one).
+    await openMenu("File");
+    const covered = await read(() => Array.from(document.querySelectorAll("#editor-menu button")).filter(button => {
+      const box = button.getBoundingClientRect();
+      const top = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return top !== button && !button.contains(top);
+    }).map(button => button.textContent.trim()));
+    await page().keyboard.press("Escape");
+    expect(!covered.length, `the roll covers File menu rows in Keysounds mode: ${covered.join(", ")}`);
+
+    // A short drag on the Keysounds section's head must not reorder the Inspector's sections.
+    if (chrome.inspector?.width > 0 && chrome.inspector.height > 0) {
+      const sections = () => read(() => Array.from(document.querySelectorAll("#editor-inspector > section.inspector-part"),
+        section => section.getAttribute("aria-label")).join());
+      const order = await sections();
+      const head = await read(() => document.querySelector(".insp-ks .insp-head").getBoundingClientRect().toJSON());
+      await page().mouse.move(head.x + 40, head.y + head.height / 2);
+      await page().mouse.down();
+      for (let dy = 3; dy <= 15; dy += 3) await page().mouse.move(head.x + 40, head.y + head.height / 2 + dy);
+      const dragged = await sections();
+      await page().mouse.up();
+      expect(dragged === order && await sections() === order,
+        `a short drag on the Keysounds section head reordered the Inspector: ${order} → ${dragged}`);
+    }
 
     // Edit › Undo follows the keysound history here: it takes the note back and leaves the hits alone.
     await page().mouse.click(shown.surface.x + 200, shown.surface.y + 40);

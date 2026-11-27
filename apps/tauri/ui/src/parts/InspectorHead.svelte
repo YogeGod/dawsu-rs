@@ -157,7 +157,9 @@
         );
         const draggedVisibleIndex = visible.findIndex(s => s.el === host);
         if (draggedVisibleIndex < 0 || visible.length <= 1) return;
-        const rects = visible.map(s => s.el.getBoundingClientRect());
+        // In Keysounds mode the dragged section's host has no box of its own (inspector.css gives it
+        // display: contents for the pinned footer): its panel stands in, or every move would reorder.
+        const rects = visible.map(s => (s.el === host ? panel : s.el).getBoundingClientRect());
         const targetVisibleIndex = computeDropIndex(rects, moveEvent.clientY, draggedVisibleIndex);
         if (targetVisibleIndex !== draggedVisibleIndex) {
           const targetEl = visible[targetVisibleIndex].el;

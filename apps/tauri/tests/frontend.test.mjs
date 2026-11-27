@@ -272,6 +272,16 @@ test("Keysounds mode covers only the lanes: the ruler, bottom panel and overview
   assert.match(css, /#volume-controller-panel\[data-bottom="volume"\] > #keysounds-velocity\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*2;/);
 });
 
+test("Keysounds mode's roll stays under an open editor menu", async () => {
+  const css = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");
+  const chrome = await readFile(new URL("../ui/src/legacy-chrome.css", import.meta.url), "utf8");
+  // File, Edit, Map and View drop over the roll, and the roll comes later in the page: with the
+  // same z-index it would cover their rows (Save keysound project, Preferences…).
+  const roll = Number(css.match(/#editor-arrange\.keysounds-active #keysounds-workspace\s*\{[^}]*z-index:\s*(\d+);/)[1]);
+  const menu = Number(chrome.match(/#editor-menu\{[^}]*z-index:\s*(\d+)/)[1]);
+  assert.ok(roll >= 1 && roll < menu, `roll z-index ${roll}, menu z-index ${menu}`);
+});
+
 test("Keysounds mode's chrome: track list in the lane column, pills on the toolbar, unsaved dot on the mode button", async () => {
   const part = name => readFile(new URL(`../ui/src/parts/${name}.svelte`, import.meta.url), "utf8");
   const css = await readFile(new URL("../ui/src/timeline.css", import.meta.url), "utf8");

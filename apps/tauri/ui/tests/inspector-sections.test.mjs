@@ -342,3 +342,20 @@ test("each Keysounds control sends the action the host runs by that name", () =>
   const handlers = host.slice(host.indexOf("const ui = {"), host.indexOf("$effect(() => {\n    bridge.keysounds"));
   for (const name of names) assert.match(handlers, new RegExp(`\\b${name}\\b`), name);
 });
+
+test("History's steps cannot be picked in Keysounds mode, where the hits they change are hidden", async () => {
+  const { default: InspectorHistory } = await import("../src/parts/InspectorHistory.svelte");
+  const steps = () => {
+    bridge.inspector = model({ history: ["Draw hit", "Move 4 hits"], historyPosition: 2 });
+    return buttons(render(InspectorHistory).body).filter(item => /insp-step/.test(item.tag));
+  };
+  try {
+    bridge.mode = "hitsounds";
+    assert.ok(steps().length > 0);
+    assert.ok(steps().every(step => !disabled(step.tag)));
+    bridge.mode = "keysounds";
+    assert.ok(steps().every(step => disabled(step.tag)));
+  } finally {
+    bridge.mode = "hitsounds";
+  }
+});

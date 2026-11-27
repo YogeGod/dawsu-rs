@@ -75,6 +75,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     const keysounds = ui()?.keysounds?.();
     return !getView().busy && !!keysounds?.[key] && !keysounds.loading;
   };
+  // A File row that writes hits shows the lanes first, as the track list's "Import .mid…" does.
+  const leaveKeysounds = () => {
+    if (inKeysounds()) ui()?.setMode?.(getView().drumView?.enabled ? "drums" : "hitsounds");
+  };
 
   // Rules a row's `enabled` or `checked` names in ui/src/lib/commands.js; `target` is the right-clicked lane.
   const laneAllowed = predicate => target => {
@@ -207,8 +211,8 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     openFolders: () => openFolders(),
     openViewSettings: () => openViewSettings(),
     openPreferences: () => openPreferences(),
-    openMidiImport: () => openModal("openMidiImport"),
-    importManiaHitsounds: () => importManiaHitsounds(),
+    openMidiImport: () => { leaveKeysounds(); openModal("openMidiImport"); },
+    importManiaHitsounds: () => { leaveKeysounds(); return importManiaHitsounds(); },
     exportMidi: () => exportMidi(),
     openKeysounds: () => { ui()?.setMode?.("keysounds"); openModal("openKeysounds"); },
     openKeysoundProject: () => callAction("keysoundsUi", "openProject"),
@@ -358,7 +362,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     return undefined;
   }
 
-  const menuEnabled = entry => !!menuRules[entry.item.enabled ?? "edit"](entry.target, entry.item);
+  // A row's rule, and in Keysounds mode also the list of rows commands.js turns off there.
+  const itemEnabled = (item, target) => !(inKeysounds() && ui()?.commands?.keysoundsOff?.includes(item?.id))
+    && !!menuRules[item.enabled ?? "edit"](target, item);
+  const menuEnabled = entry => itemEnabled(entry.item, entry.target);
 
   // One menu's rows from the command list, with one entry per button in page order.
   function menuEntries(name, target) {
@@ -829,11 +836,11 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   const paletteTarget = item => (item?.enabled?.startsWith("lane") ? activeLaneTarget() : null);
 
   const paletteMenu = {
-    isEnabled: item => !!menuRules[item.enabled ?? "edit"](paletteTarget(item), item),
+    isEnabled: item => itemEnabled(item, paletteTarget(item)),
     isChecked: item => menuChecked({ item, target: paletteTarget(item) }),
     runItem: item => {
       const target = paletteTarget(item);
-      if (!menuRules[item.enabled ?? "edit"](target, item)) return false;
+      if (!itemEnabled(item, target)) return false;
       runMenuEntry({ item, target });
       refreshEditorMenu();
       return true;

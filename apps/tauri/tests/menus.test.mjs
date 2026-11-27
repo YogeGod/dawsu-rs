@@ -972,7 +972,7 @@ test("File opens and saves the keysound project through the Keysounds host, in a
 });
 
 test("in Keysounds mode Undo and Redo follow the keysound history and no row edits the hidden hitsounds", () => {
-  const { get, calls, context, scene, window, menusApi } = fixture();
+  const { get, calls, context, scene, view, window, menusApi } = fixture();
   context.keysoundsUi = (...args) => calls.push({ keysoundsUi: args });
   Object.assign(scene, { history: ["Draw hit", "Move 4 hits"], historyPosition: 2, range: [0, 1000], placement: 3 });
   let keysounds = { canUndo: true, canRedo: false, loading: false };
@@ -1018,6 +1018,19 @@ test("in Keysounds mode Undo and Redo follow the keysound history and no row edi
   }
   get("menu-view").click();
   assert.equal(row("Zoom in").disabled, false);
+  // Rows that reach the hidden hits or replace the mapset are off whatever their own rule says.
+  Object.assign(view, { hasDocument: true, hasOriginalSnapshot: true, canUndoRevert: true, sharedBaseEnabled: true });
+  get("menu-file").click();
+  assert.equal(row("Start screen").disabled, false);
+  assert.equal(row("Revert mapset to original…").disabled, true);
+  assert.equal(row("Undo revert").disabled, true);
+  get("menu-map").click();
+  assert.equal(row("Shared Base layer…").disabled, true);
+  for (const id of ["paletteToggleSharedBase", "paletteApplySharedBaseAll", "paletteCaptureSharedBase"]) {
+    const entry = commandList.paletteOnly.find(item => item.id === id);
+    assert.equal(menusApi.paletteMenu.isEnabled(entry), false, id);
+    assert.equal(menusApi.paletteMenu.runItem(entry), false, id);
+  }
 
   // The command palette runs rows through the same rules.
   const { paletteMenu } = menusApi;
@@ -1033,8 +1046,12 @@ test("in Keysounds mode Undo and Redo follow the keysound history and no row edi
   assert.equal(paletteMenu.runItem(item("undo")), true);
   assert.deepEqual(calls.at(-1), { keysoundsUi: ["undo"] });
 
-  // Back in Hitsounds mode Undo is the editor's own again.
+  // Back in Hitsounds mode Undo is the editor's own again, and those rows follow their rules.
   window.dawsuUi.mode = () => "hitsounds";
+  get("menu-file").click();
+  assert.equal(row("Revert mapset to original…").disabled, false);
+  get("menu-map").click();
+  assert.equal(row("Shared Base layer…").disabled, false);
   get("menu-edit").click();
   assert.deepEqual(menuLabels(popup).slice(0, 2), ["Undo · Move 4 hits", "Redo"]);
   row("Undo · Move 4 hits").click();
@@ -1046,9 +1063,41 @@ test("in Keysounds mode Undo and Redo follow the keysound history and no row edi
 test("every row Keysounds mode keeps on is a real row that does not edit hits", () => {
   const ids = new Set([...commandList.items, ...commandList.paletteOnly].map(item => item.id));
   for (const id of commandList.keysoundsSafe) assert.ok(ids.has(id), id);
+  for (const id of commandList.keysoundsOff) assert.ok(ids.has(id) && !commandList.keysoundsSafe.includes(id), id);
   for (const id of ["undo", "redo", "cut", "copy", "paste", "duplicate", "delete", "selectAll", "quantize", "repeat",
     "patternStamp", "editRange", "scaleByVolume", "placeSoundSet", "protect", "revert", "generate", "copyHitsounds",
     "addLane", "addBookmark", "newDifficulty", "hsMode"]) {
     assert.ok(!commandList.keysoundsSafe.includes(id), id);
   }
+});
+
+test("in Keysounds mode File's two hitsound imports leave the mode before they write hits", async () => {
+  const { get, calls, context, view, window, responses } = fixture();
+  let mode = "keysounds";
+  window.dawsuUi.mode = () => mode;
+  window.dawsuUi.setMode = next => { mode = next; calls.push({ setMode: next }); };
+  context.openMidiImport = () => calls.push({ openMidiImport: mode });
+  responses.import_mania_hitsounds = () => { calls.push({ maniaImportIn: mode }); return null; };
+  const popup = get("editor-menu");
+  const row = label => popup.children.find(child => child.textContent === label);
+
+  // Import MIDI… writes hitsound lanes this mode covers: the lanes show before its dialog opens.
+  get("menu-file").click();
+  row("Import MIDI…").click();
+  assert.deepEqual(calls, [{ setMode: "hitsounds" }, { openMidiImport: "hitsounds" }]);
+
+  // Import mania hitsounds… imports at once, in one step of the hitsound history: the same.
+  mode = "keysounds";
+  view.drumView = { enabled: true };
+  calls.length = 0;
+  get("menu-file").click();
+  row("Import mania hitsounds…").click();
+  await Promise.resolve();
+  assert.deepEqual(calls.slice(0, 3), [{ setMode: "drums" }, ["import_mania_hitsounds", undefined], { maniaImportIn: "drums" }]);
+
+  // Out of Keysounds mode neither changes the mode.
+  calls.length = 0;
+  get("menu-file").click();
+  row("Import MIDI…").click();
+  assert.deepEqual(calls, [{ openMidiImport: "drums" }]);
 });
