@@ -1,5 +1,8 @@
 # Full feature target and current checkpoint
 
+> [!NOTE]
+> This ledger was last fully checked at v1.1 (2026-11-25). The current release is `v1.3.0-alpha.1`; features added since (bundled practice mapset, Ready checklist, Help menu, Export Review `.osu` diff, keysounding roll on the shared ruler, merged drum lanes, skinned objects row) are tracked in [NOW.md](NOW.md) until this file is refreshed.
+
 Date: 2026-11-25. This checkpoint covers dawsu! v1.1 (Alpha, `v1.1.0-alpha.3` prep on `agy/v1.1-alpha3-tap-reload-sfz` over `origin/main` `c2f942b`) and records the verification for each row. Tauri is the root workspace desktop app following ADR 0063. Verified counts: 1,152 Rust workspace tests (0 failures), 325 UI tests, 346 Tauri frontend tests, 0 Clippy warnings, and 41/41 steps in `node tools/everyday-check.mjs`.
 
 ## Available in v1.1 (Alpha)

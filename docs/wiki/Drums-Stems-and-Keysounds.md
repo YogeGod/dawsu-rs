@@ -39,22 +39,22 @@ dawsu! offers two ways to detect kicks, snares, and drum rhythms from either the
   2. **Detectors:** Choose frequency band presets, drag the golden sensitivity threshold line directly on the onset curve, and toggle **Bleed guard** or **Preview** to stream that stage's curve/events into the bottom **Timeline Preview** strip.
   3. **Beat Snap:** Pick allowed beat divisions (`1/1`–`1/16`), adjust **Snap window (±ms)**, and toggle **Auto lag align** or **Drop off-grid noise**.
   4. **Hitsound Lanes:** Remap kick/snare/hat slots to any hitsound lane immediately without re-analysing audio.
-- Click **Test L–R Loop** or **Run Whole Song**, inspect proposals in **Review Hits**, and click **Apply Hits** (undoable in the main editor with `Ctrl+Z`). Save or load custom `.dawsugraph` recipes anytime from the top bar.
+- Click **Test L–R Loop** or **Run Whole Song**, inspect proposals in **Review Hits**, and click **Apply N Hits** (undoable in the main editor with `Ctrl+Z`). Save or load custom `.dawsugraph` recipes anytime from the top bar.
 
 ## 4. Keysounding Piano Roll, SoundFont / SFZ & MIDI
 
-Click **Keysounds** on the ribbon (or **Map → Keysounds & VST3…**) to swap the main timeline area into the inline **Keysounding Piano Roll** (click **Back to Hitsounds** or press `Esc` to return):
+Click **Keysounds** on the ribbon (or **Map → Keysounds & VST3…**) to swap the main timeline area into the inline **Keysounding Piano Roll** (click **Hitsounds** on the ribbon to return):
 
 - **Instruments without extra plugins:** Click **Load SFZ / SF2…** to load any `.sfz` or `.sf2` SoundFont directly using dawsu!'s built-in sampler (including SoundFont preset selection), or click **Scan VST3 → Load VST3** to drive a VST3 instrument. You can also test `.sf2`/`.sfz` files in **Preferences → MIDI Input & VST3**.
 - **Composing & recording notes:**
   - Click in the piano roll grid to place notes, drag to move, drag the right edge to resize, right-click or press `Delete` to remove, and drag velocity bars underneath.
   - Toggle **Typing (`Alt+K`)** to play notes from your computer keyboard (`Z`/`X` shifts octave, `C`/`V` adjusts velocity).
   - Connect a hardware MIDI keyboard or drum pad in **Preferences → MIDI Input & VST3** and arm **MIDI Record** in the transport bar to record live against the playhead.
-  - Import or export standard `.mid` files via **File → Import MIDI…** / **File → Export MIDI…** (or **Import `.mid…`** on the Keysounds bar), or import keysounds from an osu!mania difficulty via **File → Import mania hitsounds…**.
+  - Import or export standard `.mid` files via **File → Import MIDI…** / **File → Export MIDI…** (or **Import .mid…** in the track list), or import keysounds from an osu!mania difficulty via **File → Import mania hitsounds…**.
   - Save and reopen keysound sessions as `.dawsuks` projects.
 - **Track tools & Chord Resolver:**
-  - Mute (**M**) or Solo (**S**) tracks, toggle **Ghosts** (notes from audible sibling tracks) and **Object lines**, **Quantize 125 ms**, **Trim overlaps**, **Sync to objects**, and transpose (`-12`, `-1`, `+1`, `+12`).
-  - When multiple notes land on the same osu!standard hit object, click the **chords to resolve** badge to open the **Chord Resolver** (**Flatten Chord to 1 Polyphonic Sample (Recommended)** or **Top Note Only** — no storyboard `.osb` samples required).
+  - Mute (**M**) or Solo (**S**) tracks, toggle **Ghosts** (notes from audible sibling tracks) and **Object lines**, and use the Inspector's note tools: **Snap to grid**, **Trim overlaps**, **Strum**, **Humanise**, **Sync to objects**, and transpose (`-12`, `-1`, `+1`, `+12`).
+  - When multiple notes land on the same osu!standard hit object, click the **N chords to resolve** badge at the bottom of the Inspector to open the **Chord Resolver** (**Flatten Chord to 1 Polyphonic Sample (Recommended)** or **Top Note Only** — no storyboard `.osb` samples required).
 - **Bounce & Deduplicate… / Generate `[Keysounds]`:**
   - Set **Velocity buckets**, **Duration step (ms)**, **Flatten chords**, and **Format** (`Ogg Vorbis` or `16-bit WAV`).
   - Preview the deduplication savings (`N MIDI notes → M unique samples`) and `.osz` `10.0 MB` budget gauge, audition individual rendered samples, and click **Commit Keysounds to `[Hitsounds]`** (or **Generate `[Keysounds]`**).

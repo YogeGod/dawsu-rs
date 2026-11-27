@@ -32,13 +32,13 @@ Switch to the **Lane rules** tab and pick any difficulty chip at the top to add 
 
 Switch to the **Volume curve** tab to shape loudness across your song without creating extra mixed `.wav` files:
 
-- Set **Scope** to **Whole mapset (shared)** or **Current difficulty only**.
-- `Ctrl+click` anywhere on the graph (or enter **Time (ms)**, **Volume %**, and **Linear** / **Step**) to add a point. Click an existing point once to select it and click again to flip between **Linear** ramps and **Step** holds.
+- Set **Scope** to **Whole mapset (shared)** or the open difficulty only (shown by its file name).
+- `Ctrl+click` anywhere on the graph (or enter a time in ms, a **Volume %**, and **Linear** / **Step**) to add a point. Click an existing point once to select it and click again to flip between **Linear** ramps and **Step** holds.
 - On export, dawsu! writes only `[TimingPoints]` green lines — zero extra sample files are generated for section volume changes.
 
-## 2. Export Review (`Ctrl+E` or `Export…`)
+## 2. Export Review (`Export…`)
 
-Click **Export…** in the top bar (or press `Ctrl+E` / **File → Export…**) to preview and run multi-difficulty copying, `.osz`/folder export, sample optimization, and verification.
+Click **Export…** in the top bar (or **File → Export…**) to preview and run multi-difficulty copying, `.osz`/folder export, sample optimization, and verification.
 
 ![dawsu! Export review](../screenshots/export-review.png)
 
