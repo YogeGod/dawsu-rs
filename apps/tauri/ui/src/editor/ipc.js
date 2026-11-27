@@ -4,6 +4,7 @@ import { callAction, showToast } from "../lib/registry.js";
 import { markPracticeTried } from "../lib/startScreen.js";
 import { sameSoundSetPrompts, sameUiView } from "../lib/view.js";
 import { parseSpectrumFrame } from "../lib/spectrum.js";
+import { osuReloadFailedToast, osuReloadToast } from "../lib/tapRecord.js";
 
 function folderOfPath(path) {
   const normalized = String(path ?? "");
@@ -490,17 +491,16 @@ export function attachIpc(ctx) {
       } catch (error) { (env.console ?? console).error(error); }
       return;
     }
-    if (title === "Saved" && after.reloadOsuAfterSave) {
-      invoke("reload_osu_editor").then((res) => {
-        const toastTitle = res?.status === "reloaded_stable" ? "Saved & reloaded in osu!" : title;
-        const body = res?.status === "reloaded_stable" ? `${status} ${res.message}` : status;
-        notifyToast({ tone: "success", title: toastTitle, body });
-      }).catch(() => {
-        notifyToast({ tone: "success", title, body: status });
-      });
-      return;
-    }
     try { notifyToast({ tone: "success", title, body: status }); } catch (error) { (env.console ?? console).error(error); }
+    // The reload runs after the Saved toast; only a reload that did not happen raises a second one.
+    if (title === "Saved" && after.reloadOsuAfterSave) {
+      invoke("reload_osu_editor").then(
+        (res) => {
+          if (res && res.status !== "reloaded_stable" && res.status !== "lazer_external_edit") notifyToast(osuReloadToast(res));
+        },
+        (error) => notifyToast(osuReloadFailedToast(error)),
+      ).catch((error) => (env.console ?? console).error(error));
+    }
   }
 
   function samePollBase(before, next) {
