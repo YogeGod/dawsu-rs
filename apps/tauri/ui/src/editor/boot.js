@@ -32,7 +32,7 @@ const mutableStateFields = [
   "browserMap", "browserFolder", "browserSample", "browserSource", "browserLibrary",
   "browserLibraryFolders", "browserScene", "browserState", "browserFilter", "browserPreview",
   "browserModel", "browserTree", "usedLaneKeys", "laneFilterText", "showLaneInfo", "laneRows", "lanePositions",
-  "laneVisualPositions", "selectionLaneAnchor", "selectionLanesOnly", "familyParents",
+  "laneVisualPositions", "drumRowMembers", "drumRowByMember", "selectionLaneAnchor", "selectionLanesOnly", "familyParents",
   "familyLayers", "laneRemoving", "previewParents", "orderedLaneKeys", "sampleFolderOrder",
   "layoutWrites", "mixerStrips", "mixerKey", "laneHeaders", "bookmarkPick", "selectedHitsScene",
   "selectedHits", "inspectorState", "problemStripKept", "sectionBarCache", "sliderEndCache",

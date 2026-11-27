@@ -48,6 +48,8 @@ export function createState() {
     laneRows: [],
     lanePositions: new Map(),
     laneVisualPositions: new Map(),
+    drumRowMembers: new Map(),
+    drumRowByMember: new Map(),
     selectionLaneKeys: new Set(),
     selectionLaneAnchor: null,
     selectionLanesOnly: false,

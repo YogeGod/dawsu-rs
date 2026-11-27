@@ -388,13 +388,18 @@ export function computeDrawStrokeSteps(scene, startMs, endMs, row = null, maxSte
     }
   }
   const newSteps = [];
+  const rowMatches = row instanceof Set
+    ? ([laneRow]) => row.has(laneRow)
+    : typeof row === "number"
+      ? ([laneRow]) => laneRow === row
+      : null;
   for (const t of steps) {
     if (newSteps.some(prev => Math.abs(prev - t) < 5.0)) continue;
-    const occupied = typeof row === "number" && findNearestMoment(
+    const occupied = rowMatches != null && findNearestMoment(
       scene.moments,
       t,
       5.0,
-      ([, , , hits]) => (hits.some(([laneRow]) => laneRow === row) ? true : undefined),
+      ([, , , hits]) => (hits.some(rowMatches) ? true : undefined),
       { strict: false },
     );
     if (!occupied) newSteps.push(t);
@@ -405,24 +410,35 @@ export function computeDrawStrokeSteps(scene, startMs, endMs, row = null, maxSte
 /// Returns the data-lane indices shown/targeted in the bottom Volume controller (`null` if no
 /// scene or no active lane resolved). Mirrors the canvas bar filter so Alt+paint & segment-grab
 /// act strictly on the currently visible volume lane(s).
-export function visibleVolumeLanes(scene, view, selectionLaneKeys) {
+export function visibleVolumeLanes(scene, view, selectionLaneKeys, rowMembers = null, rowByMember = null) {
   if (!scene?.lanes?.length) return null;
+  const expandRows = rows => {
+    if (!rowMembers?.size) return rows;
+    const expanded = [];
+    for (const r of rows) {
+      const primary = rowByMember?.get(r) ?? r;
+      for (const m of (rowMembers.get(primary) ?? [r])) {
+        if (!expanded.includes(m)) expanded.push(m);
+      }
+    }
+    return expanded;
+  };
   const selected = new Set();
   for (const [, , , hits] of scene.moments ?? []) {
     for (const [row, isSelected] of hits ?? []) {
       if (isSelected) selected.add(row);
     }
   }
-  if (selected.size > 0) return [...selected];
+  if (selected.size > 0) return expandRows([...selected]);
   if ((selectionLaneKeys?.size ?? 0) > 1) {
     const out = [];
     for (let row = 0; row < scene.lanes.length; row++) {
       if (selectionLaneKeys.has(scene.lanes[row]?.key)) out.push(row);
     }
-    if (out.length > 0) return out;
+    if (out.length > 0) return expandRows(out);
   }
   if (view?.activeLane != null && view.activeLane >= 0 && view.activeLane < scene.lanes.length) {
-    return [view.activeLane];
+    return expandRows([view.activeLane]);
   }
   return null;
 }

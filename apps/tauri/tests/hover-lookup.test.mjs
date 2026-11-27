@@ -266,3 +266,29 @@ test("hitObjectName builds and caches gameplay index per gameplay object identit
   assert.equal(ctx.state.gameplayIndexCache?.gameplay, gameplayB);
   assert.notEqual(ctx.state.gameplayIndexCache, firstCache);
 });
+
+test("hitCardAt resolves hits on merged secondary drum-row members and displays the drum name", () => {
+  const { ctx } = createEditorHarness();
+  ctx.state.view = { busy: false, hasDocument: true, drumView: { enabled: true, name: "Auto" } };
+  ctx.state.scene = {
+    path: "merged.osu",
+    viewStart: 0,
+    zoom: 1,
+    rowHeight: 30,
+    lanes: [
+      { key: "k1", name: "drum-hitnormal", group: "drum" },
+      { key: "k2", name: "drum-hitnormal2", group: "drum" },
+    ],
+    drumRows: [{ row: 0, rows: [0, 1], name: "Kick", drumRowIndex: 0 }],
+    moments: [[500, 75, true, [[1, false, false, 65]]]],
+    gameplay: { points: [["circle", 500, 0]], spans: [] },
+    combos: { objects: { 0: [1, 0] }, colours: ["#ffffff"] },
+  };
+  ctx.state.laneRows = [0];
+  ctx.state.drumRowMembers = new Map([[0, [0, 1]]]);
+  ctx.state.drumRowByMember = new Map([[0, 0], [1, 0]]);
+  const card = ctx.hitCardAt({ clientX: 504, clientY: 15 });
+  assert.equal(card?.title, "Kick");
+  assert.equal(card?.time, "00:00.500");
+  assert.equal(card?.detail, "Volume 65% · on circle 1");
+});

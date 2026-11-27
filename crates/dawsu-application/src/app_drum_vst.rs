@@ -343,21 +343,39 @@ impl Application {
     }
 
     /// Toggles per-lane VST3 routing on/off; bypassed lanes fall back to sample playback.
+    /// In Drums view, applies the toggle uniformly across all merged identical-audio members.
     pub fn toggle_drum_vst_lane(&mut self, row: usize) -> Result<bool, String> {
-        let lane = self
-            .document
-            .as_ref()
-            .ok_or("Open a difficulty first.")?
+        let doc = self.document.as_ref().ok_or("Open a difficulty first.")?;
+        let primary = doc
             .composer
             .lanes
             .get(row)
             .cloned()
             .ok_or("That lane does not exist.")?;
+        let members: Vec<SampleIdentity> = self
+            .drum_row_groups
+            .as_ref()
+            .and_then(|g| g.members_for_row(row))
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|&r| doc.composer.lanes.get(r).cloned())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| vec![primary.clone()]);
         let vst = self
             .drum_vst
             .as_mut()
             .ok_or("Load a Drum VST3 instrument first.")?;
-        let routed = vst.toggle_lane_vst(&lane);
+        let routed = if members.len() > 1 {
+            let target_muted = !vst.is_lane_vst_muted(&primary);
+            for m in &members {
+                vst.set_lane_vst_muted(m, target_muted);
+            }
+            !target_muted
+        } else {
+            vst.toggle_lane_vst(&primary)
+        };
         self.sync_audio();
         self.bump_view_revision();
         Ok(routed)

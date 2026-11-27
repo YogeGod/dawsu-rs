@@ -593,8 +593,7 @@ fn editor_thread_with_cache(
                             Some(path) => drums.load(app, &map, &path),
                             None => drums.toggle(app, &map, on),
                         }.map(|()| {
-                            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-                            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+                            drums.sync_app(app);
                             tick_cache.drums_rev += 1;
                             decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })
@@ -627,8 +626,7 @@ fn editor_thread_with_cache(
                                 drums.move_row(app, &map, from_index, to_index)
                             }
                         }.map(|()| {
-                            app.set_drum_vst_routing(drums.routed_midi_notes(app));
-                            app.set_drum_vst_choke_groups(drums.choke_groups(app));
+                            drums.sync_app(app);
                             tick_cache.drums_rev += 1;
                             decorate_and_stamp_view(app, &home, &drums, playback_start, &mut tick_cache, !home.visible())
                         })

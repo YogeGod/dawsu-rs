@@ -22,7 +22,17 @@ fn select_across_lanes(app: &mut Application, direction: isize) -> Result<(), St
         && span.is_finite()
         && span > 0.0
     {
-        document.composer.select_across_lanes(&rows, direction, span / 2.0);
+        if let Some(groups) = app.drum_row_groups.as_ref() {
+            crate::drum_editing::select_across_drum_groups(
+                &mut document.composer,
+                &rows,
+                groups,
+                direction,
+                span / 2.0,
+            );
+        } else {
+            document.composer.select_across_lanes(&rows, direction, span / 2.0);
+        }
     }
     Ok(())
 }

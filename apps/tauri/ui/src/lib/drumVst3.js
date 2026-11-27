@@ -176,20 +176,27 @@ export function sceneDrumHitsToNotes(scene, drumView) {
   const rowToPitch = new Map();
   const setupRows = drumView?.rows ?? [];
   for (const entry of scene?.drumRows ?? []) {
-    if (typeof entry?.row !== "number") continue;
+    const memberRows = Array.isArray(entry?.rows) && entry.rows.length
+      ? entry.rows.filter(r => typeof r === "number")
+      : (typeof entry?.row === "number" ? [entry.row] : []);
+    if (!memberRows.length) continue;
     const explicitNote = Number.isInteger(entry.midiNote)
       ? entry.midiNote
       : (entry.drumRowIndex != null && Number.isInteger(setupRows[entry.drumRowIndex]?.midiNote)
         ? setupRows[entry.drumRowIndex].midiNote
         : null);
+    let pitch = null;
     if (explicitNote != null && explicitNote >= 0 && explicitNote <= 127) {
-      rowToPitch.set(entry.row, explicitNote);
-      continue;
+      pitch = explicitNote;
+    } else if (entry?.name) {
+      // A combined label like "Kick / Kick 2" uses the primary drum piece name.
+      const primaryName = String(entry.name).split("/")[0].trim();
+      pitch = drumRowToMidiNote(primaryName);
     }
-    if (!entry?.name) continue;
-    // A combined label like "Kick / Kick 2" uses the primary drum piece name.
-    const primaryName = String(entry.name).split("/")[0].trim();
-    rowToPitch.set(entry.row, drumRowToMidiNote(primaryName));
+    if (pitch == null) continue;
+    for (const r of memberRows) {
+      if (!rowToPitch.has(r)) rowToPitch.set(r, pitch);
+    }
   }
   if (!rowToPitch.size && setupRows.length && scene?.lanes?.length) {
     const laneKeyToRow = new Map();

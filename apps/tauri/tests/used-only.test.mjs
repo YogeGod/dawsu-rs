@@ -429,3 +429,57 @@ test("lane names and moves keep sample identities and persist within one difficu
   assert.equal(calls.at(-1).action.value.lane_names, undefined);
   assert.equal(evaluate("laneDisplayName(scene.lanes[1])"), "Clap");
 });
+
+test("Drums view merges entry.rows across headers, mixer strips, lane selection, pointer snap, and marquee", async () => {
+  const { calls, evaluate } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0, tool: "Select", drumView: { enabled: true, name: "Auto" } };
+    scene = {
+      path: "Merged.osu", rowHeight: 30, viewStart: 0, zoom: 1,
+      lanes: [
+        { key: "k1", sourceKey: "BeatmapFile|k1.wav", colourKey: "k1", name: "k1", sample: "k1.wav", group: "drum", hitCount: 0 },
+        { key: "s1", sourceKey: "BeatmapFile|s1.wav", colourKey: "s1", name: "s1", sample: "s1.wav", group: "normal", hitCount: 1 },
+        { key: "k2", sourceKey: "BeatmapFile|k2.wav", colourKey: "k2", name: "k2", sample: "k2.wav", group: "drum", hitCount: 2 },
+      ],
+      laneOrder: [0, 1, 2],
+      moments: [[1000, 80, true, [[2, false]]]],
+      drumRows: [
+        { row: 0, rows: [0, 2], name: "Kick", drumRowIndex: 0 },
+        { row: 1, rows: [1], name: "Snare", drumRowIndex: 1 },
+      ],
+    };
+    renderLanes();
+  `);
+  assert.deepEqual(laneNames(evaluate), ["Kick", "Snare"]);
+  assert.equal(evaluate("JSON.stringify(laneRows)"), "[0,1]");
+  assert.equal(evaluate("JSON.stringify(laneVisualPositions.get(2))"), "[0]");
+  const hdrs = headerRows(evaluate);
+  assert.deepEqual(hdrs[0].memberRows, [0, 2]);
+  assert.match(hdrs[0].title, /\(\+1 identical lane\)/);
+  assert.equal(hdrs[0].active, true);
+
+  // Only secondary member k2 (row 2) has hitCount > 0, so Kick still gets 1 single mixer strip.
+  const strips = JSON.parse(evaluate("JSON.stringify(currentMixer())"));
+  assert.deepEqual(strips.map(s => [s.row, s.name, s.memberRows]), [[1, "Snare", undefined], [0, "Kick", [0, 2]]]);
+
+  // Filtering by secondary sample name keeps the merged Kick row visible, and Used only sees k2's usage.
+  evaluate('usedLaneKeys = new Set(["k2"]); laneFilterText = "k2.wav"; renderLanes();');
+  assert.equal(evaluate("JSON.stringify(laneRows)"), "[0]");
+  evaluate('usedLaneKeys = null; laneFilterText = ""; renderLanes();');
+
+  // Header mix on primary row 0 includes both k1 and k2 source keys cleanly.
+  headerAction(evaluate, "mix", 0, "mute");
+  await evaluate("pending");
+  const mixCall = calls.pop().action;
+  assert.equal(mixCall.kind, "lane_selection_mix");
+  assert.deepEqual(mixCall.lanes, ["BeatmapFile|k1.wav", "BeatmapFile|k2.wav"]);
+
+  // Pointer click on Kick visual row 0 snaps to co-timed hit on secondary member row 2 and attaches visible_rows.
+  evaluate('view = { busy: false, hasDocument: true, activeLane: 0, tool: "Select", drumView: { enabled: true, name: "Auto" } };');
+  const ptr = evaluate(`drag = { surface: grid, start: 0, zoom: 1, rows: laneRows };
+    pointer({ clientX: 1005, clientY: 15 }, "down")`);
+  assert.equal(ptr.row, 0);
+  assert.equal(ptr.ms, 1000);
+  assert.deepEqual([...ptr.visible_rows], [0, 1]);
+  evaluate("drag = null;");
+});

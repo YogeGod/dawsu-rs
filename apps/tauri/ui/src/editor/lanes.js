@@ -235,22 +235,48 @@ export function attachLanes(ctx) {
 
   function renderLanes() {
     const filter = state.laneFilterText.trim().toLowerCase();
-    const eligible = (row, alias) => {
-      const lane = state.scene.lanes[row];
-      if (state.usedLaneKeys !== null && (!lane || !state.usedLaneKeys.has(lane.key))) return false;
-      return !filter || [alias, laneDisplayName(lane), laneTitle(lane), lane?.name, lane?.sample]
-        .some(name => name?.toLowerCase().includes(filter));
-    };
     state.familyParents = new Map();
     state.familyLayers = new Map();
     state.previewParents = new Map();
+    state.drumRowMembers = new Map();
+    state.drumRowByMember = new Map();
     let drumNames = [];
     let drumRowIndices = [];
+    const entryMembers = entry => {
+      if (typeof entry?.row !== "number") return [];
+      const raw = Array.isArray(entry.rows) && entry.rows.length ? entry.rows : [entry.row];
+      const uniq = [];
+      for (const r of raw) {
+        if (typeof r === "number" && !uniq.includes(r)) uniq.push(r);
+      }
+      return uniq.length ? uniq : [entry.row];
+    };
+    const eligible = (row, alias, members = null) => {
+      const candidates = members?.length ? members : [row];
+      if (state.usedLaneKeys !== null && !candidates.some(r => {
+        const lane = state.scene.lanes[r];
+        return lane && state.usedLaneKeys.has(lane.key);
+      })) return false;
+      if (!filter) return true;
+      return Boolean(alias?.toLowerCase().includes(filter)) || candidates.some(r => {
+        const lane = state.scene.lanes[r];
+        return [laneDisplayName(lane), laneTitle(lane), lane?.name, lane?.sample]
+          .some(name => name?.toLowerCase().includes(filter));
+      });
+    };
     if (state.view.drumView?.enabled && state.scene.drumRows) {
-      const rows = state.scene.drumRows.filter(({ row, name }) => eligible(row, name));
+      const rows = state.scene.drumRows.filter(entry => eligible(entry.row, entry.name, entryMembers(entry)));
       state.laneRows = rows.map(({ row }) => row);
       drumNames = rows.map(({ name }) => name);
       drumRowIndices = rows.map(({ drumRowIndex }) => drumRowIndex ?? null);
+      for (const entry of rows) {
+        if (typeof entry.row !== "number") continue;
+        const members = entryMembers(entry);
+        if (!state.drumRowMembers.has(entry.row)) state.drumRowMembers.set(entry.row, members);
+        for (const m of members) {
+          if (!state.drumRowByMember.has(m)) state.drumRowByMember.set(m, entry.row);
+        }
+      }
     } else {
       groupedLaneRows(orderedLaneRows().filter(row => eligible(row)));
     }
@@ -259,8 +285,13 @@ export function attachLanes(ctx) {
     for (const [position, row] of state.laneRows.entries()) {
       if (!state.lanePositions.has(row)) state.lanePositions.set(row, position);
       if (typeof row !== "number") continue;
-      if (!state.laneVisualPositions.has(row)) state.laneVisualPositions.set(row, []);
-      state.laneVisualPositions.get(row).push(position);
+      const members = state.drumRowMembers.get(row) ?? [row];
+      for (const m of members) {
+        if (!state.lanePositions.has(m)) state.lanePositions.set(m, position);
+        if (!state.laneVisualPositions.has(m)) state.laneVisualPositions.set(m, []);
+        const vis = state.laneVisualPositions.get(m);
+        if (!vis.includes(position)) vis.push(position);
+      }
     }
     const lanePanel = $("lanes");
     const nextRowHeight = state.scene.rowHeight + "px";
@@ -273,7 +304,7 @@ export function attachLanes(ctx) {
       l.key, l.colourKey, l.name, l.sample, l.group, l.index, l.family,
       l.muted, l.solo, l.canAddLayer, l.canDelete, l.vstRouted, l.vstBypassed, l.hitCount > 0,
     ] : null);
-    const laneKey = JSON.stringify([state.laneRows, drumNames, laneHeaderProjection, state.view.activeLane, [...state.selectionLaneKeys],
+    const laneKey = JSON.stringify([state.laneRows, drumNames, [...state.drumRowMembers], laneHeaderProjection, state.view.activeLane, [...state.selectionLaneKeys],
       [...state.familyParents], state.view.panels?.laneNames !== false, state.showLaneInfo, [...state.laneColours], [...state.renamedLanes], !!state.view.busy,
       !!state.view.drumView?.enabled, state.view.drumView?.name ?? null, state.groupBySampleSet !== false, state.scene.rowHeight >= 40]);
     if (lanePanel.dataset.state !== laneKey) {
@@ -296,7 +327,12 @@ export function attachLanes(ctx) {
 
   function mixerModel() {
     const numbers = new Map(orderedLaneRows().map((row, index) => [row, index + 1]));
-    const used = [...numbers.keys()].filter(row => state.scene.lanes[row]?.hitCount > 0);
+    const isSecondaryMerged = row => state.drumRowByMember.has(row) && state.drumRowByMember.get(row) !== row;
+    const used = [...numbers.keys()].filter(row => {
+      if (isSecondaryMerged(row)) return false;
+      const members = state.drumRowMembers.get(row) ?? [row];
+      return members.some(m => state.scene.lanes[m]?.hitCount > 0);
+    });
     const inFolder = new Set(state.sampleFolderOrder);
     const rows = [...state.sampleFolderOrder.flatMap(group => used.filter(row => state.scene.lanes[row].group === group)),
       ...used.filter(row => !inFolder.has(state.scene.lanes[row].group))];
@@ -311,15 +347,21 @@ export function attachLanes(ctx) {
       const lane = state.scene.lanes[row];
       const sound = laneSound(lane);
       const drum = drumRows?.get(row);
+      const members = state.view.drumView?.enabled ? (state.drumRowMembers.get(row) ?? [row]) : [row];
+      const memberLanes = members.map(m => state.scene.lanes[m]).filter(Boolean);
+      const colour = memberLanes.map(l => state.laneColours.get(l.colourKey)).find(Boolean) ?? null;
+      const muted = memberLanes.length > 0 && memberLanes.every(l => l.muted);
+      const solo = memberLanes.some(l => l.solo);
       return {
         key: "lane:" + row, row, number: drumRows ? drum?.number ?? "" : numbers.get(row),
         name: drum?.name ?? (state.renamedLanes.has(lane.colourKey) ? laneDisplayName(lane) : sound.name),
         set: sound.set, icon: sound.icon,
         // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
-        colour: state.laneColours.get(lane.colourKey) ?? null,
-        selected: state.selectionLaneKeys.has(lane.key), muted: !!lane.muted, solo: !!lane.solo,
+        colour,
+        selected: memberLanes.some(l => state.selectionLaneKeys.has(l.key)), muted, solo,
         gain: typeof lane.gain === "number" ? lane.gain : 1,
-        quiet: !!lane.muted || (anySolo && !lane.solo),
+        quiet: muted || (anySolo && !solo),
+        ...(members.length > 1 ? { memberRows: members } : {}),
       };
     });
   }
@@ -344,33 +386,43 @@ export function attachLanes(ctx) {
         };
       }
       const lane = state.scene.lanes[row];
+      const members = drum ? (state.drumRowMembers.get(row) ?? [row]) : [row];
+      const memberLanes = members.map(m => state.scene.lanes[m]).filter(Boolean);
       const displayName = drumNames[position] ?? laneDisplayName(lane);
       const label = state.showLaneInfo && lane.index != null
         ? displayName + (lane.index === 0 ? " (skin)" : " (idx " + lane.index + ")")
         : displayName;
+      const mergedSuffix = members.length > 1
+        ? ` (+${members.length - 1} identical ${members.length === 2 ? "lane" : "lanes"})`
+        : "";
       const sound = laneSound(lane);
       const family = state.familyParents.get(row);
       const collapsed = state.collapsedFamilies.has(family);
+      const rowMuted = memberLanes.length > 0 && memberLanes.every(l => l.muted);
+      const rowSolo = memberLanes.some(l => l.solo);
+      const vstRouted = memberLanes.some(l => l.vstRouted);
+      const vstBypassed = !vstRouted && memberLanes.some(l => l.vstBypassed);
       return {
         type: "lane", key: drum ? "drum:" + position : "lane:" + row, row,
         number: drum ? position + 1 : numbers.get(row),
         name: !state.showLaneInfo && !drum && !state.renamedLanes.has(lane.colourKey) ? sound.name : label, label, display: displayName,
         ...(state.scene.rowHeight >= 40 && !drum && lane.sample && lane.sample !== sound.name ? { caption: lane.sample } : {}),
-        title: (lane.sample ?? label) + ". Click to select and audition; Ctrl/Cmd toggles; Shift selects a range",
+        title: (lane.sample ?? label) + mergedSuffix + ". Click to select and audition; Ctrl/Cmd toggles; Shift selects a range",
         tag: drum ? null : sound.set, icon: sound.icon,
         // Yoge, 2026-11-20 (ADR 0068): a lane is grey unless the mapper picked a colour.
         colour: state.laneColours.get(lane.colourKey) ?? null,
         folder: !drum && lane.group ? lane.group : null,
-        active: state.view.activeLane === row, selected: state.selectionLaneKeys.has(lane.key),
-        muted: !!lane.muted, solo: !!lane.solo, quiet: !!lane.muted || (anySolo && !lane.solo),
+        active: members.includes(state.view.activeLane), selected: memberLanes.some(l => state.selectionLaneKeys.has(l.key)),
+        muted: rowMuted, solo: rowSolo, quiet: rowMuted || (anySolo && !rowSolo),
         layer: !drum && state.familyLayers.has(row),
         family: family == null ? null : { collapsed, label: (collapsed ? "Expand " : "Collapse ") + lane.name + " layers" },
         // The drum view adds no lanes (vault rule) and removes none.
         addLayer: !drum && lane.canAddLayer ? "Add numbered " + lane.name + " layer" : null,
         remove: drum ? null : { label: "Remove " + (state.renamedLanes.has(lane.colourKey) ? displayName : sound.name), disabled: !lane.canDelete },
-        ...(lane.vstRouted ? { vstRouted: true } : {}),
-        ...(lane.vstBypassed ? { vstBypassed: true } : {}),
+        ...(vstRouted ? { vstRouted: true } : {}),
+        ...(vstBypassed ? { vstBypassed: true } : {}),
         ...(drum ? { drumRowIndex: drumRowIndices[position] ?? null } : {}),
+        ...(members.length > 1 ? { memberRows: members } : {}),
       };
     });
     const visibleSet = new Set(state.scene.laneOrder ?? state.scene.lanes.map((_, idx) => idx));
@@ -473,7 +525,9 @@ export function attachLanes(ctx) {
   function mixSelectedLanes(row, operation) {
     const lane = state.scene?.lanes[row];
     if (!lane || state.view.busy || state.drag) return;
-    if (!state.selectionLaneKeys.has(lane.key)) selectVolumeLane(row, {});
+    const members = state.drumRowMembers?.get(state.drumRowByMember?.get(row) ?? row) ?? [row];
+    const memberKeys = members.map(m => state.scene.lanes[m]?.key).filter(Boolean);
+    if (!memberKeys.some(k => state.selectionLaneKeys.has(k))) selectVolumeLane(row, {});
     const lanes = state.scene.lanes.filter(item => state.selectionLaneKeys.has(item.key)).map(item => item.sourceKey);
     ctx.act({ kind: "lane_selection_mix", target: { map: state.scene.path, lane: lane.sourceKey }, operation, lanes });
   }
@@ -494,24 +548,47 @@ export function attachLanes(ctx) {
   }
 
   function selectVolumeLane(row, event) {
+    const expandRow = r => state.drumRowMembers?.get(state.drumRowByMember?.get(r) ?? r) ?? [r];
+    const members = expandRow(row);
+    const rowKeys = members.map(r => state.scene.lanes[r]?.key).filter(Boolean);
     const key = state.scene.lanes[row].key;
     const toggle = !!(event.ctrlKey || event.metaKey);
+    const activeMembers = state.view.activeLane != null ? expandRow(state.view.activeLane) : [];
+    const activeKeys = activeMembers.map(r => state.scene.lanes[r]?.key).filter(Boolean);
     const activeKey = state.view.activeLane != null ? state.scene.lanes[state.view.activeLane]?.key ?? null : null;
     if (!toggle) state.selectionLaneKeys.clear();
-    else if (state.selectionLaneKeys.size === 0 && activeKey != null) state.selectionLaneKeys.add(activeKey);
-    const visible = event.shiftKey
-      ? [...new Set(state.laneRows.filter(item => typeof item === "number").map(item => state.scene.lanes[item].key))]
-      : [];
-    const anchor = state.selectionLaneAnchor ?? activeKey;
+    else if (state.selectionLaneKeys.size === 0 && activeKeys.length > 0) {
+      for (const ak of activeKeys) state.selectionLaneKeys.add(ak);
+    }
+    const visibleRowNums = event.shiftKey ? state.laneRows.filter(item => typeof item === "number") : [];
+    const visible = visibleRowNums.map(item => state.scene.lanes[item]?.key);
+    const primaryOfKey = new Map();
+    for (const r of visibleRowNums) {
+      for (const m of expandRow(r)) {
+        const mk = state.scene.lanes[m]?.key;
+        if (mk && !primaryOfKey.has(mk)) primaryOfKey.set(mk, state.scene.lanes[r]?.key);
+      }
+    }
+    const anchorRaw = state.selectionLaneAnchor ?? activeKey;
+    const anchor = primaryOfKey.get(anchorRaw) ?? anchorRaw;
+    const targetVisKey = primaryOfKey.get(key) ?? key;
     const start = visible.indexOf(anchor);
-    const end = visible.indexOf(key);
+    const end = visible.indexOf(targetVisKey);
     if (start >= 0 && end >= 0) {
-      for (const item of visible.slice(Math.min(start, end), Math.max(start, end) + 1)) {
-        state.selectionLaneKeys.add(item);
+      for (const visRow of visibleRowNums.slice(Math.min(start, end), Math.max(start, end) + 1)) {
+        for (const m of expandRow(visRow)) {
+          const mk = state.scene.lanes[m]?.key;
+          if (mk) state.selectionLaneKeys.add(mk);
+        }
       }
       state.selectionLaneAnchor = anchor;
     } else {
-      if (!toggle || !state.selectionLaneKeys.delete(key)) state.selectionLaneKeys.add(key);
+      const allSelected = rowKeys.length > 0 && rowKeys.every(k => state.selectionLaneKeys.has(k));
+      if (toggle && allSelected) {
+        for (const k of rowKeys) state.selectionLaneKeys.delete(k);
+      } else {
+        for (const k of rowKeys) state.selectionLaneKeys.add(k);
+      }
       state.selectionLaneAnchor = key;
     }
     if (state.selectionLanesOnly) updateVolumeScope();
@@ -715,7 +792,21 @@ export function attachLanes(ctx) {
       down.disabled = row.index === rows.length - 1;
 
       if (focusRowIndex !== null && row.index === focusRowIndex) focusedSelect = select;
-      line.append(label, select, up, down, midiInput, midiBadge);
+      const mergedExtra = Array.isArray(row.mergedLaneKeys) && row.mergedLaneKeys.length > 1
+        ? row.mergedLaneKeys.length - 1
+        : 0;
+      const extraChildren = [];
+      if (mergedExtra > 0) {
+        const mergedBadge = env.document.createElement("span");
+        mergedBadge.className = "drum-setup-merged-badge";
+        mergedBadge.textContent = `+${mergedExtra} merged`;
+        mergedBadge.title = row.mergedLaneKeys.join("\n");
+        mergedBadge.style.fontSize = "11px";
+        mergedBadge.style.opacity = "0.75";
+        mergedBadge.style.whiteSpace = "nowrap";
+        extraChildren.push(mergedBadge);
+      }
+      line.append(label, select, up, down, midiInput, midiBadge, ...extraChildren);
       list.append(line);
     }
 
