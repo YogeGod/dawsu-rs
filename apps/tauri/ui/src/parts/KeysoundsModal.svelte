@@ -109,7 +109,8 @@
   }
 
   async function selectTrack(nextId) {
-    if (!Number.isFinite(nextId)) return;
+    // A click on the track that already shows asks Rust for nothing.
+    if (!Number.isFinite(nextId) || nextId === trackId) return;
     trackId = nextId;
     selected = null;
     await send({ kind: "select_track", trackId: nextId });
@@ -419,11 +420,11 @@
   });
 
   // Another difficulty or map: what was read belongs to the one before.
-  let shownPath = null;
+  let shownPath;
   $effect(() => {
     const path = bridge.scene?.path ?? null;
     if (path === shownPath) return;
-    const first = shownPath === null;
+    const first = shownPath === undefined;
     shownPath = path;
     if (first) return;
     untrack(() => {

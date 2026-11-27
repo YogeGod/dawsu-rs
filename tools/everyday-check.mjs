@@ -1202,6 +1202,22 @@ try {
         `Generate is not pinned to the Inspector's bottom edge: ${JSON.stringify([chrome.foot, chrome.inspector])}`);
     }
 
+    // A double-click on the track's name renames it in place.
+    await page().locator(".ks-track-main").first().dblclick();
+    await page().locator(".ks-track-rename").fill("Lead");
+    await page().keyboard.press("Enter");
+    await until(() => document.querySelector(".ks-track-name")?.textContent === "Lead", null,
+      "a double-click on the track name did not rename the track");
+    // A right-click opens the row's menu at the pointer.
+    const row = await read(() => document.querySelector(".ks-track").getBoundingClientRect().toJSON());
+    await page().mouse.click(row.x + 60, row.y + 20, { button: "right" });
+    await until(() => !!document.querySelector(".ks-track-menu"), null, "a right-click on a track opened no menu");
+    const menuAt = await read(() => document.querySelector(".ks-track-menu").getBoundingClientRect().toJSON());
+    expect(Math.abs(menuAt.x - (row.x + 60)) < 3 && Math.abs(menuAt.y - (row.y + 20)) < 3,
+      `the track menu is not at the pointer: ${JSON.stringify([menuAt, row])}`);
+    await page().keyboard.press("Escape");
+    await until(() => !document.querySelector(".ks-track-menu"), null, "Escape did not close the track menu");
+
     // Edit › Undo follows the keysound history here: it takes the note back and leaves the hits alone.
     await page().mouse.click(shown.surface.x + 200, shown.surface.y + 40);
     await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a second click on the roll placed no note");

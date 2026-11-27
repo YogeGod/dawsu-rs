@@ -197,7 +197,7 @@ export const keysoundsSafe = [
   "openFolder", "save",
   "play", "stop", "goToStart", "goToEnd", "playbackStart", "returnOnStop", "follow", "cycle", "playLocatorRange", "speed", "muteSong",
   "difficulty",
-  "browser", "inspector", "volumePanel", "laneNames", "songWaveform", "objectLines", "zoomIn", "zoomOut", "fit", "editLayout", "viewSettings",
+  "browser", "inspector", "volumePanel", "laneNames", "songWaveform", "objectLines", "zoomIn", "zoomOut", "fit", "viewSettings",
   "quickStart",
   "toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp",
   "paletteSnapModeGrid", "paletteSnapModeRelative", "paletteSnapModeObjects",

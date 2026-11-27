@@ -23,8 +23,9 @@
   // The right-click menu: { track, x, y }.
   let menu = $state(null);
 
+  // Not held back while the host is busy: the first click of a double-click has just asked for
+  // this track, and the name field must still open.
   function startRename(track) {
-    if (loading) return;
     menu = null;
     renaming = track.id;
     draft = track.name;
@@ -72,17 +73,22 @@
     node.focus();
     node.select();
   };
-  const focusFirst = node => {
+  // The roll's scroll box contains fixed boxes in this mode (container-type: size), so the menu
+  // moves to the page itself to sit at the pointer.
+  const atPointer = node => {
+    document.body.append(node);
     node.querySelector("button")?.focus();
+    return () => node.remove();
   };
 </script>
 
-<svelte:window onpointerdown={closeMenuOutside} onkeydown={onWindowKey} />
+<!-- Capture: the host and the editor both take Escape before it would bubble here. -->
+<svelte:window onpointerdown={closeMenuOutside} onkeydowncapture={onWindowKey} />
 
 <div class="ks-tracks" role="group" aria-label="Keysound tracks">
   {#if !tracks.length}
     <div class="ks-tracks-empty" role="status">
-      <p>No keysound tracks yet. Add a track or import a .mid below.</p>
+      <p>No keysound tracks yet. Add a track below, then click in the roll to place notes.</p>
     </div>
   {/if}
   {#each tracks as track, index (track.id)}
@@ -120,7 +126,7 @@
 
 {#if menu}
   <div class="ks-track-menu" role="menu" aria-label={`Track ${menu.track.name}`}
-    style:left={menu.x + "px"} style:top={menu.y + "px"} {@attach focusFirst}>
+    style:left={menu.x + "px"} style:top={menu.y + "px"} {@attach atPointer}>
     <button type="button" role="menuitem" onclick={() => startRename(menu.track)}>Rename<kbd>F2</kbd></button>
     <button type="button" role="menuitem" class="ks-track-menu-delete"
       onclick={() => { ondelete?.(menu.track.id); menu = null; }}>Delete track</button>

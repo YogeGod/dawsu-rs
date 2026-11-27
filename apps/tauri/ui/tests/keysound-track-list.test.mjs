@@ -54,7 +54,7 @@ test("the track list shows one two-line row per track, the active one marked, wi
 
 test("with no tracks the list explains the next step above the two add rows", () => {
   const html = shown({ tracks: [], activeTrackId: null });
-  assert.match(html, /role="status"[^>]*>[\s\S]*No keysound tracks yet\. Add a track or import a \.mid below\./);
+  assert.match(html, /role="status"[^>]*>[\s\S]*No keysound tracks yet\. Add a track below, then click in the roll to place notes\./);
   assert.match(html, /aria-label="Add track"/);
   assert.match(html, /aria-label="Import \.mid…"/);
 });
@@ -79,6 +79,10 @@ test("rows select on click, rename on double-click or F2, and open Rename and De
     /role="menu"/,
     /Delete track/,
   ]) assert.match(source, wiring);
+  // A double-click's first click makes the host busy; the name field still opens.
+  assert.doesNotMatch(source.match(/function startRename[^]*?\n  \}/)[0], /loading/);
+  // The menu leaves the roll's scroll box, which contains fixed boxes, for the page.
+  assert.match(source, /document\.body\.append\(node\)/);
   // A narrow lane column keeps each track as its number with M over S.
   assert.match(source, /container-type:\s*inline-size/);
   assert.match(source, /@container \(max-width: 130px\)/);
