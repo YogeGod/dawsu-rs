@@ -36,7 +36,7 @@ const mutableStateFields = [
   "layoutWrites", "mixerStrips", "mixerKey", "laneHeaders", "bookmarkPick", "selectedHitsScene",
   "selectedHits", "inspectorState", "problemStripKept", "sectionBarCache", "sliderEndCache",
   "overviewBinCache", "gameplayIndexCache", "staticLayers", "layerCopies", "lastLayerKey", "skinTextures", "cursorSurface", "cursorAltDraw", "hoveredHit", "lastHover", "rulerPointer",
-  "modalKind", "modalClose", "outputProblemIndex", "outputProblemList", "rulerWarningMarkers",
+  "modalKind", "modalClose", "outputProblemIndex", "outputProblemList", "rulerWarningMarkers", "rulerChordMarks",
   "pending", "requests", "refreshing", "lastRefresh", "frame",
   "playbackFrame", "playheadAnchor", "centreSentStart", "followQueued", "quitAfterSave",
 ];

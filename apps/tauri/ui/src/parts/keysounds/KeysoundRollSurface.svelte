@@ -17,6 +17,9 @@
     notes = [],
     ghostNotes = [],
     objectTimes = [],
+    // Every track's chord conflicts, marked on the ruler by paint().
+    chordConflicts = [],
+    trackName = "",
     selected = $bindable(null),
     loading = false,
     trackId = null,
@@ -93,6 +96,7 @@
     bridge.keysoundRoll = {
       ...roll,
       notes, index, ghosts: ghostNotes, objectTimes, sustainSpans, selected, scaleMask, foldToScale,
+      chords: chordConflicts,
       drag: drag?.payload ? { index: drag.note.index, ...drag.payload } : null,
     };
     bridge.callAction("paintSoon");
@@ -189,7 +193,11 @@
     aria-label="Piano roll: click to place a note, drag to move, drag the right edge to resize, right-click to delete"
     style:cursor={cursor}
     onwheel={onWheel} onpointerdown={onDown} onpointermove={onMove} onpointerup={onUp} onpointercancel={onUp}
-    oncontextmenu={onContextMenu}></div>
+    oncontextmenu={onContextMenu}>
+    {#if !loading && trackId != null && !notes.length}
+      <p class="ks-empty">No notes on {trackName || "this track"} yet. Click in the roll to place one.</p>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -244,9 +252,23 @@
   }
   /* See-through: the roll is painted on the canvas underneath. */
   .ks-surface {
+    position: relative;
     flex: 1;
     min-width: 0;
     touch-action: none;
     outline: none;
+  }
+  /* The empty track's hint, in the middle of the roll; clicks go through it to the roll. */
+  .ks-empty {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    margin: 0;
+    transform: translateY(-50%);
+    color: var(--editor-secondary);
+    font: 13px var(--font-ui);
+    text-align: center;
+    pointer-events: none;
   }
 </style>

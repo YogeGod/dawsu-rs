@@ -6,6 +6,7 @@ import {
   minZoom, nameOf, objectReach, objectSize, rulerBandHeight, sampleFolderNames, snapTimeInScene,
   snapToActiveGridInScene, visibleVolumeLanes,
 } from "./helpers.js";
+import { chordMarkTitle } from "../lib/rollPaint.js";
 import { volumeBubbleAtMoment } from "../lib/volumeBubble.js";
 
 export function attachTimeline(ctx) {
@@ -408,8 +409,20 @@ export function attachTimeline(ctx) {
     const nearby = nearest?.problems ?? [];
     const lines = nearby.slice(0, 8).map(describeOutputProblem);
     if (nearby.length > lines.length) lines.push("…and " + (nearby.length - lines.length) + " more.");
-    const title = lines.join("\n");
+    const title = lines.join("\n") || chordMarkTitleAt(bounds);
     if (ruler.title !== title) ruler.title = title;
+  }
+
+  // The chords of Keysounds mode's ▼ under the pointer, in the band just above the ruler's bottom edge.
+  function chordMarkTitleAt(bounds) {
+    if (!state.rulerPointer || state.rulerDrag || !state.rulerChordMarks.length) return "";
+    const { x, y } = rulerPoint(state.rulerPointer, bounds ?? ruler.getBoundingClientRect());
+    if (y < rulerBandHeight - 10 || y >= rulerBandHeight) return "";
+    let nearest = null;
+    for (const mark of state.rulerChordMarks) {
+      if (Math.abs(mark.x - x) <= 5 && (!nearest || Math.abs(mark.x - x) < Math.abs(nearest.x - x))) nearest = mark;
+    }
+    return nearest ? chordMarkTitle(nearest) : "";
   }
 
   function waveformTarget(ms, y, height) {

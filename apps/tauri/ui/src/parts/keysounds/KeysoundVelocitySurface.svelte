@@ -1,7 +1,7 @@
 <script>
   import { bridge } from "../../lib/bridge.svelte.js";
   import { velocityAtY } from "../../lib/midi.js";
-  import { visibleNotes } from "../../lib/rollPaint.js";
+  import { rampBend, rampCurve, visibleNotes } from "../../lib/rollPaint.js";
 
   // Keysounds mode's velocity lane, in the bottom panel where the hit volume lane is. The bars are
   // painted by the editor's paint() onto the volume canvas (#controller); this part sits over that
@@ -49,15 +49,13 @@
     return best;
   }
 
-  const bend = (event, fallback = 0) => (event.altKey ? 1 : event.ctrlKey ? -1 : fallback);
-
   function onDown(event) {
     if (event.button !== 0 || !bridge.keysoundRoll) return;
     const { x, y, height } = local(event);
     if (event.shiftKey) {
       const ms = Math.max(0, view().start + x / view().zoom);
       const velocity = velocityAtY(y, height);
-      ramp = { startMs: ms, endMs: ms, startVel: velocity, endVel: velocity, curve: bend(event) };
+      ramp = { startMs: ms, endMs: ms, startVel: velocity, endVel: velocity, curve: rampCurve(event) };
     } else {
       const note = barAt(x);
       if (!note) return;
@@ -77,7 +75,7 @@
         ...ramp,
         endMs: Math.max(0, view().start + x / view().zoom),
         endVel: velocityAtY(y, height),
-        curve: bend(event, ramp.curve),
+        curve: rampCurve(event, ramp.curve),
       };
     }
     show();
@@ -98,14 +96,15 @@
     if (!ramp) return;
     event.preventDefault();
     event.stopPropagation();
-    ramp = { ...ramp, curve: Math.max(-2, Math.min(2, ramp.curve + (event.deltaY > 0 ? 0.25 : -0.25))) };
+    // Shift is often still held, and Shift+wheel can arrive as a sideways turn (deltaX only).
+    ramp = { ...ramp, curve: rampBend(ramp.curve, event.deltaY || event.deltaX) };
     show();
   }
 </script>
 
 {#if bridge.mode === "keysounds"}
   <div class="ks-velocity" role="application" tabindex="-1"
-    aria-label="Note velocity: drag a bar to change it, Shift+drag to draw a ramp"
+    aria-label="Note velocity: drag a bar to change it, Shift+drag to draw a ramp (Alt eases in, Ctrl eases out, the wheel bends it)"
     onpointerdown={onDown} onpointermove={onMove} onpointerup={onUp} onpointercancel={onUp} onwheel={onWheel}
     oncontextmenu={(event) => event.preventDefault()}></div>
 {/if}

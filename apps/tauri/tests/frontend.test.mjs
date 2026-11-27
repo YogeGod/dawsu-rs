@@ -270,6 +270,9 @@ test("Keysounds mode covers only the lanes: the ruler, bottom panel and overview
   // The velocity surface lies over the volume canvas, so no pointer event reaches the hit volume lane.
   assert.match(page, /<div id="keysounds-velocity" data-ui-mount="keysounds-velocity"><\/div>\s*<canvas id="controller"/);
   assert.match(css, /#volume-controller-panel\[data-bottom="volume"\] > #keysounds-velocity\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*2;/);
+  // Its ramps take their shape from the keys held (BottomPanel lists them), so the shared shape menu,
+  // which Hitsounds mode's Ramp tool reads, is hidden here and left alone.
+  assert.match(css, /#editor-arrange\.keysounds-active #ramp-shape\s*\{\s*display:\s*none;\s*\}/);
 });
 
 test("Keysounds mode's roll stays under an open editor menu", async () => {
@@ -669,4 +672,24 @@ test("tick: true telemetry pull updates stateRev before early return so steady t
   createdChannel.onmessage(frame);
   await new Promise(resolve => setTimeout(resolve, 15));
   assert.equal(editorViewCount, 2, "subsequent frame with stateRev 7 must not re-poll after tick response");
+});
+
+test("Keysounds mode hands every track's chord conflicts and the track's name to the roll", async () => {
+  const host = await readFile(new URL("../ui/src/parts/KeysoundsModal.svelte", import.meta.url), "utf8");
+  const surface = await readFile(new URL("../ui/src/parts/keysounds/KeysoundRollSurface.svelte", import.meta.url), "utf8");
+  // The same list the Inspector counts, so the ruler's ▼ marks and the count agree.
+  assert.match(host, /const chordConflicts = \$derived\(summary\?\.chordConflicts \?\? \[\]\);/);
+  assert.match(host, /<KeysoundRollSurface[^]*?\{chordConflicts\}[^]*?trackName=\{track\.name\}/);
+  assert.match(surface, /bridge\.keysoundRoll = \{[^}]*chords: chordConflicts,/);
+});
+
+test("Keysounds mode's Shift+drag ramp takes its shape from the keys and the wheel, not the shape menu", async () => {
+  const lane = await readFile(new URL("../ui/src/parts/keysounds/KeysoundVelocitySurface.svelte", import.meta.url), "utf8");
+  // The press starts from the keys held (linear, Alt +1, Ctrl −1), a move keeps or changes it, the wheel bends it.
+  assert.match(lane, /if \(event\.shiftKey\) \{[^}]*ramp = \{[^}]*curve: rampCurve\(event\) \};/);
+  assert.match(lane, /ramp = \{[^}]*curve: rampCurve\(event, ramp\.curve\),[^}]*\};/);
+  assert.match(lane, /function onWheel\(event\) \{[^]*?ramp = \{ \.\.\.ramp, curve: rampBend\(ramp\.curve, event\.deltaY \|\| event\.deltaX\) \};/);
+  // What is drawn is what is sent.
+  assert.match(lane, /bridge\.callAction\("keysoundsRoll", "ramp", drawn\)/);
+  assert.doesNotMatch(lane, /ramp-shape|rampShape/);
 });

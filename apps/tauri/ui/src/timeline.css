@@ -328,6 +328,9 @@
   min-height: 0;
   overflow: hidden;
 }
+/* Keysound ramps take their shape from the keys held, listed in the bottom panel; the shape menu
+   belongs to Hitsounds mode's Ramp tool. */
+#editor-arrange.keysounds-active #ramp-shape { display: none; }
 /* Over the volume canvas, which shows note velocity in this mode: the hit volume lane is out of reach. */
 #editor-arrange.keysounds-active > #volume-controller-panel {
   position: relative;

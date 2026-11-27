@@ -1122,8 +1122,22 @@ try {
     expect(Math.abs(shown.velocity.x - shown.controller.x) < 1 && shown.velocity.height >= shown.controller.height - 1,
       `the velocity surface does not cover the volume canvas: ${JSON.stringify([shown.velocity, shown.controller])}`);
 
+    // An empty track says what to do in the roll; the ramp keys stand where the shape menu was.
+    const emptyChrome = await read(() => {
+      const shown = element => !!element && element.getBoundingClientRect().width > 0;
+      return {
+        hint: document.querySelector(".ks-empty")?.textContent.trim() ?? "",
+        legend: shown(document.querySelector(".ramp-keys")),
+        menu: shown(document.getElementById("ramp-shape")),
+      };
+    });
+    expect(/^No notes on .+ yet\. Click in the roll to place one\.$/.test(emptyChrome.hint),
+      `the empty track shows no hint in the roll: "${emptyChrome.hint}"`);
+    expect(emptyChrome.legend && !emptyChrome.menu, `the bottom panel shows the ramp shape menu, not the ramp keys: ${JSON.stringify(emptyChrome)}`);
+
     await page().mouse.click(shown.surface.x + 200, shown.surface.y + 40);
     await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a click on the roll placed no note");
+    await until(() => !document.querySelector(".ks-empty"), null, "the empty-track hint stays after a note is placed");
     // The colour on the canvas where the note should be, from its time on the editor's own axis.
     const noteIsDrawn = () => {
       const roll = window.dawsuUi.bridge.keysoundRoll;
@@ -1132,12 +1146,12 @@ try {
       const canvas = document.getElementById("grid");
       if (!note || !canvas.clientWidth) return false;
       const scale = canvas.width / canvas.clientWidth;
-      // Just inside the note's top right corner, clear of its border and of the note name.
+      // On the note's top edge, near its right end, clear of the note name.
       const x = ((note.endMs - scene.viewStart) * scene.zoom - 3) * scale;
-      const y = (roll.top + roll.pitches.indexOf(note.pitch) * roll.rowHeight - roll.scrollY + 2.5) * scale;
-      const [red, green, blue] = canvas.getContext("2d").getImageData(Math.round(x), Math.round(y), 1, 1).data;
-      // The selected note's gold, not a dark lane.
-      return red > 150 && green > 110 && blue < 170 && red - blue > 60;
+      const y = (roll.top + roll.pitches.indexOf(note.pitch) * roll.rowHeight - roll.scrollY + 0.5) * scale;
+      const [red, green, blue] = canvas.getContext("2d").getImageData(Math.round(x), Math.floor(y), 1, 1).data;
+      // The selected note's white ring, not a dark lane.
+      return red > 200 && green > 200 && blue > 200;
     };
     await until(noteIsDrawn, null, "the placed note is not drawn at its time on the lanes' canvas");
 

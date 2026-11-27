@@ -613,6 +613,8 @@
           {notes}
           {ghostNotes}
           {objectTimes}
+          {chordConflicts}
+          trackName={track.name}
           bind:selected
           {loading}
           {trackId}

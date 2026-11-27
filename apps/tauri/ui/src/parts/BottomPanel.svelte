@@ -8,6 +8,9 @@
   const tab = $derived(bridge.bottomTab);
   // The value lane shows hit volume, or note velocity in Keysounds mode.
   const valueLane = $derived(bridge.mode === "keysounds" ? "Velocity" : "Volume");
+  // Keysounds mode hides the ramp shape menu (#ramp-shape): its ramps take their shape from the keys
+  // held while drawing, listed here in the menu's place (plan revision 4, Q2 C and Q6 A).
+  const rampKeys = $derived(bridge.mode === "keysounds" && tab === "volume");
   const disabled = $derived(bridge.disabled);
 
   function choose(name) {
@@ -57,9 +60,29 @@
     <button type="button" aria-pressed={tab === "volume"} onclick={() => choose("volume")}>{valueLane}</button>
     <button type="button" aria-pressed={tab === "mixer"} onclick={() => choose("mixer")}>Mixer</button>
   </div>
+  {#if rampKeys}
+    <p class="ramp-keys" aria-label="Velocity ramp keys">
+      <kbd>Shift</kbd>+drag ramp<br>
+      +<kbd>Alt</kbd> ease in · +<kbd>Ctrl</kbd> ease out<br>
+      wheel while dragging bends
+    </p>
+  {/if}
 {/if}
 
 <style>
+  .ramp-keys {
+    margin: 6px 2px 0;
+    color: var(--editor-secondary);
+    font: 11px/1.6 var(--font-ui);
+  }
+  .ramp-keys kbd {
+    padding: 0 3px;
+    border: 1px solid var(--editor-border);
+    border-radius: 3px;
+    background: var(--editor-control);
+    color: var(--editor-text);
+    font: 10px var(--font-ui);
+  }
   .seg {
     height: 30px;
     flex: none;

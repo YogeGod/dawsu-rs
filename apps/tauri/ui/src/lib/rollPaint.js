@@ -12,6 +12,16 @@ export const ROLL_ROW_MAX = 28;
 export const NOTE_EDGE_PX = 6;
 const NOTE_MIN_PX = 4;
 const VELOCITY_BAR_PX = 3;
+// A hollow or selected note's velocity bar is wider, so its outline shows.
+const VELOCITY_BAR_WIDE_PX = 5;
+// A wheel turn during a Shift+drag ramp bends it this much, up to ±RAMP_BEND_MAX.
+export const RAMP_BEND_STEP = 0.25;
+const RAMP_BEND_MAX = 2;
+// A chord conflict's ▼ on the ruler: half its width and its height, in px.
+const CHORD_MARK_HALF_PX = 4;
+const CHORD_MARK_HEIGHT_PX = 6;
+// Conflicts closer than this on the ruler share one ▼.
+const CHORD_MARK_MERGE_PX = 8;
 
 const colours = {
   lane: "#1c1c1e",
@@ -22,12 +32,13 @@ const colours = {
   objectLine: "rgba(239,193,106,.28)",
   sustain: "rgba(56,189,248,.12)",
   ghost: "rgba(148,163,184,.22)",
-  note: "#0a84ff",
-  noteSelected: "#efc16a",
   noteMuted: "#6e6e75",
   noteEdge: "rgba(0,0,0,.45)",
-  noteSelectedEdge: "#fff3d6",
+  noteSelectedEdge: "#ffffff",
   noteName: "#08080a",
+  // --editor-warning in tokens.css.
+  chordMark: "#ffd60a",
+  chordMarkEdge: "#08080a",
   velocityLane: "#0e0e10",
   velocityGuide: "rgba(255,255,255,.06)",
   ramp: "#efc16a",
@@ -36,6 +47,30 @@ const colours = {
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const pitchName = pitch => `${NAMES[pitch % 12]}${Math.floor(pitch / 12) - 1}`;
 const isBlack = pitch => NAMES[pitch % 12].length > 1;
+
+// A note's colour from its velocity: blue (215°) at 1 through purple to red (360°) at 127, linear
+// (plan revision 4, Q1 A). Notes and velocity bars share it.
+export function velocityColour(velocity) {
+  const clamped = Math.min(127, Math.max(1, Number(velocity) || 1));
+  return `hsl(${215 + 145 * (clamped - 1) / 126}, 85%, 62%)`;
+}
+
+// What Generate does with a note, as the roll draws it: "grey" when the matcher never considers it
+// (muted note, or a muted or not-soloed track: synced null), "hollow" when it is considered and left
+// out (synced false), else "filled".
+function noteState(note) {
+  if (note.muted || note.synced === null) return "grey";
+  return note.synced === false ? "hollow" : "filled";
+}
+
+// A Shift+drag ramp's curve from the keys held: Alt eases in (+1), Ctrl eases out (−1), neither
+// keeps `fallback` (0 at the press, so plain Shift+drag is linear).
+export const rampCurve = (event, fallback = 0) => (event.altKey ? 1 : event.ctrlKey ? -1 : fallback);
+
+// A wheel turn while a ramp is drawn bends it one step, down for a turn towards the user. A turn
+// with no step (0) leaves it alone.
+export const rampBend = (curve, delta) => !delta ? curve
+  : Math.max(-RAMP_BEND_MAX, Math.min(RAMP_BEND_MAX, curve + (delta > 0 ? RAMP_BEND_STEP : -RAMP_BEND_STEP)));
 
 // What visibleNotes() needs to know about a track's notes, found once per summary and not once per
 // paint: the longest note, and whether the notes are in start order.
@@ -181,14 +216,16 @@ export function paintRoll(context2d, width, view, roll, model, drawGrid = null) 
     const box = noteRect(dragged, view, roll);
     if (!box || box.y + box.h < top || box.y > top + height) return;
     const selected = model.selected === note.index;
-    context2d.globalAlpha = 0.45 + 0.55 * note.velocity / 127;
-    context2d.fillStyle = note.muted ? colours.noteMuted : selected ? colours.noteSelected : colours.note;
-    context2d.fillRect(box.x, box.y, box.w, box.h);
-    context2d.globalAlpha = 1;
-    context2d.strokeStyle = selected ? colours.noteSelectedEdge : colours.noteEdge;
+    const state = noteState(note);
+    const tone = velocityColour(dragged.velocity);
+    if (state !== "hollow") {
+      context2d.fillStyle = state === "grey" ? colours.noteMuted : tone;
+      context2d.fillRect(box.x, box.y, box.w, box.h);
+    }
+    context2d.strokeStyle = selected ? colours.noteSelectedEdge : state === "hollow" ? tone : colours.noteEdge;
     context2d.strokeRect(box.x + 0.5, box.y + 0.5, box.w - 1, box.h - 1);
     if (rowHeight >= 11 && box.w >= 22) {
-      context2d.fillStyle = colours.noteName;
+      context2d.fillStyle = state === "hollow" ? tone : colours.noteName;
       context2d.fillText(pitchName(dragged.pitch), box.x + 3, box.y + box.h / 2 + 0.5);
     }
   };
@@ -224,8 +261,24 @@ export function paintVelocity(context2d, width, height, view, model) {
   for (const note of visibleNotes(model.notes, view.start, endMs, model.index)) {
     const velocity = shownVelocity(note, model);
     const barHeight = Math.max(1, Math.round((height - 2) * velocity / 127));
-    context2d.fillStyle = note.muted ? colours.noteMuted : model.selected === note.index ? colours.noteSelected : colours.note;
-    context2d.fillRect(Math.round((note.startMs - view.start) * view.zoom), height - barHeight, VELOCITY_BAR_PX, barHeight);
+    const state = noteState(note);
+    const selected = model.selected === note.index;
+    const x = Math.round((note.startMs - view.start) * view.zoom);
+    const y = height - barHeight;
+    const width = state === "hollow" || selected ? VELOCITY_BAR_WIDE_PX : VELOCITY_BAR_PX;
+    const tone = state === "grey" ? colours.noteMuted : velocityColour(velocity);
+    // A bar mirrors its note: hollow is an outline, and the selected bar wears the white ring.
+    if (state === "hollow") {
+      context2d.strokeStyle = tone;
+      context2d.strokeRect(x + 0.5, y + 0.5, width - 1, barHeight - 1);
+    } else {
+      context2d.fillStyle = tone;
+      context2d.fillRect(x, y, width, barHeight);
+    }
+    if (selected) {
+      context2d.strokeStyle = colours.noteSelectedEdge;
+      context2d.strokeRect(x - 0.5, y - 0.5, width + 1, barHeight + 1);
+    }
   }
   const ramp = model.ramp;
   if (ramp) {
@@ -240,6 +293,45 @@ export function paintVelocity(context2d, width, height, view, model) {
       if (i) context2d.lineTo(x, y);
       else context2d.moveTo(x, y);
     }
+    context2d.stroke();
+  }
+}
+
+// The chord conflicts in view as ▼ marks on the ruler, left to right: { x, conflicts }. Every
+// track's conflicts are marked, the same set the Inspector counts; conflicts within a few px share
+// a mark, so chords on one object in two tracks draw once.
+export function chordMarks(conflicts, start, zoom, width) {
+  const seen = (conflicts ?? [])
+    .map(conflict => ({ conflict, x: (conflict.timeMs - start) * zoom }))
+    .filter(({ x }) => x >= 0 && x <= width)
+    .sort((first, second) => first.x - second.x);
+  const marks = [];
+  for (const { conflict, x } of seen) {
+    const last = marks[marks.length - 1];
+    if (last && x - last.x < CHORD_MARK_MERGE_PX) last.conflicts.push(conflict);
+    else marks.push({ x, conflicts: [conflict] });
+  }
+  return marks;
+}
+
+// The ruler's tooltip over a chord mark: its chords, and where to resolve them.
+export function chordMarkTitle(mark) {
+  const chords = mark.conflicts.map(conflict => "Chord " + conflict.pitches.map(pitchName).join(" "));
+  return [...chords, "Resolve chords from Generate in the Inspector."].join("\n");
+}
+
+// Each mark as a warning-yellow ▼ resting on the ruler's bottom edge, `bottom`, pointing at its object.
+export function drawChordMarks(context2d, marks, bottom) {
+  for (const { x } of marks) {
+    const centre = Math.round(x) + 0.5;
+    context2d.beginPath();
+    context2d.moveTo(centre - CHORD_MARK_HALF_PX, bottom - 1 - CHORD_MARK_HEIGHT_PX);
+    context2d.lineTo(centre + CHORD_MARK_HALF_PX, bottom - 1 - CHORD_MARK_HEIGHT_PX);
+    context2d.lineTo(centre, bottom - 1);
+    context2d.closePath();
+    context2d.fillStyle = colours.chordMark;
+    context2d.fill();
+    context2d.strokeStyle = colours.chordMarkEdge;
     context2d.stroke();
   }
 }

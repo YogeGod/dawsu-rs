@@ -99,6 +99,8 @@ export function createState() {
     // JSON of the last view's problems; "[]" is no problems, so the first show() keeps cached layers.
     outputProblemList: "[]",
     rulerWarningMarkers: [],
+    // Keysounds mode's chord conflict marks on the ruler: { x, conflicts }.
+    rulerChordMarks: [],
 
     pending: Promise.resolve(),
     requests: 0,

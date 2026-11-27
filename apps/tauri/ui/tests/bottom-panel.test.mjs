@@ -222,3 +222,19 @@ test("before a map is open, or while a job runs, the Mixer takes no input", () =
     for (const tag of tags(html, "div").filter(tag => /role="slider"/.test(tag))) assert.match(tag, /aria-disabled="true"/);
   }
 });
+
+test("Keysounds mode names the value lane Velocity and lists the ramp keys where the shape menu was", () => {
+  try {
+    bridge.mode = "keysounds";
+    const html = panel(view());
+    assert.deepEqual(buttonsOf(html).map(([name]) => name), ["Velocity", "Mixer"]);
+    const legend = html.match(/<p class="ramp-keys[^"]*"[^>]*>([^]*?)<\/p>/);
+    assert.ok(legend, "the key legend shows on the Velocity tab");
+    assert.equal(text(legend[1]), "Shift +drag ramp + Alt ease in · + Ctrl ease out wheel while dragging bends");
+    assert.doesNotMatch(panel(view(), "mixer"), /ramp-keys/, "not on the Mixer tab");
+    assert.doesNotMatch(panel(view({ panels: { controller: false } })), /ramp-keys/, "not while folded");
+  } finally {
+    bridge.mode = "hitsounds";
+  }
+  assert.doesNotMatch(panel(view()), /ramp-keys/, "Hitsounds mode keeps its shape menu and no legend");
+});

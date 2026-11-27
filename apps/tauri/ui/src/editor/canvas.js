@@ -7,7 +7,7 @@ import {
   trackShade, visibleVolumeLanes, visibleWarningMarkers, volumeColour,
 } from "./helpers.js";
 import { visibleViewerOverlay } from "../lib/node-graph.js";
-import { paintRoll, paintVelocity } from "../lib/rollPaint.js";
+import { chordMarks, drawChordMarks, paintRoll, paintVelocity } from "../lib/rollPaint.js";
 
 export function attachCanvas(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -1514,6 +1514,9 @@ export function attachCanvas(ctx) {
       if (bx < 0 || bx > g.width) continue;
       line(g.ctx, "rgba(121,215,220,.16)", bx, 0, bx, g.height);
     }
+    // Keysounds mode: every track's chord conflicts, a ▼ each on the ruler's bottom edge. Passive:
+    // the ruler's tooltip names them, and a press there still seeks. Found before the tooltip reads them.
+    state.rulerChordMarks = roll ? chordMarks(roll.chords, start, zoom, r.width) : [];
     state.rulerWarningMarkers = state.soundFirst ? []
       : visibleWarningMarkers(state.view.outputProblems ?? [], state.scene.path, start, zoom, r.width);
     ctx.refreshRulerWarningTooltip();
@@ -1521,6 +1524,7 @@ export function attachCanvas(ctx) {
     for (const marker of state.rulerWarningMarkers) {
       r.ctx.fillRect(marker.x - 3, r.height - 9, 6, 6);
     }
+    drawChordMarks(r.ctx, state.rulerChordMarks, rulerBandHeight);
     drawOverview(o, start, g.width / zoom);
     // Only playback reuses the layers, so only then are they copied, and only once the same view has
     // painted twice: while Centre scrolls every frame, a copy would never be used.

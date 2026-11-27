@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  hitTest, maxScrollY, noteIndex, noteRect, paintRoll, paintVelocity, pointAt, rollWheelAction, visibleNotes,
-  visibleRows,
+  RAMP_BEND_STEP, chordMarkTitle, chordMarks, drawChordMarks, hitTest, maxScrollY, noteIndex, noteRect, paintRoll,
+  paintVelocity, pointAt, rampBend, rampCurve, rollWheelAction, velocityColour, visibleNotes, visibleRows,
 } from "../src/lib/rollPaint.js";
 
 test("the roll takes only the plain wheel and Ctrl+Shift+wheel; every other turn is the editor's", () => {
@@ -23,16 +23,18 @@ function fakeContext() {
     calls,
     fillStyle: "", strokeStyle: "", globalAlpha: 1, font: "", textBaseline: "",
     save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, moveTo() {}, lineTo() {}, stroke() {},
-    fillRect(x, y, w, h) { calls.push({ kind: "fill", style: this.fillStyle, x, y, w, h }); },
+    fillRect(x, y, w, h) { calls.push({ kind: "fill", style: this.fillStyle, alpha: this.globalAlpha, x, y, w, h }); },
     strokeRect(x, y, w, h) { calls.push({ kind: "stroke", style: this.strokeStyle, x, y, w, h }); },
-    fillText(text, x, y) { calls.push({ kind: "text", text, x, y }); },
+    fillText(text, x, y) { calls.push({ kind: "text", style: this.fillStyle, text, x, y }); },
+    fill() { calls.push({ kind: "path", style: this.fillStyle }); },
+    closePath() {},
   };
 }
 
 const pitches = Array.from({ length: 49 }, (_, i) => 84 - i); // C6 down to C2
 const roll = { top: 0, height: 280, rowHeight: 14, scrollY: 0, pitches };
 const note = (index, startMs, endMs, pitch = 72, velocity = 100) => ({ index, startMs, endMs, pitch, velocity, muted: false });
-const noteFills = context2d => context2d.calls.filter(call => call.kind === "fill" && (call.style === "#0a84ff" || call.style === "#efc16a"));
+const noteFills = context2d => context2d.calls.filter(call => call.kind === "fill" && call.style.startsWith("hsl("));
 
 test("only the notes inside the visible time window are painted", () => {
   // 10,000 notes one second apart; the window 100.0 s to 104.0 s holds notes 100..104 whole and
@@ -108,7 +110,6 @@ test("the dragged note is drawn where it would land, and the selected one last",
     notes, index: noteIndex(notes), selected: 0, drag: { index: 0, startMs: 2000, endMs: 2200, pitch: 70 },
   });
   const fills = noteFills(context2d);
-  assert.equal(fills.at(-1).style, "#efc16a");
   assert.equal(fills.at(-1).x, 200);
   assert.equal(fills.at(-1).y, (84 - 70) * 14);
 });
@@ -118,10 +119,124 @@ test("the velocity lane draws one bar per visible note at the note's start", () 
   const context2d = fakeContext();
   paintVelocity(context2d, 800, 66, { start: 0, zoom: 0.1 }, { notes, index: noteIndex(notes), selected: 1 });
   const bars = noteFills(context2d);
-  assert.deepEqual(bars.map(bar => [bar.x, bar.h, bar.style]), [[100, 64, "#0a84ff"], [200, 32, "#efc16a"]]);
+  assert.deepEqual(bars.map(bar => [bar.x, bar.h, bar.style]), [[100, 64, velocityColour(127)], [200, 32, velocityColour(64)]]);
 
   // A bar being dragged shows the dragged value.
   const dragged = fakeContext();
   paintVelocity(dragged, 800, 66, { start: 0, zoom: 0.1 }, { notes, index: noteIndex(notes), selected: null, velocityDrag: { index: 1, velocity: 127 } });
   assert.equal(noteFills(dragged)[1].h, 64);
+});
+
+const hue = colour => Number(colour.match(/^hsl\((\d+(?:\.\d+)?), 85%, 62%\)$/)[1]);
+
+test("velocity colour runs linearly from blue at 1 to red at 127", () => {
+  assert.equal(hue(velocityColour(1)), 215);
+  assert.equal(hue(velocityColour(127)), 360);
+  assert.equal(hue(velocityColour(64)), 215 + 145 * 63 / 126);
+  assert.equal(velocityColour(0), velocityColour(1), "clamped below");
+  assert.equal(velocityColour(200), velocityColour(127), "clamped above");
+});
+
+// The calls that paint one note, found by its box's x.
+const at = (context2d, x) => context2d.calls.filter(call => call.x === x || call.x === x + 0.5 || call.x === x + 3);
+
+test("a note's look: filled by velocity, hollow when Generate leaves it out, grey when muted, white ring when selected", () => {
+  const notes = [
+    { ...note(0, 1000, 1500, 72, 100), synced: true },
+    { ...note(1, 2000, 2500, 72, 40), synced: false },
+    { ...note(2, 3000, 3500, 72, 90), synced: null },
+    { ...note(3, 4000, 4500, 72, 90), synced: true, muted: true },
+    { ...note(4, 5000, 5500, 72, 70), synced: true },
+  ];
+  const context2d = fakeContext();
+  paintRoll(context2d, 800, { start: 0, zoom: 0.1 }, roll, { notes, index: noteIndex(notes), selected: 4 });
+
+  const filled = at(context2d, 100);
+  assert.deepEqual(filled.find(call => call.kind === "fill"), { kind: "fill", style: velocityColour(100), alpha: 1, x: 100, y: 168, w: 50, h: 13 },
+    "a solid fill: hue alone shows velocity");
+
+  const hollow = at(context2d, 200);
+  assert.equal(hollow.filter(call => call.kind === "fill").length, 0, "no fill");
+  assert.equal(hollow.find(call => call.kind === "stroke").style, velocityColour(40));
+  assert.equal(hollow.find(call => call.kind === "text").style, velocityColour(40), "the name in the velocity colour");
+
+  assert.equal(at(context2d, 300).find(call => call.kind === "fill").style, "#6e6e75", "synced null is grey");
+  assert.equal(at(context2d, 400).find(call => call.kind === "fill").style, "#6e6e75", "muted is grey");
+
+  const selected = at(context2d, 500);
+  assert.equal(selected.find(call => call.kind === "fill").style, velocityColour(70), "fill unchanged");
+  assert.equal(selected.find(call => call.kind === "stroke").style, "#ffffff");
+});
+
+test("other tracks' notes are grey ghosts", () => {
+  const context2d = fakeContext();
+  paintRoll(context2d, 800, { start: 0, zoom: 0.1 }, roll, {
+    notes: [], index: noteIndex([]), selected: null, ghosts: [note(9, 1000, 1500, 72, 127)],
+  });
+  const ghost = context2d.calls.find(call => call.kind === "fill" && call.x === 100);
+  assert.equal(ghost.style, "rgba(148,163,184,.22)");
+});
+
+test("velocity bars mirror their notes: hollow is an outline, grey stays grey, selected is wide with a white ring", () => {
+  const notes = [
+    { ...note(0, 1000, 1200, 72, 127), synced: true },
+    { ...note(1, 2000, 2200, 72, 64), synced: false },
+    { ...note(2, 3000, 3200, 72, 64), synced: null },
+    { ...note(3, 4000, 4200, 72, 64), synced: true },
+  ];
+  const context2d = fakeContext();
+  paintVelocity(context2d, 800, 66, { start: 0, zoom: 0.1 }, { notes, index: noteIndex(notes), selected: 3 });
+  const plain = at(context2d, 100);
+  assert.deepEqual(plain.map(call => [call.kind, call.style, call.w]), [["fill", velocityColour(127), 3]]);
+  const hollow = at(context2d, 200);
+  assert.deepEqual(hollow.map(call => [call.kind, call.style, call.w]), [["stroke", velocityColour(64), 4]]);
+  assert.equal(at(context2d, 300)[0].style, "#6e6e75");
+  const selected = context2d.calls.filter(call => call.x >= 399 && call.x <= 401);
+  assert.deepEqual(selected.map(call => [call.kind, call.style, call.w]),
+    [["fill", velocityColour(64), 5], ["stroke", "#ffffff", 6]]);
+});
+
+test("a Shift+drag ramp is linear; Alt eases in, Ctrl eases out, and the wheel bends it in steps up to ±2", () => {
+  const press = keys => rampCurve({ altKey: false, ctrlKey: false, ...keys });
+  assert.equal(press({}), 0);
+  assert.equal(press({ altKey: true }), 1);
+  assert.equal(press({ ctrlKey: true }), -1);
+  // Holding the key during the drag keeps the shape; letting go keeps what the wheel made.
+  assert.equal(rampCurve({ altKey: false, ctrlKey: false }, 0.75), 0.75);
+  assert.equal(RAMP_BEND_STEP, 0.25);
+  assert.equal(rampBend(0, 120), 0.25);
+  assert.equal(rampBend(0, -120), -0.25);
+  assert.equal(rampBend(2, 120), 2);
+  assert.equal(rampBend(-2, -120), -2);
+  // A turn with no vertical step (Shift+wheel can arrive as deltaX only) leaves the curve alone;
+  // the caller passes `deltaY || deltaX`.
+  assert.equal(rampBend(0.5, 0), 0.5);
+});
+
+test("chord marks: one ▼ per conflict time in view, conflicts at one time share it", () => {
+  const conflicts = [
+    { timeMs: 1000, trackId: 1, pitches: [60, 64, 67] },
+    { timeMs: 1000, trackId: 2, pitches: [48, 55] },
+    { timeMs: 3000, trackId: 1, pitches: [62, 65] },
+    { timeMs: 99000, trackId: 1, pitches: [60, 64] },
+  ];
+  const marks = chordMarks(conflicts, 0, 0.1, 800);
+  assert.deepEqual(marks.map(mark => [mark.x, mark.conflicts.length]), [[100, 2], [300, 1]]);
+  assert.equal(chordMarkTitle(marks[0]), "Chord C4 E4 G4\nChord C3 G3\nResolve chords from Generate in the Inspector.");
+  assert.deepEqual(chordMarks(null, 0, 0.1, 800), []);
+
+  const context2d = fakeContext();
+  drawChordMarks(context2d, marks, 40);
+  assert.deepEqual(context2d.calls.filter(call => call.kind === "path").map(call => call.style), ["#ffd60a", "#ffd60a"]);
+});
+
+test("an empty track shows one hint line in the roll, and only while it has no notes", async () => {
+  const { render } = await import("svelte/server");
+  const { default: KeysoundRollSurface } = await import("../src/parts/keysounds/KeysoundRollSurface.svelte");
+  const hint = props => render(KeysoundRollSurface, { props: { pitches, trackId: 4, trackName: "Lead", ...props } }).body
+    .replace(/<!--[^]*?-->/g, "").match(/<p class="ks-empty[^"]*"[^>]*>([^<]*)<\/p>/)?.[1] ?? null;
+  assert.equal(hint({ notes: [] }), "No notes on Lead yet. Click in the roll to place one.");
+  assert.equal(hint({ notes: [note(0, 0, 100)] }), null);
+  assert.equal(hint({ notes: [], loading: true }), null);
+  assert.equal(hint({ notes: [], trackId: null }), null);
 });

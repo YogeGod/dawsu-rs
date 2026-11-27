@@ -658,3 +658,32 @@ test("volume editor lane shows only the active lane unless hits are selected acr
   assert.deepEqual(barXs(), [50, 100, 150]);
   assert.deepEqual(ticks(), [150]);
 });
+
+test("Keysounds mode marks every chord conflict with a yellow ▼ on the ruler, named in its tooltip", async () => {
+  const { get, paint, evaluate } = await canvases();
+  const ruler = get("ruler");
+  const marks = () => ruler.calls.filter((call, at) => call.name === "fill" && ruler.calls[at - 1]?.name === "closePath" &&
+    call.fill === "#ffd60a");
+  // Two tracks chord on the object at 1000 ms (one mark) and one track at 2000 ms: 0.1 px/ms puts them at 100 and 200.
+  evaluate(`window.dawsuUi = { keysoundRoll: () => ({ top: 0, height: 80, rowHeight: 14, scrollY: 0, pitches: [60],
+    notes: [], index: { longest: 0, sorted: true },
+    chords: [{ timeMs: 1000, trackId: 1, pitches: [60, 64, 67] }, { timeMs: 1000, trackId: 2, pitches: [48, 55] },
+      { timeMs: 2000, trackId: 1, pitches: [62, 65] }] }) }`);
+  paint("0");
+  assert.equal(marks().length, 2);
+  const tips = ruler.calls.filter(call => call.name === "lineTo" && call.args[1] === 39).map(call => call.args[0]);
+  assert.deepEqual(tips, [100.5, 200.5], "each ▼ points down at its object, on the ruler's bottom edge");
+  // Passive: the mark only names its chords; a press on the ruler still seeks.
+  evaluate("rulerPointer = { clientX: 101, clientY: 36 }; refreshRulerWarningTooltip()");
+  assert.equal(ruler.title, "Chord C4 E4 G4\nChord C3 G3\nResolve chords from Generate in the Inspector.");
+  evaluate("rulerPointer = { clientX: 150, clientY: 36 }; refreshRulerWarningTooltip()");
+  assert.equal(ruler.title, "");
+  // Out of Keysounds mode there is no roll and no mark, and the next paint clears the mark's tooltip.
+  evaluate("rulerPointer = { clientX: 101, clientY: 36 }; refreshRulerWarningTooltip()");
+  assert.match(ruler.title, /^Chord C4/);
+  evaluate("window.dawsuUi = {}");
+  paint("0");
+  assert.equal(ruler.title, "", "the paint that drops the marks also drops their tooltip");
+  assert.equal(marks().length, 0);
+  assert.deepEqual(evaluate("rulerChordMarks"), []);
+});
