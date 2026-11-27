@@ -121,8 +121,8 @@ export const COLOR_ROWS = [
   { id: "scheme", group: "Custom Colors", label: "User Color Scheme", mainKey: "panel", hasHue: true },
   { id: "accent", group: "Custom Colors", label: "Accent Color", mainKey: "accent", hasHue: true },
   { id: "gridBg", group: "Grid Colors", label: "Background", mainKey: "canvas", hasHue: false },
-  { id: "gridLines", group: "Grid Colors", label: "Grid Lines", mainKey: "barLine", hasHue: false, requires: "gridBg" },
-  { id: "gridCycle", group: "Grid Colors", label: "Cycle Region", mainKey: "cycle", hasHue: false, requires: "gridBg" },
+  { id: "gridLines", group: "Grid Colors", label: "Grid Lines", mainKey: "barLine", hasHue: true },
+  { id: "gridCycle", group: "Grid Colors", label: "Cycle Region", mainKey: "cycle", hasHue: false },
   { id: "rulerBg", group: "Ruler Colors", label: "Background", mainKey: "ruler", hasHue: false },
   { id: "rulerInactive", group: "Ruler Colors", label: "Inactive Cycle", mainKey: "locator", hasHue: true },
   { id: "rulerActive", group: "Ruler Colors", label: "Active Cycle", mainKey: "cycle", hasHue: true },
@@ -194,15 +194,27 @@ export function resolvePalette(config) {
     base.alternateRow = hsbToHex({ ...bg, b: Math.min(1, bg.b + 0.03) });
     base.activeRow = hsbToHex({ ...bg, b: Math.min(1, bg.b + 0.09) });
     base.volume = base.canvas;
-    if (rows.gridLines) {
-      const lineHex = hsbToHex(tinted(rows.gridLines));
-      base.barLine = lineHex;
-      base.border = mixHex(lineHex, base.canvas, 0.4);
-      base.grid = mixHex(lineHex, base.canvas, 0.7);
-    }
-    if (rows.gridCycle) {
-      base.loop = hsbToHex(tinted(rows.gridCycle), 0x40);
-    }
+  }
+
+  if (rows.gridLines) {
+    const lineHex = hsbToHex(rows.gridLines);
+    base.barLine = lineHex;
+    base.gridBar = lineHex;
+    base.gridBeat = mixHex(lineHex, base.canvas, 0.45);
+    base.gridSub = mixHex(lineHex, base.canvas, 0.72);
+    base.grid = base.gridSub;
+  } else if ((config?.scheme ?? "obsidian") === "obsidian" && !rows.scheme && !rows.gridBg) {
+    base.gridSub = "rgba(255,255,255,.04)";
+    base.gridBeat = "rgba(255,255,255,.07)";
+    base.gridBar = "rgba(255,255,255,.26)";
+  } else {
+    base.gridBar = base.barLine;
+    base.gridBeat = mixHex(base.barLine, base.canvas, 0.45);
+    base.gridSub = mixHex(base.barLine, base.canvas, 0.72);
+  }
+
+  if (rows.gridCycle) {
+    base.loop = hsbToHex(tinted(rows.gridCycle), 0x40);
   }
 
   if (rows.rulerBg) base.ruler = hsbToHex(tinted(rows.rulerBg));
@@ -253,6 +265,9 @@ export function applyColorConfig(config, doc = null) {
     tl.divider = palette.border;
     tl.beatLine = palette.border;
     tl.barLine = palette.barLine;
+    tl.gridSub = palette.gridSub;
+    tl.gridBeat = palette.gridBeat;
+    tl.gridBar = palette.gridBar;
     tl.cycle = palette.cycle;
     tl.loop = palette.loop;
     tl.locator = palette.locator;

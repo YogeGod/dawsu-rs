@@ -99,7 +99,10 @@ export function attachTimeline(ctx) {
       gesture.lastRow = lane;
     }
     const row = valueLane || gesture.panning ? state.view.activeLane : gesture.lastRow;
-    let ms = gesture.start + x / gesture.zoom;
+    const activeDrag = gesture.marquee || gesture.markingRange;
+    const startMs = activeDrag && state.scene ? state.scene.viewStart : gesture.start;
+    const zoomPx = activeDrag && state.scene ? state.scene.zoom : gesture.zoom;
+    let ms = startMs + x / zoomPx;
     const tool = !valueLane && event.altKey ? "Draw" : state.view.tool;
     const rightClick = gesture.button === "right";
     const volumeLanes = valueLane
@@ -123,9 +126,7 @@ export function attachTimeline(ctx) {
         ms = hit;
       }
     }
-    const visibleRows = state.view.drumView?.enabled
-      ? gesture.rows.filter(r => typeof r === "number")
-      : null;
+    const visibleRows = gesture.rows.filter(r => typeof r === "number");
     return {
       kind: "pointer", phase, ms, row, x, y,
       value: valueLane ? limit((height - y) / Math.max(1, height - 3) * 100, 1, 100) : null,
@@ -666,6 +667,90 @@ export function attachTimeline(ctx) {
     $("lane-taller").disabled = off || state.scene.rowHeight >= 65;
   }
 
+  let marqueeScrollFrame = 0;
+
+  function dragAllowsScroll(drag = state.drag) {
+    return Boolean(drag && (drag.marquee || drag.markingRange));
+  }
+
+  function updateMarqueeDragPoint(drag, clientPoint) {
+    if (!drag || !clientPoint || !state.scene) return;
+    const { x, y: localY } = pointerIn(grid, clientPoint);
+    const y = localY + $("scroll").scrollTop;
+    const ms = Math.max(0, state.scene.viewStart + x / state.scene.zoom);
+    drag.lastPoint = { x, y, ms };
+    drag.lastVisualRow = limit(Math.floor(y / state.scene.rowHeight), 0, Math.max(0, drag.rows.length - 1));
+  }
+
+  function scrollGridVertically(deltaY) {
+    const scroll = $("scroll");
+    const maxTop = Number.isFinite(scroll.scrollHeight) && Number.isFinite(scroll.clientHeight)
+      ? Math.max(0, scroll.scrollHeight - scroll.clientHeight)
+      : Infinity;
+    const nextTop = limit(scroll.scrollTop + deltaY, 0, maxTop);
+    if (nextTop !== scroll.scrollTop) {
+      scroll.scrollTop = nextTop;
+      return true;
+    }
+    return false;
+  }
+
+  function marqueeEdgeDelta(clientPoint) {
+    const scroll = $("scroll");
+    const { x, rect } = pointerIn(grid, clientPoint);
+    const s = uiScale();
+    const scrollRect = scroll.getBoundingClientRect?.() ?? rect;
+    const width = (rect.width ?? grid.clientWidth ?? 0) / s;
+    const height = (scrollRect.height ?? scroll.clientHeight ?? rect.height ?? 0) / s;
+    const scrollLocalY = (clientPoint.clientY - (scrollRect.top ?? scrollRect.y ?? 0)) / s;
+    const margin = 28;
+    const dx = width > 0 && !isCentred()
+      ? (x < margin ? -Math.min(24, (margin - x) * 0.45)
+        : x > width - margin ? Math.min(24, (x - (width - margin)) * 0.45) : 0)
+      : 0;
+    const dy = height > 0
+      ? (scrollLocalY < margin ? -Math.min(20, (margin - scrollLocalY) * 0.4)
+        : scrollLocalY > height - margin ? Math.min(20, (scrollLocalY - (height - margin)) * 0.4) : 0)
+      : 0;
+    return { dx, dy };
+  }
+
+  function stopMarqueeAutoScroll() {
+    if (marqueeScrollFrame) {
+      (env.cancelAnimationFrame ?? cancelAnimationFrame)?.(marqueeScrollFrame);
+      marqueeScrollFrame = 0;
+    }
+  }
+
+  function startMarqueeAutoScroll() {
+    if (marqueeScrollFrame || !dragAllowsScroll() || !state.drag?.lastClient || !state.scene || state.view.busy) return;
+    const { dx, dy } = marqueeEdgeDelta(state.drag.lastClient);
+    if (dx === 0 && dy === 0) return;
+    const raf = env.requestAnimationFrame ?? requestAnimationFrame;
+    if (typeof raf !== "function") return;
+    const step = () => {
+      marqueeScrollFrame = 0;
+      if (!dragAllowsScroll() || !state.drag?.lastClient || !state.scene || state.view.busy) return;
+      const delta = marqueeEdgeDelta(state.drag.lastClient);
+      let changed = false;
+      if (delta.dx !== 0) {
+        state.manualScrollAt = perf().now();
+        queueWheel({ kind: "pan", delta: delta.dx });
+        flushWheel();
+        changed = true;
+      }
+      if (delta.dy !== 0 && scrollGridVertically(delta.dy)) {
+        changed = true;
+      }
+      if (changed) {
+        updateMarqueeDragPoint(state.drag, state.drag.lastClient);
+        ctx.paintSoon();
+        marqueeScrollFrame = raf(step) || 0;
+      }
+    };
+    marqueeScrollFrame = raf(step) || 0;
+  }
+
   // `start` may be a function of the zoom: then the zoom and lane height are the ones in place when
   // this change's turn comes, and only the start changes (Follow).
   function changeView(start, zoom, rowHeight = state.scene.rowHeight, rowAnchorY = 0) {
@@ -695,6 +780,9 @@ export function attachTimeline(ctx) {
       if (rowHeight !== previousHeight) {
         resizeLaneHeaders(rowHeight);
         scroll.scrollTop = (previousScroll + rowAnchorY) * rowHeight / previousHeight - rowAnchorY;
+      }
+      if (dragAllowsScroll() && state.drag.lastClient) {
+        updateMarqueeDragPoint(state.drag, state.drag.lastClient);
       }
       ctx.ui()?.viewport?.(zoom, rowHeight);
       refreshLaneToolbar();
@@ -740,7 +828,7 @@ export function attachTimeline(ctx) {
     const move = state.wheelQueued;
     if (!move || state.requests > 1) return;
     state.wheelQueued = null;
-    if (!state.scene || state.view.busy || state.drag) return;
+    if (!state.scene || state.view.busy || (state.drag && !dragAllowsScroll())) return;
     const { viewStart, zoom, rowHeight } = state.scene;
     if (move.kind === "rows") {
       changeView(viewStart, zoom, Math.round(rowHeight * 1.15 ** move.steps), move.anchor);
@@ -840,6 +928,7 @@ export function attachTimeline(ctx) {
           startNumericRow: typeof startLaneRow === "number" ? startLaneRow : null,
           startedWithShift: Boolean(event.shiftKey),
           shiftRelative: false,
+          lastClient: { clientX: event.clientX, clientY: event.clientY },
         };
         state.drag.firstPoint = pointer(event, "down");
         state.drag.firstVisualRow = state.drag.lastVisualRow;
@@ -909,11 +998,9 @@ export function attachTimeline(ctx) {
         }
         if (event.pointerId !== state.drag?.id) return;
         if ((state.drag.marquee || state.drag.markingRange) && state.scene) {
-          const { x, y: localY } = pointerIn(grid, event);
-          const y = localY + $("scroll").scrollTop;
-          const ms = Math.max(0, state.drag.start + x / state.drag.zoom);
-          state.drag.lastPoint = { x, y, ms };
-          state.drag.lastVisualRow = limit(Math.floor(y / state.scene.rowHeight), 0, Math.max(0, state.drag.rows.length - 1));
+          state.drag.lastClient = { clientX: event.clientX, clientY: event.clientY };
+          updateMarqueeDragPoint(state.drag, state.drag.lastClient);
+          startMarqueeAutoScroll();
           ctx.paintSoon();
           return;
         }
@@ -951,6 +1038,7 @@ export function attachTimeline(ctx) {
       for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
         surface.addEventListener(type, (event) => {
           if (event.pointerId !== state.drag?.id) return;
+          stopMarqueeAutoScroll();
           const released = type === "pointerup";
           if (state.drag.marquee) {
             const drag = state.drag;
@@ -958,9 +1046,10 @@ export function attachTimeline(ctx) {
             if (released && state.scene) {
               const { x, y: localY } = pointerIn(grid, event);
               const endY = localY + $("scroll").scrollTop;
-              const endMs = Math.max(0, drag.start + x / drag.zoom);
+              const endMs = Math.max(0, state.scene.viewStart + x / state.scene.zoom);
               const first = drag.firstPoint;
-              const moved = Math.hypot(x - first.x, endY - first.y) > 3;
+              const firstX = Number.isFinite(first.ms) ? (first.ms - state.scene.viewStart) * state.scene.zoom : first.x;
+              const moved = Math.hypot(x - firstX, endY - first.y) > 3;
               const activePatch = drag.startNumericRow != null ? { active_lane: drag.startNumericRow } : {};
               if (moved) {
                 const rowHeight = state.scene.rowHeight || 30;
@@ -1026,7 +1115,9 @@ export function attachTimeline(ctx) {
               return;
             }
           }
-          const moved = released && Math.hypot(end.x - state.drag.firstPoint.x, end.y - state.drag.firstPoint.y) > 3;
+          const first = state.drag.firstPoint;
+          const firstX = state.scene && Number.isFinite(first.ms) ? (first.ms - state.scene.viewStart) * state.scene.zoom : first.x;
+          const moved = released && Math.hypot(end.x - firstX, end.y - first.y) > 3;
           if (released && state.drag.markingRange) {
             const first = state.drag.firstVisualRow ?? -1;
             const last = state.drag.lastVisualRow ?? -1;
@@ -1059,6 +1150,9 @@ export function attachTimeline(ctx) {
 
     $("scroll").addEventListener("scroll", () => {
       handOverHitCard(null);
+      if (dragAllowsScroll() && state.drag.lastClient && state.scene) {
+        updateMarqueeDragPoint(state.drag, state.drag.lastClient);
+      }
       ctx.paintSoon();
     });
     const ResizeObserverCtor = env.ResizeObserver ?? ResizeObserver;
@@ -1194,11 +1288,14 @@ export function attachTimeline(ctx) {
         if (clampedMs !== gesture.lastSeekMs) queueRulerSeek(gesture.path, clampedMs);
         return;
       }
-      // Clicking/double-clicking on the cycle bar (or a second click of a double-click) never seeks the playhead.
       const moved = Math.abs(x - gesture.x) >= 3;
-      if (!moved && (gesture.mode === "move" || event.detail >= 2)) return;
+      // Only suppress the second click of a double-click (which toggles Cycle on the top bar).
+      if (!moved && event.detail >= 2) return;
       const locator = gesture.mode === "left" || gesture.mode === "right";
       const from = gesture.start + gesture.x / gesture.zoom;
+      if (!moved) {
+        optimisticSeek(snapToActiveGrid(from));
+      }
       ctx.act({
         kind: "ruler_locators", path: gesture.path, gesture: moved ? gesture.mode : "seek", from,
         to: !moved ? from : locator ? locatorDragTo(gesture, x) : gesture.start + x / gesture.zoom,
@@ -1238,6 +1335,41 @@ export function attachTimeline(ctx) {
       const { ctrlKey, shiftKey, altKey, deltaX, deltaY } = event;
       const osu = state.view.keyPreset === "osu!";
       const x = pointerIn(grid, event).x;
+      if (dragAllowsScroll()) {
+        if (!deltaX && !deltaY) return;
+        const horizontal = Boolean(deltaX && !deltaY);
+        const shiftPan = !horizontal && shiftKey;
+        const zoomTime = !deltaX && !shiftKey && (osu ? altKey && !ctrlKey : ctrlKey);
+        if (zoomTime) {
+          event.preventDefault();
+          if (state.view.busy) return;
+          state.manualScrollAt = perf().now();
+          queueWheel({ kind: "zoom", deltaY, x });
+          flushWheel();
+          return;
+        }
+        if (horizontal || shiftPan || (!ctrlKey && !altKey)) {
+          event.preventDefault();
+          if (state.view.busy) return;
+          if (shiftPan) {
+            state.manualScrollAt = perf().now();
+            queueWheel({ kind: "pan", delta: deltaY });
+            flushWheel();
+            return;
+          }
+          if (deltaX) {
+            state.manualScrollAt = perf().now();
+            queueWheel({ kind: "pan", delta: deltaX });
+            flushWheel();
+          }
+          if (deltaY) {
+            scrollGridVertically(deltaY);
+            updateMarqueeDragPoint(state.drag, state.drag.lastClient ?? event);
+            ctx.paintSoon();
+          }
+        }
+        return;
+      }
       const rows = ctrlKey && shiftKey;
       const horizontal = deltaX && !deltaY;
       const snap = !horizontal && (osu ? ctrlKey : altKey && !ctrlKey);
@@ -1303,5 +1435,6 @@ export function attachTimeline(ctx) {
     locatorPreview, locatorDragTo, endRulerDrag, drainOverviewNavigation,
     panOverview, timelineStart, followPlayhead, queueFollow, resizeLaneHeaders,
     refreshLaneToolbar, changeView, stepWheelSnap, queueWheel, flushWheel, fitTimeline, bindTimeline,
+    stopMarqueeAutoScroll,
   });
 }

@@ -91,19 +91,21 @@ async function paintedCanvases() {
   function element() {
     const fills = [];
     const strokes = [];
+    const strokeRects = [];
     const arcs = [];
     const state = {};
     const ctx = new Proxy(state, {
       get(target, name) {
         if (name in target) return target[name];
         if (["fillRect", "fill", "fillText"].includes(name)) return () => fills.push(target.fillStyle);
-        if (name === "stroke" || name === "strokeRect") return () => strokes.push(target.strokeStyle);
+        if (name === "strokeRect") return (...args) => { strokes.push(target.strokeStyle); strokeRects.push(args); };
+        if (name === "stroke") return () => strokes.push(target.strokeStyle);
         if (name === "arc") return () => arcs.push({ fill: target.fillStyle, stroke: target.strokeStyle });
         return () => {};
       },
     });
     return {
-      fills, strokes, arcs, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
+      fills, strokes, strokeRects, arcs, getContext: () => ctx, clientWidth: 300, clientHeight: 80, scrollTop: 0,
       dataset: {}, style: {}, children: [], addEventListener() {}, append() {}, prepend() {},
     };
   }
@@ -134,7 +136,10 @@ async function paintedCanvases() {
     laneVisualPositions = new Map([[0, [0]], [1, [1]]]);
     drag = { surface: grid, firstPoint: { x: 10, y: 5 }, lastPoint: { x: 60, y: 40 } };
     paint();`, context);
-  return { ruler: get("ruler"), grid: get("grid"), overview: get("overview"), volume: get("controller") };
+  return {
+    ruler: get("ruler"), grid: get("grid"), overview: get("overview"), volume: get("controller"),
+    evaluate: code => runInContext(code, context),
+  };
 }
 
 test("timeline canvases paint with the design's colours", async () => {
@@ -184,4 +189,28 @@ test("timeline canvases paint with the design's colours", async () => {
       assert.ok(!oldColours.includes(colour), `old colour ${colour}`);
     }
   }
+});
+
+test("canvas grid lines honour slateTimeline overrides (#103) and marquee box anchors to timestamps (#106)", async () => {
+  const { grid, evaluate } = await paintedCanvases();
+  grid.strokes.length = 0;
+  grid.strokeRects.length = 0;
+  evaluate(`
+    slateTimeline.gridBar = "#ff3344";
+    slateTimeline.gridBeat = "#cc2233";
+    slateTimeline.gridSub = "#991122";
+    scene.viewStart = 50;
+    drag = {
+      surface: grid,
+      marquee: true,
+      firstPoint: { x: 25, y: 5, ms: 100 },
+      lastPoint: { x: 75, y: 40, ms: 300 },
+    };
+    paint();
+  `);
+  assert.ok(grid.strokes.includes("#ff3344"), "custom bar line drawn on grid");
+  assert.ok(grid.strokes.includes("#cc2233"), "custom beat line drawn on grid");
+  assert.ok(!grid.strokes.includes("rgba(255,255,255,.26)"), "default bar line replaced");
+  // At viewStart=50, zoom=0.25: 100ms -> x=12.5, 300ms -> x=62.5 (width=50).
+  assert.deepEqual(grid.strokeRects.at(-1), [12.5, 5, 50, 35]);
 });

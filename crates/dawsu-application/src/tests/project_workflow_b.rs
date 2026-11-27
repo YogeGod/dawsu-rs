@@ -2358,3 +2358,138 @@ fn opening_map_with_missing_drum_vst_keeps_unavailable_note_in_status() {
         app.status
     );
 }
+
+#[test]
+fn gameplay_overlay_sorts_out_of_order_hs_no_object_moments_by_time() {
+    let fixture = Scratch::new("gameplay-overlay-sorted");
+    let map = fixture.path("map.osu");
+    std::fs::write(
+        &map,
+        b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,5000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let mut app = Application::headless();
+    open(&mut app, map);
+    app.set_hs_mode(true);
+    app.document
+        .as_mut()
+        .unwrap()
+        .composer
+        .add(500.0, skin(SampleSet::Normal, Hitsound::Clap), 80, 0.0);
+    let overlay = presentation::gameplay_overlay(app.document().unwrap());
+    let times: Vec<f64> = overlay.points.iter().map(|p| p.1).collect();
+    assert_eq!(times, vec![500.0, 5000.0]);
+}
+
+#[test]
+fn plan_audition_burst_deduplicates_resolved_samples_caps_and_normalizes_gain() {
+    let fixture = Scratch::new("audition-burst");
+    let map = fixture.path("burst.osu");
+    std::fs::write(
+        &map,
+        b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let mut app = Application::headless();
+    open(&mut app, map);
+    let clap = skin(SampleSet::Normal, Hitsound::Clap);
+
+    // 1. 100 duplicate requests collapse to 1 voice at gain 1.0.
+    let dup = vec![clap; 100];
+    let plan = app.plan_audition_burst(&dup);
+    assert_eq!(plan.len(), 1);
+    assert!((plan[0].1 - 1.0).abs() < 1e-5);
+
+    // 2. Two skin lanes resolving to the same `plays_as()` collapse to 1 voice at gain 1.0.
+    let doc = app.document.as_mut().unwrap();
+    let normal0 = skin(SampleSet::Normal, Hitsound::Normal);
+    let normal2 = SampleIdentity::Standard {
+        set: SampleSet::Normal,
+        sound: Sound::Hit(Hitsound::Normal),
+        index: dawsu_foundation::CustomIndex::new(2),
+    };
+    doc.composer.add(1000.0, normal2.clone(), 80, 5.0);
+    let shared_plan = app.plan_audition_burst(&[normal0, normal2]);
+    assert_eq!(shared_plan.len(), 1);
+    assert!((shared_plan[0].1 - 1.0).abs() < 1e-5);
+
+    // 3. 12 distinct lanes cap at 4 voices with 1/sqrt(4) = 0.5 gain each.
+    let many: Vec<_> = (1..=12)
+        .map(|i| SampleIdentity::File(format!("s{i}.wav")))
+        .collect();
+    let capped = app.plan_audition_burst(&many);
+    assert_eq!(capped.len(), 4);
+    for (_, gain) in capped {
+        assert!((gain - 0.5).abs() < 1e-5, "expected gain 0.5, got {gain}");
+    }
+}
+
+#[test]
+fn moving_multiple_hits_between_lanes_respects_visual_order_in_samples_and_drums_view() {
+    use dawsu_editor::keys::{Key, KeyChord, Mods};
+    use dawsu_editor::tools::PointerInput;
+
+    let fixture = Scratch::new("move-lanes-visual");
+    let map = fixture.path("map.osu");
+    std::fs::write(
+        &map,
+        b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,0,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+    let mut app = Application::headless();
+    open(&mut app, map);
+    let doc_path = app.document().unwrap().path.clone();
+    let lanes = app.document().unwrap().composer.lanes.clone();
+    assert!(lanes.len() >= 4);
+    let lane3 = lanes[3].clone();
+    let lane1 = lanes[1].clone();
+    let lane2 = lanes[2].clone();
+    {
+        let doc = app.document.as_mut().unwrap();
+        doc.composer.add(1000.0, lane3.clone(), 80, 5.0);
+        doc.composer.add(1500.0, lane3.clone(), 80, 5.0);
+        doc.composer.selected.replace([
+            HitKey { moment: 0, lane: lane3.clone() },
+            HitKey { moment: 1, lane: lane3.clone() },
+        ]);
+    }
+    let vis = [3usize, 1, 0, 2];
+
+    // 1. Samples view mouse drag down from lane 3 to empty visual neighbor lane 1 (raw delta -2, visual delta +1).
+    app.pointer_in_view(PointerPhase::Down, PointerInput::at(1000.0, 3), None, Some(&vis));
+    app.pointer_in_view(PointerPhase::Move, PointerInput::at(1000.0, 1), None, Some(&vis));
+    app.pointer_in_view(PointerPhase::Up, PointerInput::at(1000.0, 1), None, Some(&vis));
+    {
+        let doc = app.document().unwrap();
+        assert_eq!(doc.composer.selected.items().len(), 2);
+        assert!(doc.composer.selected.items().iter().all(|k| k.lane == lane1));
+        assert!(doc.composer.hitsounds().moments()[0].has_hit(&lane1));
+        assert!(doc.composer.hitsounds().moments()[1].has_hit(&lane1));
+    }
+
+    // 2. Samples view navDown with key_with_lane_view moves those 2 hits cleanly onto lane 0 (index 2 in vis).
+    let lane0 = lanes[0].clone();
+    app.key_with_lane_view(KeyChord::new(Key::Down, Mods::NONE), doc_path.clone(), vis.to_vec(), 5000.0);
+    {
+        let doc = app.document().unwrap();
+        assert_eq!(doc.composer.selected.items().len(), 2);
+        assert!(doc.composer.selected.items().iter().all(|k| k.lane == lane0));
+    }
+
+    // 3. Drums view navDown moves selected hits across drum groups via DrumRowTarget.
+    app.set_drum_row_groups(Some(crate::drum_view::DrumRowGroups {
+        groups: vec![vec![0], vec![1, 2]],
+        group_of_lane: std::collections::HashMap::from([(0, 0), (1, 1), (2, 1)]),
+    }));
+    app.key_with_lane_view(KeyChord::new(Key::Down, Mods::NONE), doc_path, vec![0, 1], 5000.0);
+    let doc = app.document().unwrap();
+    assert_eq!(doc.composer.selected.items().len(), 2);
+    assert!(
+        doc.composer
+            .selected
+            .items()
+            .iter()
+            .all(|k| k.lane == lane1 || k.lane == lane2),
+        "Drums view navDown should move selected hits to the next visible drum group"
+    );
+}

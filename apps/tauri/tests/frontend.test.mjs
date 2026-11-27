@@ -492,21 +492,38 @@ test("Shift-click below the ruler band near a locator line does not jump to the 
 });
 
 test("a plain click on the ruler band moves the playhead there, inside or outside the locator range", async () => {
-  const { rulerEvents, calls, evaluate, settle } = await frontend();
+  const { rulerEvents, calls, evaluate, responses, settle } = await frontend();
   evaluate('scene = { path: "Expert.osu", viewStart: 0, zoom: 1, rowHeight: 20, bookmarks: [] }; view = { busy: false, hasDocument: true, left: 20, right: 70, cycle: false, duration: 1000 }');
-  const click = (clientX, clientY, pointerId) => {
-    rulerEvents.get("pointerdown")({ button: 0, pointerId, clientX, clientY });
-    rulerEvents.get("pointerup")({ pointerId, clientX: clientX + 1, clientY });
+  responses.push(
+    { hasDocument: true, busy: false, left: 20, right: 70, duration: 1000, position: 45 },
+    { hasDocument: true, busy: false, left: 20, right: 70, duration: 1000, position: 90 },
+    { hasDocument: true, busy: false, left: 20, right: 70, duration: 1000, position: 30 },
+  );
+  const click = (clientX, clientY, pointerId, detail = 1) => {
+    rulerEvents.get("pointerdown")({ button: 0, pointerId, clientX, clientY, detail });
+    rulerEvents.get("pointerup")({ pointerId, clientX: clientX + 1, clientY, detail });
   };
   click(45, 6, 1);
   click(90, 6, 2);
   click(30, 6, 3);
+  assert.equal(evaluate("view.position"), 30, "optimistic seek moves playhead before backend replies");
   await settle();
   const sent = JSON.parse(JSON.stringify(calls.map(call => call.args.action).filter(Boolean)));
   const seek = ms => ({ kind: "ruler_locators", path: "Expert.osu", gesture: "seek", from: ms, to: ms });
-  // Clicking inside the top cycle bar (45) does not seek (so double-clicking it never moves the playhead).
-  assert.deepEqual(sent, [seek(90), seek(30)], "no Cycle toggle and no locator change");
+  assert.deepEqual(sent, [seek(45), seek(90), seek(30)], "plain clicks seek anywhere on the ruler band");
+  assert.equal(evaluate("view.position"), 30);
   assert.equal(evaluate("rulerDrag"), null);
+
+  // Fresh map default locators (0..duration) and double-click suppression on top bar.
+  calls.length = 0;
+  evaluate('view.left = 0; view.right = 1000; view.position = 0');
+  responses.push({ hasDocument: true, busy: false, left: 0, right: 1000, duration: 1000, position: 250 });
+  click(250, 6, 4, 1);
+  click(260, 6, 5, 2);
+  await settle();
+  const freshSent = JSON.parse(JSON.stringify(calls.map(call => call.args.action).filter(Boolean)));
+  assert.deepEqual(freshSent, [seek(250)]);
+  assert.equal(evaluate("view.position"), 250);
 });
 
 test("dragging on the ruler band still draws, moves and drags the locators", async () => {

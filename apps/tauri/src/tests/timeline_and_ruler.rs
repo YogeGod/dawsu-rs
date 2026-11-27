@@ -575,3 +575,40 @@ fn encode_waveform_pyramid_bytes_packs_dwfp_r4_levels_and_clip_mask() {
     let l1_mask_offset = l1_offset + l1_count * 24;
     assert_ne!(bytes[l1_mask_offset + (125 >> 3)] & (1u8 << (125 & 7)), 0);
 }
+
+#[test]
+fn scene_moments_stay_sorted_when_off_object_hits_are_drawn_before_later_objects() {
+    let fixture = Fixture::new("scene-moments-sorted");
+    let path = fixture.0.join("Hard.osu");
+    let map = b"osu file format v14\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,5000,1,0,0:0:0:80:\n";
+    fs::write(&path, map).unwrap();
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    Action::Tool { name: "Draw".into() }.run(&mut app);
+    for phase in ["down", "up"] {
+        Action::Pointer {
+            phase: phase.into(),
+            ms: 500.0,
+            row: 0,
+            x: 10.0,
+            y: 10.0,
+            value: None,
+            volume_lanes: None,
+            visible_rows: None,
+            button: None,
+            shift: false,
+            ctrl: false,
+            alt: false,
+        }
+        .run(&mut app);
+    }
+    let snap = snapshot(&app, true);
+    let times: Vec<f64> = snap["scene"]["moments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m[0].as_f64().unwrap())
+        .collect();
+    assert!(times.windows(2).all(|w| w[0] <= w[1]), "unsorted moments: {times:?}");
+    assert_eq!(times, vec![500.0, 5000.0]);
+}

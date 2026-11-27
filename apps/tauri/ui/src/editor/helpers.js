@@ -49,6 +49,7 @@ export const slateTimeline = {
   arrange: "#0e0e10", alternateRow: "#151517", activeRow: "#26262a", group: "#1c1c1f",
   ruler: "#08080a", rulerBar: "#f5f5f7", rulerEdge: "#2b2b30", overview: "#151517", waveform: "#121718",
   volume: "#0e0e10", divider: "#2b2b30", beatLine: "#2b2b30", barLine: "#44444c",
+  gridSub: "rgba(255,255,255,.04)", gridBeat: "rgba(255,255,255,.07)", gridBar: "rgba(255,255,255,.26)",
   cycle: "#ffd60a", loop: "#5ac8fa14", locator: "#8e8e96", playhead: "#f5f5f7",
 };
 

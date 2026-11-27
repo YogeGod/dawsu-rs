@@ -87,7 +87,7 @@ export function attachCanvas(ctx) {
             const x = (origin + tick * step - start) * zoom;
             const color = snapColour(tick, state.scene.divisor);
             const height = snapTickHeights[reducedDivisor(tick, state.scene.divisor)] ?? 4;
-            line(context2d, ruler ? color : gridLines.sub, x, ruler ? bottom - height : top, x, bottom);
+            line(context2d, ruler ? color : (slateTimeline.gridSub ?? gridLines.sub), x, ruler ? bottom - height : top, x, bottom);
           }
         }
       }
@@ -99,7 +99,7 @@ export function attachCanvas(ctx) {
         const x = (origin + n * step - start) * zoom;
         const bar = !state.scene.editorBars?.length && tick % meter === 0;
         const longSnap = useSnap && state.scene.beats > 1 && tick % state.scene.beats === 0;
-        const color = ruler ? snapColours[1] : bar || longSnap ? gridLines.bar : gridLines.beat;
+        const color = ruler ? snapColours[1] : bar || longSnap ? (slateTimeline.gridBar ?? gridLines.bar) : (slateTimeline.gridBeat ?? gridLines.beat);
         // v3 §5 + Cubase musical thinning: bar numbers on power-of-two bar intervals (1, 2, 4, 8, 16...).
         const barIndex = Math.floor(tick / meter);
         const barNumber = firstBars[i] + barIndex;
@@ -122,7 +122,7 @@ export function attachCanvas(ctx) {
       if (begin >= until || !Number.isFinite(step) || step <= 0) continue;
       for (let n = Math.ceil((begin - section.start) / step); section.start + n * step < until; n++) {
         const x = (section.start + n * step - start) * zoom;
-        line(context2d, ruler ? slateTimeline.rulerBar : gridLines.bar, x, top, x, bottom);
+        line(context2d, ruler ? slateTimeline.rulerBar : (slateTimeline.gridBar ?? gridLines.bar), x, top, x, bottom);
         if (ruler) {
           context2d.fillStyle = slateTimeline.rulerBar;
           context2d.fillText(String(section.bar + n * stride), x + 5, 10);
@@ -445,6 +445,7 @@ export function attachCanvas(ctx) {
       scroll.scrollTop, scroll.clientHeight, elements.grid.clientWidth, elements.ruler.clientWidth,
       elements.ruler.clientHeight, elements.overview.clientWidth, elements.controller.clientHeight,
       env.window.devicePixelRatio || 1, env.document?.documentElement?.dataset?.uiScale ?? "100",
+      slateTimeline.arrange, slateTimeline.gridSub, slateTimeline.gridBeat, slateTimeline.gridBar,
       state.laneRows, state.waveformShown, state.waveformHeight, state.soundFirst, ctx.ui()?.keysoundRoll?.() ?? null];
   }
 
@@ -1250,8 +1251,10 @@ export function attachCanvas(ctx) {
     );
     let liveMarquee = null;
     if (state.drag?.marquee && state.drag.lastPoint) {
-      const fx = state.drag.firstPoint.x, fy = state.drag.firstPoint.y;
-      const lx = state.drag.lastPoint.x, ly = state.drag.lastPoint.y;
+      const fx = Number.isFinite(state.drag.firstPoint.ms) ? xOf(state.drag.firstPoint.ms) : state.drag.firstPoint.x;
+      const fy = state.drag.firstPoint.y;
+      const lx = Number.isFinite(state.drag.lastPoint.ms) ? xOf(state.drag.lastPoint.ms) : state.drag.lastPoint.x;
+      const ly = state.drag.lastPoint.y;
       if (Math.hypot(lx - fx, ly - fy) > 3) {
         liveMarquee = {
           minMs: Math.min(Math.max(0, state.drag.firstPoint.ms), state.drag.lastPoint.ms),
@@ -1377,9 +1380,10 @@ export function attachCanvas(ctx) {
       }
     }
     if (state.drag?.surface === grid && state.drag.lastPoint && !state.cursorAltDraw && state.drag.button !== "right" && ["Select", "Range"].includes(state.view.tool)) {
-      const x = state.drag.firstPoint.x;
+      const x = Number.isFinite(state.drag.firstPoint.ms) ? xOf(state.drag.firstPoint.ms) : state.drag.firstPoint.x;
       const y = state.drag.firstPoint.y - scrollTop;
-      const width = state.drag.lastPoint.x - x;
+      const endX = Number.isFinite(state.drag.lastPoint.ms) ? xOf(state.drag.lastPoint.ms) : state.drag.lastPoint.x;
+      const width = endX - x;
       const height = state.drag.lastPoint.y - state.drag.firstPoint.y;
       if ((state.view.tool === "Range" || !state.drag.hit) && Math.hypot(width, height) > 3) {
         g.ctx.fillStyle = "#77bdfa14";

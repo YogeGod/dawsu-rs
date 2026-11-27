@@ -525,6 +525,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     }
     if (key === "Escape" && state.drag && !ctrl && !shift && !alt) {
       event.preventDefault();
+      ctx.stopMarqueeAutoScroll?.();
       const { surface, firstPoint, lastPoint, id } = state.drag;
       state.drag = null;
       if (state.drawStrokePreview) {

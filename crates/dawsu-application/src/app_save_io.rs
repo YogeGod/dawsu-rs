@@ -12,7 +12,7 @@ use dawsu_editor::transport::BookmarkList;
 use dawsu_editor_composer::Composer;
 use dawsu_foundation::{SampleIdentity, SongTime};
 use dawsu_hitsounding::Placement;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -1891,10 +1891,36 @@ impl Application {
             .map(|d| std::mem::take(&mut d.composer.audition_requests))
             .unwrap_or_default();
         if self.preferences.audition {
-            for lane in requests {
-                self.audition(&lane);
+            for (lane, gain) in self.plan_audition_burst(&requests) {
+                self.audition_lane(&lane, gain);
             }
         }
+    }
+
+    /// Deduplicates queued audition requests by resolved underlying sample and applies equal-power
+    /// gain normalization (capped at `MAX_BURST_AUDITIONS`) so bulk moves across lanes never clip.
+    pub(crate) fn plan_audition_burst(&self, requests: &[SampleIdentity]) -> Vec<(SampleIdentity, f32)> {
+        const MAX_BURST_AUDITIONS: usize = 4;
+        if requests.is_empty() {
+            return Vec::new();
+        }
+        let hits = self.document().map(|d| d.composer.hitsounds());
+        let mut seen = HashSet::new();
+        let mut unique = Vec::new();
+        for lane in requests {
+            let resolved = hits
+                .and_then(|h| h.lane(lane))
+                .map(|m| m.plays_as())
+                .unwrap_or_else(|| lane.clone());
+            if seen.insert(resolved) {
+                unique.push(lane.clone());
+                if unique.len() >= MAX_BURST_AUDITIONS {
+                    break;
+                }
+            }
+        }
+        let gain = 1.0 / (unique.len() as f32).sqrt();
+        unique.into_iter().map(|lane| (lane, gain)).collect()
     }
     /// The problems of the last check of this revision, then each moment the last Save left out
     /// (F052), which stays listed after other edits.

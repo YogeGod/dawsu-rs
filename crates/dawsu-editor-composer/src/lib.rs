@@ -5,7 +5,10 @@ use dawsu_editor::tools::{PointerInput, TimeRange, ToolPreview, ToolTarget};
 use dawsu_editor::{Clipboard, EditHistory, Selection};
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, SongTime, Sound};
 use dawsu_hitsounding::{Hitsounds, MomentId, Place};
-use std::{collections::BTreeSet, convert::Infallible};
+use std::{
+    collections::{BTreeSet, HashSet},
+    convert::Infallible,
+};
 
 mod batch;
 mod lane_edit;
@@ -107,14 +110,17 @@ impl Composer {
         self.selected.replace(kept);
     }
     pub fn undo(&mut self) {
+        self.move_stroke = None;
         self.history.undo();
         self.prune_selection();
     }
     pub fn redo(&mut self) {
+        self.move_stroke = None;
         self.history.redo();
         self.prune_selection();
     }
     pub fn apply(&mut self, label: &str, edit: impl FnOnce(&mut Hitsounds)) {
+        self.move_stroke = None;
         let _ = self.history.apply(label, true, |h| {
             edit(h);
             Ok::<_, Infallible>(())
@@ -232,9 +238,114 @@ impl Composer {
         if items.is_empty() {
             return;
         }
-        self.history.begin("Move hits between lanes");
+        ToolTarget::begin(self, "Move hits between lanes");
         ToolTarget::move_by(self, &items, 0.0, delta);
-        self.history.commit();
+        ToolTarget::commit(self);
+    }
+
+    /// Moves selected hits by `delta` rows along `visible_rows` without skipping visible empty lanes.
+    pub fn move_rows_in_view(&mut self, visible_rows: &[usize], delta: i32) {
+        let items: Vec<_> = self.selected.items().iter().cloned().collect();
+        if items.is_empty() {
+            return;
+        }
+        ToolTarget::begin(self, "Move hits between lanes");
+        self.move_by_in_view(&items, 0.0, delta, Some(visible_rows));
+        ToolTarget::commit(self);
+    }
+
+    /// Shared lane/time move implementation supporting raw or explicit visual lane order.
+    pub fn move_by_in_view(
+        &mut self,
+        items: &[HitKey],
+        delta: f64,
+        rows: i32,
+        visible_rows: Option<&[usize]>,
+    ) {
+        let lanes = self.lanes.clone();
+        if items.is_empty() || lanes.is_empty() {
+            return;
+        }
+        let valid_vis: Option<Vec<usize>> = visible_rows
+            .map(|vis| {
+                let mut seen = HashSet::new();
+                vis.iter()
+                    .copied()
+                    .filter(|&r| r < lanes.len() && seen.insert(r))
+                    .collect()
+            })
+            .filter(|vis: &Vec<usize>| !vis.is_empty());
+        let primary = self.selected.primary().cloned();
+        if self.move_stroke.is_none() {
+            let base_hits = self.hitsounds().clone();
+            let mut values: Vec<_> = items
+                .iter()
+                .filter_map(|k| {
+                    let moment = base_hits.moments().get(k.moment)?;
+                    if !moment.has_hit(&k.lane) {
+                        return None;
+                    }
+                    Some((k.clone(), moment.time().ms(), moment.hit_volume(&k.lane)))
+                })
+                .collect();
+            if values.is_empty() {
+                return;
+            }
+            values.sort_unstable_by(|(a, _, _), (b, _, _)| {
+                (Some(a) != primary.as_ref(), a.moment, &a.lane)
+                    .cmp(&(Some(b) != primary.as_ref(), b.moment, &b.lane))
+            });
+            self.move_stroke = Some((base_hits, values, 0.0, 0));
+        }
+        let Some((base_hits, values, total_delta, total_rows)) = self.move_stroke.as_mut() else {
+            return;
+        };
+        *total_delta += delta;
+        *total_rows += rows;
+        let base_snapshot = base_hits.clone();
+        let snapshot_values = values.clone();
+        let applied_delta = *total_delta;
+        let applied_rows = *total_rows;
+        let mut new = Vec::new();
+        let _ = self.history.edit(true, |h| {
+            *h = base_snapshot;
+            for (k, _, _) in &snapshot_values {
+                h.remove_hit(MomentId(k.moment), &k.lane);
+            }
+            for (k, t, v) in snapshot_values {
+                let lane = if let Some(vis) = valid_vis.as_deref()
+                    && let Some(old_vis) = vis.iter().position(|&r| lanes[r] == k.lane)
+                {
+                    let new_vis = (old_vis as i32 + applied_rows).clamp(0, vis.len() as i32 - 1) as usize;
+                    lanes[vis[new_vis]].clone()
+                } else {
+                    let old = lanes.iter().position(|l| *l == k.lane).unwrap_or(0) as i32;
+                    let mut row = (old + applied_rows).clamp(0, lanes.len() as i32 - 1);
+                    while applied_rows != 0 && h.is_lane_hidden(&lanes[row as usize]) {
+                        let next = row + applied_rows.signum();
+                        if !(0..lanes.len() as i32).contains(&next) {
+                            row = old;
+                            break;
+                        }
+                        row = next;
+                    }
+                    lanes[row as usize].clone()
+                };
+                let moment = destination_at(h, (t + applied_delta).max(0.0), v, 5.0);
+                h.add_hit_with_volume(moment, lane.clone(), v);
+                new.push(HitKey { moment: moment.0, lane });
+            }
+            Ok::<_, Infallible>(())
+        });
+        if rows != 0 {
+            let mut seen = HashSet::new();
+            for k in &new {
+                if seen.insert(k.lane.clone()) {
+                    self.audition_requests.push(k.lane.clone());
+                }
+            }
+        }
+        self.selected.replace(new);
     }
     pub fn select_neighbour(&mut self, direction: i32, add: bool) {
         let time = self
@@ -1053,70 +1164,7 @@ impl ToolTarget for Composer {
         });
     }
     fn move_by(&mut self, items: &[HitKey], delta: f64, rows: i32) {
-        let lanes = self.lanes.clone();
-        if items.is_empty() || lanes.is_empty() {
-            return;
-        }
-        let primary = self.selected.primary().cloned();
-        if self.move_stroke.is_none() {
-            let base_hits = self.hitsounds().clone();
-            let mut values: Vec<_> = items
-                .iter()
-                .filter_map(|k| {
-                    let moment = base_hits.moments().get(k.moment)?;
-                    if !moment.has_hit(&k.lane) {
-                        return None;
-                    }
-                    Some((k.clone(), moment.time().ms(), moment.hit_volume(&k.lane)))
-                })
-                .collect();
-            if values.is_empty() {
-                return;
-            }
-            values.sort_unstable_by(|(a, _, _), (b, _, _)| {
-                (Some(a) != primary.as_ref(), a.moment, &a.lane)
-                    .cmp(&(Some(b) != primary.as_ref(), b.moment, &b.lane))
-            });
-            self.move_stroke = Some((base_hits, values, 0.0, 0));
-        }
-        let Some((base_hits, values, total_delta, total_rows)) = self.move_stroke.as_mut() else {
-            return;
-        };
-        *total_delta += delta;
-        *total_rows += rows;
-        let base_snapshot = base_hits.clone();
-        let snapshot_values = values.clone();
-        let applied_delta = *total_delta;
-        let applied_rows = *total_rows;
-        let mut new = Vec::new();
-        let _ = self.history.edit(true, |h| {
-            *h = base_snapshot;
-            for (k, _, _) in &snapshot_values {
-                h.remove_hit(MomentId(k.moment), &k.lane);
-            }
-            for (k, t, v) in snapshot_values {
-                let old = lanes.iter().position(|l| *l == k.lane).unwrap_or(0) as i32;
-                let mut row = (old + applied_rows).clamp(0, lanes.len() as i32 - 1);
-                while applied_rows != 0 && h.is_lane_hidden(&lanes[row as usize]) {
-                    let next = row + applied_rows.signum();
-                    if !(0..lanes.len() as i32).contains(&next) {
-                        row = old;
-                        break;
-                    }
-                    row = next;
-                }
-                let lane = lanes[row as usize].clone();
-                let moment = destination_at(h, (t + applied_delta).max(0.0), v, 5.0);
-                h.add_hit_with_volume(moment, lane.clone(), v);
-                new.push(HitKey { moment: moment.0, lane });
-            }
-            Ok::<_, Infallible>(())
-        });
-        if rows != 0 {
-            self.audition_requests
-                .extend(new.iter().map(|k| k.lane.clone()));
-        }
-        self.selected.replace(new);
+        self.move_by_in_view(items, delta, rows, None);
     }
     fn set_values(&mut self, values: &[(HitKey, i32)]) {
         let _ = self.history.edit(true, |h| {

@@ -592,6 +592,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
                     hits_end: hit_entries.len(),
                 });
             }
+            moment_entries.sort_by(|a, b| a.time.total_cmp(&b.time));
             let moments = SceneMoments {
                 moments: moment_entries,
                 hits: hit_entries,

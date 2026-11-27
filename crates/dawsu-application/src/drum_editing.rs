@@ -521,10 +521,14 @@ impl ToolTarget for DrumRowTarget<'_> {
                 };
                 let dest_ms = (t + applied_delta).max(0.0);
                 if let Some(existing) = nearest_moment(h, dest_ms, 5.0)
-                    && dest_members
+                    && let Some(existing_lane) = dest_members
                         .iter()
-                        .any(|l| h.moments()[existing.0].has_hit(l))
+                        .find(|l| h.moments()[existing.0].has_hit(l))
                 {
+                    new.push(HitKey {
+                        moment: existing.0,
+                        lane: existing_lane.clone(),
+                    });
                     continue;
                 }
                 let preferred = (applied_rows == 0).then_some(&k.lane);
@@ -540,9 +544,12 @@ impl ToolTarget for DrumRowTarget<'_> {
             Ok::<_, Infallible>(())
         });
         if rows != 0 {
-            self.composer
-                .audition_requests
-                .extend(new.iter().map(|k| k.lane.clone()));
+            let mut seen = HashSet::new();
+            for k in &new {
+                if seen.insert(k.lane.clone()) {
+                    self.composer.audition_requests.push(k.lane.clone());
+                }
+            }
         }
         self.composer.selected.replace(new);
     }

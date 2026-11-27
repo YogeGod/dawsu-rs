@@ -37,6 +37,38 @@ fn select_across_lanes(app: &mut Application, direction: isize) -> Result<(), St
     Ok(())
 }
 
+fn move_selection_lanes(app: &mut Application, delta: i32) -> Result<(), String> {
+    let visible_rows = app.key_lane_view.take().and_then(|(path, rows, _)| {
+        (app.document.as_ref().is_some_and(|d| d.path == path) && !rows.is_empty()).then_some(rows)
+    });
+    let d = app.document.as_mut().ok_or("Open a difficulty first")?;
+    if let Some(groups) = app.drum_row_groups.as_ref() {
+        let items: Vec<_> = d.composer.selected.items().iter().cloned().collect();
+        if items.is_empty() {
+            return Ok(());
+        }
+        let ctx = crate::drum_editing::DrumGroupContext::new(
+            groups,
+            &d.composer.lanes,
+            visible_rows.as_deref(),
+        );
+        let mut target = crate::drum_editing::DrumRowTarget {
+            composer: &mut d.composer,
+            file: &d.file,
+            ctx,
+            move_stroke: &mut app.drum_move_stroke,
+        };
+        dawsu_editor::tools::ToolTarget::begin(&mut target, "Move hits between lanes");
+        dawsu_editor::tools::ToolTarget::move_by(&mut target, &items, 0.0, delta);
+        dawsu_editor::tools::ToolTarget::commit(&mut target);
+    } else if let Some(rows) = visible_rows {
+        d.composer.move_rows_in_view(&rows, delta);
+    } else {
+        d.composer.move_rows(delta);
+    }
+    Ok(())
+}
+
 fn selection_start(document: &Document) -> Option<f64> {
     let composer = &document.composer;
     let moments = composer.hitsounds().moments();
@@ -345,19 +377,21 @@ pub fn catalogue() -> CommandCatalog<Application> {
         |app| align_selection(app, 1),
         Some(can_edit_selection),
     );
-    doc!(
-        CommandDefinition::new("navUp", "Move selected hits to the lane above")
+    registry.bind(
+        &CommandDefinition::new("navUp", "Move selected hits to the lane above")
             .legacy(&["laneUp"])
             .keys(&[K::plain(Key::Up), K::new(Key::Up, align_mods)]),
-        d,
-        { d.composer.move_rows(-1) }
+        areas::HS_HIT_EDITING,
+        |app| move_selection_lanes(app, -1),
+        Some(|app| app.document.is_some() && !app.busy),
     );
-    doc!(
-        CommandDefinition::new("navDown", "Move selected hits to the lane below")
+    registry.bind(
+        &CommandDefinition::new("navDown", "Move selected hits to the lane below")
             .legacy(&["laneDown"])
             .keys(&[K::plain(Key::Down), K::new(Key::Down, align_mods)]),
-        d,
-        { d.composer.move_rows(1) }
+        areas::HS_HIT_EDITING,
+        |app| move_selection_lanes(app, 1),
+        Some(|app| app.document.is_some() && !app.busy),
     );
     doc!(
         CommandDefinition::new("selectPrevious", "Select the previous hit")

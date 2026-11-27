@@ -122,6 +122,7 @@ async function setupHarness({ deferInvoke = false } = {}) {
   return {
     editor,
     grid: get("grid"),
+    scroll: get("scroll"),
     calls,
     resolvers,
     flushOne: () => resolvers.shift()?.(),
@@ -206,4 +207,55 @@ test("problemStripData keeps stable object identity across hitsound edits on sta
   editor.state.scene = makeScene({ laneRevision: 2 });
   const second = editor.problemStripData();
   assert.equal(second, first, "problemStripData must reuse cached object when objects/problems/viewport did not change");
+});
+
+test("Select marquee allows vertical and horizontal wheel scrolling in DAW and osu! presets", async () => {
+  const { editor, grid, scroll, calls } = await setupHarness();
+  scroll.clientHeight = 120;
+  scroll.scrollHeight = 360;
+  const wheel = scroll.events.get("wheel");
+  const wh = (extra) => wheel({
+    clientX: 300, clientY: 80, ctrlKey: false, shiftKey: false, altKey: false,
+    deltaX: 0, deltaY: 0, preventDefault() {}, ...extra,
+  });
+
+  // Start marquee on empty space at x=100 (200ms) row 0 ("soft", y=10)
+  grid.events.get("pointerdown")(pt(100, 10, 31));
+  // Bare vertical scroll while dragging marquee in DAW preset
+  wh({ deltaY: 90 });
+  assert.equal(scroll.scrollTop, 90, "vertical wheel scrolls during marquee in DAW preset");
+  // osu! preset vertical scroll during marquee must scroll vertically instead of being swallowed
+  editor.state.view.keyPreset = "osu!";
+  wh({ deltaY: 30 });
+  assert.equal(scroll.scrollTop, 120, "vertical wheel scrolls during marquee in osu! preset");
+  // Horizontal wheel pan via Shift+wheel and trackpad deltaX
+  wh({ shiftKey: true, deltaY: 200 });
+  await editor.state.pending;
+  const afterShiftPan = editor.state.scene.viewStart;
+  assert.ok(afterShiftPan > 0, "Shift+wheel pans horizontally during marquee");
+  wh({ deltaX: 100 });
+  await editor.state.pending;
+  assert.ok(editor.state.scene.viewStart > afterShiftPan, "deltaX pans horizontally during marquee");
+  assert.ok(editor.state.drag.lastPoint.ms > 200, "lastPoint updates against panned viewStart");
+
+  // Finish marquee at pointer x=400, localY=50 (scrollTop=120 => y=170 => visual row 5 = lane 4)
+  grid.events.get("pointerup")(pt(400, 50, 31));
+  await editor.state.pending;
+
+  const commit = calls.filter(c => c.action?.kind === "select_box").at(-1);
+  assert.ok(commit, "marquee commits select_box after scrolling");
+  assert.equal(commit.action.from_ms, 200);
+  assert.equal(commit.action.to_ms, editor.state.scene.viewStart + 400 / 0.5);
+  assert.deepEqual(commit.action.rows, [9, 10, 3, 4]);
+});
+
+test("Samples view pointer events attach visible_rows matching visual lane order", async () => {
+  const { editor, grid, calls } = await setupHarness();
+  editor.state.view.drumView = null;
+  // Hit at 1000 ms is on lane 3 (visual row 4 -> y=135 at rowHeight=30).
+  grid.events.get("pointerdown")(pt(500, 135, 41));
+  await editor.state.pending;
+  const down = calls.find(c => c.action?.kind === "pointer" && c.action.phase === "down");
+  assert.ok(down, "pointer down sent");
+  assert.deepEqual([...down.action.visible_rows], [9, 10, 3, 4]);
 });

@@ -2,16 +2,182 @@ use crate::editor_meter::EditorTimeSignature;
 use crate::{
     Application, LaneLayout, PointerPhase, controller, layers, refusals, safe_child, shortcuts,
 };
+use dawsu_editor::Selection;
 use dawsu_editor::commands::{EditorScope, HelpGroup, KeyOutcome, RunOutcome};
 use dawsu_editor::keys::{KeyChord, Mods};
 use dawsu_editor::tempo::SnapSpacing;
-use dawsu_editor::tools::{PointerButton, PointerInput, PointerSurface, ToolKind, ToolTarget};
+use dawsu_editor::tools::{
+    PointerButton, PointerInput, PointerSurface, TimeRange, ToolKind, ToolPreview, ToolTarget,
+};
 use dawsu_editor::volume_ramp::RampShape;
-use dawsu_editor_composer::HitKey;
-use dawsu_foundation::{Hitsound, SampleIdentity, SampleSet, Sound};
+use dawsu_editor_composer::{Composer, HitKey};
+use dawsu_foundation::{Hitsound, SampleIdentity, SampleSet, SongTime, Sound};
 use dawsu_hitsounding::LaneSource;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+struct SamplesRowTarget<'a> {
+    composer: &'a mut Composer,
+    vis: Vec<usize>,
+    row_to_coord: HashMap<usize, usize>,
+}
+
+impl<'a> SamplesRowTarget<'a> {
+    fn new(composer: &'a mut Composer, visible_rows: &[usize]) -> Option<Self> {
+        let mut seen = HashSet::new();
+        let vis: Vec<usize> = visible_rows
+            .iter()
+            .copied()
+            .filter(|&r| r < composer.lanes.len() && seen.insert(r))
+            .collect();
+        if vis.is_empty() {
+            return None;
+        }
+        let row_to_coord = vis
+            .iter()
+            .enumerate()
+            .map(|(coord, &raw)| (raw, coord))
+            .collect();
+        Some(Self {
+            composer,
+            vis,
+            row_to_coord,
+        })
+    }
+
+    fn translate_pointer(&self, mut input: PointerInput) -> PointerInput {
+        if input.surface == PointerSurface::Grid {
+            input.row = usize::try_from(input.row)
+                .ok()
+                .and_then(|r| self.row_to_coord.get(&r).copied())
+                .map_or(-1, |c| c as i32);
+        }
+        input
+    }
+}
+
+impl ToolTarget for SamplesRowTarget<'_> {
+    type Item = HitKey;
+
+    fn hit_test(&self, at: &PointerInput) -> Option<HitKey> {
+        let coord = usize::try_from(at.row).ok()?;
+        let raw = *self.vis.get(coord)?;
+        let mut mapped = *at;
+        mapped.row = raw as i32;
+        ToolTarget::hit_test(self.composer, &mapped)
+    }
+
+    fn in_range(&self, from: SongTime, to: SongTime, first: i32, last: i32) -> Vec<HitKey> {
+        let lo = from.ms().min(to.ms());
+        let hi = from.ms().max(to.ms());
+        let mut keys = Vec::new();
+        for (i, m) in self.composer.hitsounds().moments().iter().enumerate() {
+            if m.time().ms() < lo || m.time().ms() > hi {
+                continue;
+            }
+            for lane in m.hits() {
+                if first == i32::MIN && last == i32::MAX {
+                    keys.push(HitKey {
+                        moment: i,
+                        lane: lane.clone(),
+                    });
+                } else if let Some(raw) = self.composer.lanes.iter().position(|l| l == lane)
+                    && let Some(&coord) = self.row_to_coord.get(&raw)
+                    && (first..=last).contains(&(coord as i32))
+                {
+                    keys.push(HitKey {
+                        moment: i,
+                        lane: lane.clone(),
+                    });
+                }
+            }
+        }
+        keys
+    }
+
+    fn item_time(&self, item: &HitKey) -> SongTime {
+        ToolTarget::item_time(self.composer, item)
+    }
+
+    fn selection(&mut self) -> &mut Selection<HitKey> {
+        ToolTarget::selection(self.composer)
+    }
+
+    fn snap(&self, time: SongTime) -> SongTime {
+        ToolTarget::snap(self.composer, time)
+    }
+
+    fn snap_steps(&self, from: SongTime, to: SongTime) -> Vec<SongTime> {
+        ToolTarget::snap_steps(self.composer, from, to)
+    }
+
+    fn snap_offset(&self, from: SongTime, raw_ms: f64) -> f64 {
+        ToolTarget::snap_offset(self.composer, from, raw_ms)
+    }
+
+    fn snap_offset_relative(&self, from: SongTime, raw_ms: f64) -> f64 {
+        ToolTarget::snap_offset_relative(self.composer, from, raw_ms)
+    }
+
+    fn begin(&mut self, label: &str) {
+        ToolTarget::begin(self.composer, label);
+    }
+
+    fn commit(&mut self) {
+        ToolTarget::commit(self.composer);
+    }
+
+    fn cancel(&mut self) {
+        ToolTarget::cancel(self.composer);
+    }
+
+    fn insert(&mut self, at: SongTime, row: i32) -> Option<HitKey> {
+        let coord = usize::try_from(row).ok()?;
+        let raw = *self.vis.get(coord)?;
+        ToolTarget::insert(self.composer, at, raw as i32)
+    }
+
+    fn delete(&mut self, items: &[HitKey]) {
+        ToolTarget::delete(self.composer, items);
+    }
+
+    fn move_by(&mut self, items: &[HitKey], delta_ms: f64, delta_rows: i32) {
+        self.composer
+            .move_by_in_view(items, delta_ms, delta_rows, Some(&self.vis));
+    }
+
+    fn set_values(&mut self, values: &[(HitKey, i32)]) {
+        ToolTarget::set_values(self.composer, values);
+    }
+
+    fn insert_value(&self) -> i32 {
+        ToolTarget::insert_value(self.composer)
+    }
+
+    fn toggle_listen_mute(&mut self, item: &HitKey) {
+        ToolTarget::toggle_listen_mute(self.composer, item);
+    }
+
+    fn audition(&mut self, item: &HitKey) {
+        ToolTarget::audition(self.composer, item);
+    }
+
+    fn pan(&mut self, delta_ms: f64, delta_rows: f64) {
+        ToolTarget::pan(self.composer, delta_ms, delta_rows);
+    }
+
+    fn set_range(&mut self, range: Option<TimeRange>) {
+        ToolTarget::set_range(self.composer, range);
+    }
+
+    fn open_tool_picker(&mut self, at: &PointerInput) {
+        ToolTarget::open_tool_picker(self.composer, at);
+    }
+
+    fn show_preview(&mut self, preview: ToolPreview) {
+        ToolTarget::show_preview(self.composer, preview);
+    }
+}
 
 impl Application {
     pub fn set_lane_layout(&mut self, mut layout: LaneLayout) -> Result<(), String> {
@@ -233,6 +399,14 @@ impl Application {
                 ctx,
                 move_stroke: &mut self.drum_move_stroke,
             };
+            match phase {
+                PointerPhase::Down => self.tools.down(&mut target, translated),
+                PointerPhase::Move => self.tools.moved(&mut target, translated),
+                PointerPhase::Up => self.tools.up(&mut target, translated),
+                PointerPhase::Cancel => self.tools.cancel(&mut target),
+            }
+        } else if let Some(mut target) = visible_rows.and_then(|rows| SamplesRowTarget::new(&mut d.composer, rows)) {
+            let translated = target.translate_pointer(input);
             match phase {
                 PointerPhase::Down => self.tools.down(&mut target, translated),
                 PointerPhase::Move => self.tools.moved(&mut target, translated),

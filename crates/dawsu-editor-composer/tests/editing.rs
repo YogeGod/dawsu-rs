@@ -616,3 +616,65 @@ fn scale_by_volume_picks_a_moment_by_the_volume_its_hits_play_at() {
     assert!(c.scale_by_volume(VolumeScope::Selected, 40, 60, 50.0));
     assert_eq!(clap_volume(&c), 25);
 }
+
+#[test]
+fn bulk_lane_move_deduplicates_audition_requests_and_clears_move_stroke() {
+    use dawsu_editor_composer::HitKey;
+
+    let mut c = composer();
+    let src_idx = c.lanes.iter().position(|l| *l == clap()).unwrap();
+    let dst_lane = c.lanes[src_idx + 1].clone();
+    let after_lane = c.lanes[src_idx + 2].clone();
+
+    // 25 hits on one lane moved down together must queue only one audition request.
+    let mut keys = Vec::new();
+    for i in 0..25 {
+        c.add(5000.0 + i as f64 * 100.0, clap(), 80, 0.0);
+        keys.push(c.selected.primary().unwrap().clone());
+    }
+    c.selected.replace(keys);
+    c.audition_requests.clear();
+    c.move_rows(1);
+    assert_eq!(c.audition_requests, vec![dst_lane.clone()]);
+
+    // Multi-lane select_all + move_rows queues only unique destination lanes and does NOT leak
+    // move_stroke into a subsequent move_rows on a smaller selection.
+    c.select_all();
+    c.audition_requests.clear();
+    c.move_rows(1);
+    let unique: std::collections::HashSet<_> = c.audition_requests.iter().collect();
+    assert_eq!(unique.len(), c.audition_requests.len());
+
+    // Now select ONLY 2 hits on `after_lane` and move back up: must NOT re-select the earlier Ctrl+A set.
+    let two: Vec<HitKey> = c
+        .selected
+        .items()
+        .iter()
+        .filter(|k| k.lane == after_lane)
+        .take(2)
+        .cloned()
+        .collect();
+    assert_eq!(two.len(), 2);
+    c.selected.replace(two);
+    c.move_rows(-1);
+    assert_eq!(c.selected.items().len(), 2);
+    assert!(c.selected.items().iter().all(|k| k.lane == dst_lane));
+}
+
+#[test]
+fn move_rows_in_view_steps_through_empty_visible_lanes_in_visual_order() {
+    let mut c = composer();
+    // Visual order puts lane 3 first, empty lane 1 second, then lanes 0 and 2.
+    let lane3 = c.lanes[3].clone();
+    let lane1 = c.lanes[1].clone();
+    c.add(500.0, lane3.clone(), 80, 0.0);
+    let k1 = c.selected.primary().unwrap().clone();
+    c.add(1500.0, lane3.clone(), 80, 0.0);
+    let k2 = c.selected.primary().unwrap().clone();
+    c.selected.replace([k1.clone(), k2.clone()]);
+    c.move_rows_in_view(&[3, 1, 0, 2], 1);
+    assert_eq!(c.selected.items().len(), 2);
+    assert!(c.selected.items().iter().all(|k| k.lane == lane1));
+    assert!(c.hitsounds().moments()[k1.moment].has_hit(&lane1));
+    assert!(c.hitsounds().moments()[k2.moment].has_hit(&lane1));
+}
