@@ -17,8 +17,11 @@ Rules for coding agents in this repo. Keep edits cross-platform (Windows, macOS,
 
 ## Verification
 
-Run relevant checks while iterating, all four before handing off slice:
+Run relevant checks while iterating, and handoff gate before PR/merge:
 
+- **One-command verifier:** `node tools/verify-handoff.mjs --auto` (add `--with-everyday` on screen/UI/IPC/workflow changes; `--nextest` uses `cargo-nextest`).
+- **UI-only fast-path:** when committed + working-tree diff touches zero `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `apps/tauri/capabilities/*`, `apps/tauri/tauri.conf.json`, or `apps/tauri/icons/*`, skip local Clippy + `cargo test --workspace` (no Rust inputs changed vs `origin/main`; `cargo build -p dawsu-tauri --locked` still compiles the binary); UI build, UI unit tests, frontend integration tests, `cargo build -p dawsu-tauri --locked`, and `everyday-check.mjs` stay required.
+- **Single gate owner:** implementer runs targeted tests during TDD + full gate once before handoff; `/ready-review` runs only touched tests unless editing code; orchestrator skips re-running an unchanged green gate.
 - **Rust Clippy (CI gate):** `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - **Rust workspace:** `cargo test --workspace --locked`
 - **Svelte UI build & unit tests** (in `apps/tauri/ui`): `npm run build` and `npm test`
@@ -26,15 +29,15 @@ Run relevant checks while iterating, all four before handing off slice:
 - **osu!lazer oracle** (when changing format/timing/hitsound rules or fixtures):
   `dotnet run -c Release --project tools/lazer-oracle -- tests/fixtures/lazer-oracle tests/fixtures/save-pack tests/fixtures/oracle-cases`
 
-GitHub runs first three on Windows for every PR changing more than `.md` files, and on `main` after each merge (`.github/workflows/windows-checks.yml`); run oracle yourself when it applies.
+`.github/workflows/windows-checks.yml` is currently disabled manually on GitHub, so run local Clippy + `cargo test --workspace` on every Rust/Cargo/capabilities/config change (and oracle when it applies).
 
-**Everyday check (Windows, against the built editor):** after screen change, build editor (`cargo build -p dawsu-tauri --locked`) and run `node tools/everyday-check.mjs --exe target/debug/dawsu-tauri.exe`. Opens real `dawsu-tauri.exe` on copy of fixture map, uses it like mapper ~1 min: menus, tools, snap, placing, moving and deleting hit, undo/redo, panels, dialogs and windows, Save, then checks files on disk. Verifies exe mtime against `HEAD` and `build-stamp.json` (run against fresh build before amending test-only edits, or rebuild after Rust/UI edits), writes temp artifacts to `target/everyday-check/` (remove when done), prints one `PASS`, `FAIL` or `SKIP` line per step, exits 1 on failed step. JS tests above run against fake page; this one catches screen that no longer starts or responds. Failing step showing app is wrong stays failing: fix app, not step.
+**Everyday check (Windows, against the built editor):** after screen change, build editor (`cargo build -p dawsu-tauri --locked`) and run `node tools/everyday-check.mjs --exe target/debug/dawsu-tauri.exe`. Opens real `dawsu-tauri.exe` on copy of fixture map, uses it like mapper ~1 min: menus, tools, snap, placing, moving and deleting hit, undo/redo, panels, dialogs and windows, Save, then checks files on disk. Verifies exe mtime against latest code commit (`crates`, `apps/tauri`, `Cargo.*`, `rust-toolchain.toml`) and `build-stamp.json`, writes temp artifacts to `target/everyday-check/` (remove when done), prints one `PASS`, `FAIL` or `SKIP` line per step, exits 1 on failed step. JS tests above run against fake page; this one catches screen that no longer starts or responds. Failing step showing app is wrong stays failing: fix app, not step.
 
 **Merge gate (Yoge, 2026-11-21):** nothing merges into `main`, by person or agent, unless everyday check passes on build of that exact commit. Paste its last line (`everyday check: N of M steps passed`) and commit id in PR. Never merge in same step that opens PR.
 
 **Git & docs hygiene:** Run `git fetch origin` before committing or pushing to `main`. Commit `NOW.md` refresh on feature branch after code commit, `--ff-only` merge in `dawsu-rs-main`, push, then `checkout --detach origin/main` in feature worktree before `git branch -d`. Also refresh `E:/Obsidian/Workspace/dawsu-rewrite/now.md` and keep `AGENTS.md` + `NOW.md` in `caveman-compress` terse format.
 
-**Windows notes:** `signalsmith-stretch` requires `LIBCLANG_PATH` (this machine: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`); keep build/temp artifacts on `E:`. NTFS dir mtime: never trust `DirEntry::metadata()` (`FindNextFileW` reads stale parent `$I30` cache) — filter with `entry.file_type()` and call `fs::metadata(&path)` for live mtime; sleep `>=30 ms` in mtime-mutation tests (~15.6 ms Windows clock tick).
+**Windows notes:** For fresh worktrees run `pwsh -NoProfile -ExecutionPolicy Bypass -File tools/setup-worktree.ps1` (junctions `target/` and `apps/tauri/ui/node_modules` to `E:/dawsu-build/`, keeps `C:` free, pre-starts `sccache`). Single-worktree runs reuse shared `CARGO_TARGET_DIR` (`E:/dev-caches/cargo-target`, auto-resolved by `verify-handoff.mjs`); 2-wide parallel worktree waves should set `CARGO_TARGET_DIR=<worktree>\target` so concurrent Cargo builds do not collide on `.cargo-lock` or `dawsu-tauri.exe`. Both `setup-worktree.ps1` and `verify-handoff.mjs` run `sccache --start-server` before Cargo to prevent Windows port-bind races (`os error 10048`). Machine `~/.cargo/config.toml` configures `sccache` (`SCCACHE_DIR=E:/dawsu-build/sccache`), `rust-lld`, and `LIBCLANG_PATH` (`E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`); keep `TEMP`/`TMP` and build/temp artifacts on `E:/dawsu-build/tmp`. NTFS dir mtime: never trust `DirEntry::metadata()` (`FindNextFileW` reads stale parent `$I30` cache) — filter with `entry.file_type()` and call `fs::metadata(&path)` for live mtime; sleep `>=30 ms` in mtime-mutation tests (~15.6 ms Windows clock tick).
 
 ## Context pointers
 

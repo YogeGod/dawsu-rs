@@ -53,13 +53,46 @@ if (!args.exe) throw new Error("--exe is required: the built dawsu-tauri.exe");
 const exe = resolve(args.exe);
 if (!existsSync(exe)) throw new Error(`no editor at ${exe}`);
 
-// Provenance and freshness check: verify the binary is newer than HEAD and the UI build stamp.
-const headShortRes = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repo, encoding: "utf8" });
-const headShort = headShortRes.status === 0 && headShortRes.stdout.trim() ? headShortRes.stdout.trim() : "unknown";
-const headTimeRes = spawnSync("git", ["log", "-1", "--format=%ct"], { cwd: repo, encoding: "utf8" });
-const headEpochSec = headTimeRes.status === 0 ? Number.parseInt(headTimeRes.stdout.trim(), 10) : Number.NaN;
-const headMtimeMs = Number.isFinite(headEpochSec) ? headEpochSec * 1000 : null;
-const headIso = headMtimeMs !== null ? new Date(headMtimeMs).toISOString() : "unknown";
+// Provenance and freshness check: verify the binary is newer than the latest code commit and UI build stamp.
+const CODE_PATHS = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "crates",
+  "apps/tauri/Cargo.toml",
+  "apps/tauri/build.rs",
+  "apps/tauri/tauri.conf.json",
+  "apps/tauri/capabilities",
+  "apps/tauri/icons",
+  "apps/tauri/src",
+  "apps/tauri/dist",
+  "apps/tauri/ui/src",
+  "apps/tauri/ui/package.json",
+  "apps/tauri/ui/package-lock.json",
+  "apps/tauri/ui/vite.config.js",
+  "apps/tauri/ui/stamp.mjs",
+];
+
+function parseCommitOutput(res) {
+  if (res.status !== 0) return null;
+  const line = res.stdout.trim();
+  if (!line) return null;
+  const space = line.indexOf(" ");
+  if (space <= 0) return null;
+  const short = line.slice(0, space).trim();
+  const epochSec = Number.parseInt(line.slice(space + 1).trim(), 10);
+  if (!short || !Number.isFinite(epochSec)) return null;
+  return { short, mtimeMs: epochSec * 1000, iso: new Date(epochSec * 1000).toISOString() };
+}
+
+const headCommit = parseCommitOutput(spawnSync("git", ["log", "-1", "--format=%h %ct"], { cwd: repo, encoding: "utf8" }));
+const headShort = headCommit?.short ?? "unknown";
+const codeCommit = parseCommitOutput(
+  spawnSync("git", ["log", "-1", "--format=%h %ct", "--", ...CODE_PATHS], { cwd: repo, encoding: "utf8" })
+) ?? headCommit;
+const codeShort = codeCommit?.short ?? headShort;
+const codeMtimeMs = codeCommit?.mtimeMs ?? null;
+const codeIso = codeCommit?.iso ?? "unknown";
 
 const exeMtimeMs = statSync(exe).mtimeMs;
 const exeMtimeIso = new Date(exeMtimeMs).toISOString();
@@ -70,8 +103,8 @@ const stampMtimeMs = hasBuildStamp ? statSync(buildStampPath).mtimeMs : null;
 const stampIso = stampMtimeMs !== null ? new Date(stampMtimeMs).toISOString() : "missing";
 
 const staleReasons = [];
-if (headMtimeMs !== null && exeMtimeMs < headMtimeMs) {
-  staleReasons.push(`binary is older than latest commit ${headShort} (${headIso})`);
+if (codeMtimeMs !== null && exeMtimeMs < codeMtimeMs) {
+  staleReasons.push(`binary is older than latest code commit ${codeShort} (${codeIso})`);
 }
 if (!hasBuildStamp) {
   staleReasons.push("apps/tauri/dist/ui/build-stamp.json is missing");
@@ -81,10 +114,14 @@ if (!hasBuildStamp) {
 const isStale = staleReasons.length > 0;
 const allowStale = Boolean(args["allow-stale"]);
 
+const codeLabel = codeShort !== headShort
+  ? `code commit ${codeShort} [${codeIso}] (HEAD ${headShort})`
+  : `HEAD ${headShort} [${codeIso}]`;
+
 console.log(`provenance repo: ${repo} (HEAD ${headShort})`);
 console.log(`provenance exe:  ${exe} (mtime ${exeMtimeIso})`);
 if (!isStale) {
-  console.log(`provenance freshness: FRESH (newer than HEAD ${headShort} [${headIso}] and build-stamp.json [${stampIso}])`);
+  console.log(`provenance freshness: FRESH (newer than ${codeLabel} and build-stamp.json [${stampIso}])`);
 } else {
   const verdict = allowStale ? "STALE (continuing because --allow-stale was passed)" : "STALE";
   console.log(`provenance freshness: ${verdict} — ${staleReasons.join("; ")}`);
@@ -110,6 +147,14 @@ function playwrightCore() {
   const npx = join(npm.stdout?.trim() ?? "", "_npx");
   if (npm.status === 0 && existsSync(npx)) {
     for (const entry of readdirSync(npx)) candidates.push(join(npx, entry, "node_modules", "playwright-core"));
+  }
+  const globalRoot = spawnSync("npm root -g", { encoding: "utf8", shell: true });
+  const gDir = globalRoot.stdout?.trim() ?? "";
+  if (globalRoot.status === 0 && gDir && existsSync(gDir)) {
+    candidates.push(join(gDir, "playwright-core"));
+    for (const entry of readdirSync(gDir)) {
+      candidates.push(join(gDir, entry, "node_modules", "playwright-core"));
+    }
   }
   const found = candidates.find(path => existsSync(join(path, "package.json")));
   if (!found) throw new Error("Playwright Core not found: set DAWSU_PLAYWRIGHT_CORE to its folder");
@@ -768,6 +813,7 @@ try {
     const toggledOff = [];
     try {
       const switches = dialog.locator('button[role="switch"]');
+      await switches.first().waitFor({ state: "visible", timeout: 5000 });
       const switchCount = await switches.count();
       for (let i = 0; i < switchCount; i++) {
         const sw = switches.nth(i);
@@ -1327,7 +1373,8 @@ try {
     expect(!!drawKey, "no key picks the Draw tool");
     await page().mouse.move(shown.surface.x + 230, shown.surface.y + 70);
     await page().keyboard.press(drawKey);
-    await until(() => window.view.tool === "Draw", null, `the ${drawKey} key did not pick Draw in Keysounds mode`);
+    await until(() => window.view.tool === "Draw" && window.dawsuUi.bridge.view?.tool === "Draw", null,
+      `the ${drawKey} key did not pick Draw in Keysounds mode`);
     await page().mouse.click(shown.surface.x + 230, shown.surface.y + 70);
     await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a Draw click placed no note");
     const drawn = await read(() => {
