@@ -41,7 +41,8 @@
     const reach = BAR_REACH_PX / zoom;
     const ms = start + x / zoom;
     let best = null;
-    for (const note of visibleNotes(model.notes, ms - reach, ms + reach, 0)) {
+    // Every bar is at a note's start, so no note that starts before the reach can match.
+    for (const note of visibleNotes(model.notes, ms - reach, ms + reach, { ...model.index, longest: 0 })) {
       const distance = Math.abs(note.startMs - ms);
       if (distance <= reach && (!best || distance < Math.abs(best.startMs - ms))) best = note;
     }
