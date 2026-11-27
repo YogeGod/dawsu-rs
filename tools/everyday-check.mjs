@@ -221,12 +221,15 @@ async function launch(map) {
     window.addEventListener("unhandledrejection", event =>
       console.error("unhandled promise rejection: " + (event.reason?.stack ?? event.reason)));
   });
+  // The debugging port can open while the window still shows about:blank; reloading that blank page
+  // would wait out the 30 s below on a white screen. Wait for the editor's own page first.
+  const editorPage = () => context.pages().find(open => !open.isClosed() && /^https?:\/\/tauri\.localhost\//.test(open.url()));
   let page = null;
-  for (let i = 0; i < 40 && !page; i++) {
-    page = context.pages()[0] ?? null;
+  for (let i = 0; i < 240 && !page; i++) {
+    page = editorPage() ?? null;
     if (!page) await sleep(250);
   }
-  if (!page) throw new Error("the editor opened no window");
+  if (!page) throw new Error(`the editor never loaded its page: ${JSON.stringify(context.pages().map(open => open.url()))}`);
   app.page = page;
   for (const open of context.pages()) listen(open);
   // Listen from the very start: load the page again with the listeners in place.
