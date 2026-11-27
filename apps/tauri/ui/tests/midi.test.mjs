@@ -285,11 +285,19 @@ test("the Keysounds modal wires every piano roll gesture to its keysounds_action
     "keysounds/KeysoundVelocitySurface.svelte",
   ].map(source).join("\n");
   for (const wiring of [
-    /send\(keysoundsAddNote\(trackId, startMs, pitch\)\)[\s\S]*?preview\(pitch\)/, // empty cell: add then play
-    // A dragged body or edge, at the editor's zoom and the roll's row height.
-    /noteDragPayload\(trackId, note, mode, dx, dy, QUANTIZE_MS, pitches, view\(\)\.zoom, rowHeight\)/,
+    // A placed note: add with the length the editor's Snap gives it, then play.
+    /send\(keysoundsAddNote\(trackId, startMs, pitch, 100, lengthMs\)\)[\s\S]*?preview\(pitch\)/,
+    /await onaddnote\(placed\.startMs, placed\.pitch, placed\.lengthMs\)/, // double-click in Select
+    /await onaddnote\(done\.placed\.startMs, done\.pitch, done\.endMs - done\.placed\.startMs\)/, // a Draw press or drag
+    // A dragged body or edge, at the editor's zoom and the roll's row height, on the editor's Snap.
+    /noteDragPayload\(trackId, note, mode, dx, dy, undefined, pitches, view\(\)\.zoom, rowHeight,\s*noteSnap\(snapScene\(\)\)\)/,
     /mode: hit\.edge \? "resize" : "move"/,
-    /await ondragnote\(note, mode, payload\.action\)/,
+    /await ondragnote\(done\.note, done\.mode, done\.payload\.action\)/,
+    // An Erase press or drag: every note it touched, in one undo step.
+    /await ondeletenotes\(\[\.\.\.done\.indices\]\)/,
+    /await send\(keysoundsDeleteNotes\(trackId, indices\)\)/,
+    // ...and the selection follows its note to the index it has after the erase.
+    /const next = selectionAfterDelete\(selected, indices\);[\s\S]*?\) selected = next;/,
     /oncontextmenu=\{onContextMenu\}/,
     /if \(hit\) deleteNote\(hit\.note\.index\)/,
     /event\.key === "Delete" \|\| event\.key === "Backspace"/,

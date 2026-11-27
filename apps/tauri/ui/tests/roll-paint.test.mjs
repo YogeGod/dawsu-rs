@@ -27,6 +27,7 @@ function fakeContext() {
     strokeRect(x, y, w, h) { calls.push({ kind: "stroke", style: this.strokeStyle, x, y, w, h }); },
     fillText(text, x, y) { calls.push({ kind: "text", style: this.fillStyle, text, x, y }); },
     fill() { calls.push({ kind: "path", style: this.fillStyle }); },
+    setLineDash(dash) { calls.push({ kind: "dash", dash }); },
     closePath() {},
   };
 }
@@ -235,7 +236,7 @@ test("an empty track shows one hint line in the roll, and only while it has no n
   const { default: KeysoundRollSurface } = await import("../src/parts/keysounds/KeysoundRollSurface.svelte");
   const hint = props => render(KeysoundRollSurface, { props: { pitches, trackId: 4, trackName: "Lead", ...props } }).body
     .replace(/<!--[^]*?-->/g, "").match(/<p class="ks-empty[^"]*"[^>]*>([^<]*)<\/p>/)?.[1] ?? null;
-  assert.equal(hint({ notes: [] }), "No notes on Lead yet. Click in the roll to place one.");
+  assert.equal(hint({ notes: [] }), "No notes on Lead yet. Double-click in the roll, or pick Draw, to place one.", "no editor here, so no key to name");
   assert.equal(hint({ notes: [note(0, 0, 100)] }), null);
   assert.equal(hint({ notes: [], loading: true }), null);
   assert.equal(hint({ notes: [], trackId: null }), null);
@@ -250,4 +251,43 @@ test("a wheel bend survives pointer moves while Alt or Ctrl stays held; pressing
   assert.deepEqual(rampMove(ramp, keys(false, false)), { curve: 1.25, keys: 0 }, "Alt let go: the bend stays");
   assert.deepEqual(rampMove({ curve: 1.25, keys: 0 }, keys(false, true)), { curve: -1, keys: -1 }, "Ctrl pressed: ease out");
   assert.deepEqual(rampMove({ curve: 0.5, keys: 0 }, keys(false, false)), { curve: 0.5, keys: 0 }, "no key: the bend stays");
+});
+
+test("the Draw tool's landing note is a dashed outline with its name; Erase tints the notes it would delete red", () => {
+  const notes = [note(0, 1000, 1500, 72), note(1, 2000, 2500, 72), note(2, 3000, 3500, 72)];
+  const context2d = fakeContext();
+  paintRoll(context2d, 800, { start: 0, zoom: 0.1 }, roll, {
+    notes, index: noteIndex(notes), selected: null,
+    landing: { startMs: 4000, endMs: 4500, pitch: 70 }, erasing: [0, 2],
+  });
+  const dashed = context2d.calls.findIndex(call => call.kind === "dash" && call.dash.length);
+  assert.ok(dashed >= 0, "a dashed line is set");
+  const outline = context2d.calls.slice(dashed).find(call => call.kind === "stroke");
+  assert.deepEqual([outline.x, outline.y, outline.w, outline.h], [400.5, (84 - 70) * 14 + 0.5, 49, 12]);
+  assert.ok(context2d.calls.slice(dashed).some(call => call.kind === "text" && call.text === "A#4"), "the landing note is named");
+  const red = context2d.calls.filter(call => call.kind === "fill" && call.style === "rgba(255,69,58,.55)").map(call => call.x);
+  assert.deepEqual(red, [100, 300], "only the notes Erase would delete");
+});
+
+test("a pointer move that leaves the Draw or Erase preview as it was keeps it, so hovering repaints nothing", async () => {
+  const { sameIndices, sameLanding } = await import("../src/lib/rollPaint.js");
+  const { readFileSync } = await import("node:fs");
+  const at = { startMs: 125, endMs: 250, pitch: 60 };
+  assert.equal(sameLanding(null, null), true);
+  assert.equal(sameLanding(at, { ...at }), true, "the same snapped note in a new object");
+  assert.equal(sameLanding(at, { ...at, endMs: 375 }), false);
+  assert.equal(sameLanding(at, null), false);
+  assert.equal(sameIndices([], []), true);
+  assert.equal(sameIndices([2], [2]), true);
+  assert.equal(sameIndices([2], [3]), false);
+  assert.equal(sameIndices([], [3]), false);
+  // The surface sets its previews only through that check on a move.
+  const surface = readFileSync(new URL("../src/parts/keysounds/KeysoundRollSurface.svelte", import.meta.url), "utf8");
+  const onMove = surface.slice(surface.indexOf("function hover"), surface.indexOf("async function onUp"));
+  assert.doesNotMatch(onMove, /\blanding = |\berasing = \[\]/);
+  assert.match(onMove, /showPreview\(/);
+  // Alt pressed or released, or a tool key, updates the preview with the pointer still (plan Q1, Q3).
+  assert.match(surface, /<svelte:window onkeydown=\{onAltKey\} onkeyup=\{onAltKey\} \/>/);
+  assert.match(onMove, /event\.key === "Alt" && pointer && !drag\) hover\(pointer\.x, pointer\.y, event\.type === "keydown"\)/);
+  assert.match(onMove, /bridge\.view\?\.tool;\s*untrack\(\(\) => \{ if \(pointer && !drag\) hover\(/);
 });

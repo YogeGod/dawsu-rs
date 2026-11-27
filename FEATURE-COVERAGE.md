@@ -146,4 +146,13 @@ Record a result for each stage, including the build, platform, copied fixture an
 
 The pure-Rust SoundFont (`.sf2`) and SFZ (`.sfz`) sampler engine (`dawsu-audio-instruments/src/sfz.rs`, `sf2.rs`) is implemented and wired into Keysound tracks (live Piano Roll preview, multi-preset switching, `[Keysounds]` WAV/OGG bounce & deduplication, and `Preferences › MIDI Input & VST3` tester; automated tests pass without a VST3 sidecar). Live VST3 effect mixer returns, starter sound packs, and online map search remain open. Delegated approval of designs is not implementation evidence.
 
+Keysounds mode draws the piano roll on canvas under the editor's own ruler, bottom panel and overview, on the editor's zoom (keysounding roll plan, slices 1–5).
+- **Tracks and controls:** tracks are listed in the lane column, and the instrument, note tools, scale and Generate sit in the Inspector.
+- **Notes:** notes are coloured by velocity. Notes that Generate leaves out are drawn hollow, and muted notes are grey.
+- **Velocity:** velocity is edited in the bottom panel with key-shaped ramps.
+- **Chord conflicts:** each conflict is marked on the ruler.
+- **Tools:** Select, Draw and Erase work in the roll. A double-click places a note with Select.
+- **Snap:** notes snap to the editor's Snap, whether grid, objects or off.
+- **Checks:** the everyday check places, draws, erases and undoes notes in the real app.
+
 This ledger records the release checks alongside the code. The design vault’s tracked `dawsu-rewrite/overview/feature-parity.md` sets the workflow scope, `dawsu-rewrite/roadmap.md` sets milestone order, and `dawsu-rewrite/todo.md` holds open decisions. Record outstanding behaviour and build-specific evidence separately before accepting a row.

@@ -693,3 +693,31 @@ test("Keysounds mode's Shift+drag ramp takes its shape from the keys and the whe
   assert.match(lane, /bridge\.callAction\("keysoundsRoll", "ramp", drawn\)/);
   assert.doesNotMatch(lane, /ramp-shape|rampShape/);
 });
+
+test("Keysounds mode lets only plain tool keys through: no tap lane, no hit delete", async () => {
+  const { listeners, windowEvents, calls, evaluate, settle } = await frontend();
+  const handle = listeners.get("keydown");
+  const open = () => evaluate(`view = { busy: false, hasDocument: true, tool: "Select", tapRecordingArmed: true, tabRoutes: [] };
+    scene = { path: "a.osu", moments: [], snap: true }; laneRows = [0, 1, 2];
+    window.dawsuUi = { mode: () => "keysounds" };`);
+  open();
+  const sent = () => calls.map(call => call.args?.action).filter(Boolean);
+  // DAW preset: 3 picks Draw. A tap switches the tool and stays there.
+  const three = keyEvent("3", "Digit3");
+  handle(three);
+  windowEvents.get("keyup")?.(keyEvent("3", "Digit3"));
+  await settle();
+  assert.equal(three.prevented, true);
+  assert.deepEqual(sent().filter(action => action.kind === "tool").map(action => action.name), ["Draw"]);
+  // Armed tap-lane keys, numpad lanes, Delete and modified digits do nothing to the hits.
+  // The fake's reply to the tool action dropped the scene, so open the map again first.
+  open();
+  calls.length = 0;
+  for (const event of [keyEvent("a", "KeyA"), keyEvent("1", "Numpad1"), keyEvent("2", "Numpad2"), keyEvent("Delete", "Delete"),
+    keyEvent("2", "Digit2", { shiftKey: true }), keyEvent("2", "Digit2", { ctrlKey: true })]) {
+    handle(event);
+    windowEvents.get("keyup")?.(event);
+  }
+  await settle();
+  assert.deepEqual(sent(), [], "nothing reaches the hitsound editor");
+});

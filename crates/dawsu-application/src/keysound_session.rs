@@ -1125,6 +1125,7 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
             | "move_note"
             | "resize_note"
             | "delete_note"
+            | "delete_notes"
             | "set_velocity"
             | "quantize_notes"
             | "transpose_notes"
@@ -1541,6 +1542,31 @@ pub(crate) fn handle(app: &mut Application, payload: &Value) -> Result<Value, St
                 .ok_or("Keysound track not found")?;
             if index < track.notes.len() {
                 track.notes.remove(index);
+            }
+        }
+        // The roll's Erase drag: every note it crossed, as one undo step.
+        "delete_notes" => {
+            let id = track_id.ok_or("Missing trackId")?;
+            let mut indices: Vec<usize> = payload
+                .get("noteIndices")
+                .and_then(|v| v.as_array())
+                .ok_or("Missing noteIndices")?
+                .iter()
+                .filter_map(|v| v.as_u64().map(|i| i as usize))
+                .collect();
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            indices.dedup();
+            let track = app
+                .keysounds
+                .document
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("Keysound track not found")?;
+            for index in indices {
+                if index < track.notes.len() {
+                    track.notes.remove(index);
+                }
             }
         }
         "set_velocity" => {
@@ -3238,6 +3264,29 @@ mod tests {
 
         let res = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
         assert_eq!(res["tracks"][0]["name"], "Lead");
+    }
+
+    #[test]
+    fn delete_notes_removes_several_in_one_undo_step() {
+        let (_scratch, _map_dir, mut app) = setup_mapset_with_timing(
+            "keysound-delete-notes",
+            "0,500,4,1,0,100,1,0",
+            "256,192,1000,1,0,0:0:0:0:
+",
+        );
+        let res = handle(&mut app, &json!({ "kind": "add_track", "name": "Lead" })).unwrap();
+        let tid = res["tracks"][0]["id"].as_u64().unwrap();
+        for start in [0.0, 250.0, 500.0, 750.0] {
+            add_test_note(&mut app, tid, start, start + 200.0);
+        }
+        // Out of order, repeated and out of range: each listed note goes once, the rest stay.
+        let res = handle(&mut app, &json!({ "kind": "delete_notes", "trackId": tid, "noteIndices": [3, 1, 3, 9] })).unwrap();
+        let starts: Vec<f64> = res["tracks"][0]["notes"].as_array().unwrap().iter()
+            .map(|n| n["startMs"].as_f64().unwrap()).collect();
+        assert_eq!(starts, vec![0.0, 500.0]);
+        let res = handle(&mut app, &json!({ "kind": "undo" })).unwrap();
+        assert_eq!(res["tracks"][0]["notes"].as_array().unwrap().len(), 4, "one Undo brings both back");
+        assert!(handle(&mut app, &json!({ "kind": "delete_notes", "trackId": tid })).is_err(), "noteIndices is required");
     }
 
     #[test]

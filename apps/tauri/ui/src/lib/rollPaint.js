@@ -38,6 +38,9 @@ const colours = {
   noteName: "#08080a",
   // --editor-warning in tokens.css.
   chordMark: "#ffd60a",
+  landing: "rgba(255,255,255,.85)",
+  erasing: "rgba(255,69,58,.55)",
+  erasingEdge: "#ff453a",
   chordMarkEdge: "#08080a",
   velocityLane: "#0e0e10",
   velocityGuide: "rgba(255,255,255,.06)",
@@ -111,6 +114,16 @@ export function visibleNotes(notes, startMs, endMs, index = noteIndex(notes)) {
   }
   return seen;
 }
+
+// What the editor's tool does in the roll: Draw and Erase keep their meaning; every other tool
+// (Select, Mute, Grab, Range, Ramp) moves and resizes as Select does (plan 3.5).
+export const rollTool = tool => (tool === "Draw" ? "draw" : tool === "Erase" ? "erase" : "select");
+
+// Whether a pointer move left the Draw landing note or the Erase set as it was, so hovering
+// repaints the lanes only when a preview changes.
+export const sameLanding = (a, b) =>
+  a === b || (!!a && !!b && a.startMs === b.startMs && a.endMs === b.endMs && a.pitch === b.pitch);
+export const sameIndices = (a, b) => a.length === b.length && a.every((index, at) => index === b[at]);
 
 // What a wheel turn over the roll does: "pitch" scrolls the rows, "rows" sets the row height, and
 // null leaves the turn to the editor's own handler (time zoom, snap step, pan), which must still
@@ -244,6 +257,31 @@ export function paintRoll(context2d, width, view, roll, model, drawGrid = null) 
   if (!selectedNote && model.drag) selectedNote = (model.notes ?? []).find(note => note.index === model.drag.index) ?? null;
   // The selected note is drawn last, over its neighbours.
   if (selectedNote) drawNote(selectedNote);
+  // Erase: the notes a release would delete, tinted red.
+  if (model.erasing?.length) {
+    const erasing = new Set(model.erasing);
+    for (const note of visibleNotes(model.notes, view.start, endMs, model.index)) {
+      if (!erasing.has(note.index)) continue;
+      const box = noteRect(note, view, roll);
+      if (!box) continue;
+      context2d.fillStyle = colours.erasing;
+      context2d.fillRect(box.x, box.y, box.w, box.h);
+      context2d.strokeStyle = colours.erasingEdge;
+      context2d.strokeRect(box.x + 0.5, box.y + 0.5, box.w - 1, box.h - 1);
+    }
+  }
+  // Draw: where a click (or the drag so far) puts a note, as a dashed outline with its name.
+  const landing = model.landing ? noteRect(model.landing, view, roll) : null;
+  if (landing) {
+    context2d.setLineDash([3, 2]);
+    context2d.strokeStyle = colours.landing;
+    context2d.strokeRect(landing.x + 0.5, landing.y + 0.5, landing.w - 1, landing.h - 1);
+    context2d.setLineDash([]);
+    if (rowHeight >= 11 && landing.w >= 22) {
+      context2d.fillStyle = colours.landing;
+      context2d.fillText(pitchName(model.landing.pitch), landing.x + 3, landing.y + landing.h / 2 + 0.5);
+    }
+  }
   context2d.restore();
 }
 

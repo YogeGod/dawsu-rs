@@ -1094,7 +1094,7 @@ try {
   });
 
   // After every save check, so the keysound track it adds reaches no saved file compared above.
-  await step("Keysounds mode: the roll sits under the ruler, takes a note, zooms with the ruler, undoes it from the keys and from Edit, and leaves the hits alone", async () => {
+  await step("Keysounds mode: the roll sits under the ruler, takes a note, zooms with the ruler, undoes it from the keys and from Edit, draws and erases a snapped note, and leaves the hits alone", async () => {
     const hitsBefore = (await hits()).length;
     const lanesTop = await read(() => document.getElementById("scroll").scrollTop);
     await page().click("#keysounds-view");
@@ -1131,12 +1131,16 @@ try {
         menu: shown(document.getElementById("ramp-shape")),
       };
     });
-    expect(/^No notes on .+ yet\. Click in the roll to place one\.$/.test(emptyChrome.hint),
+    expect(/^No notes on .+ yet\. Double-click in the roll, or pick Draw \(\w\), to place one\.$/.test(emptyChrome.hint),
       `the empty track shows no hint in the roll: "${emptyChrome.hint}"`);
     expect(emptyChrome.legend && !emptyChrome.menu, `the bottom panel shows the ramp shape menu, not the ramp keys: ${JSON.stringify(emptyChrome)}`);
 
+    // Select never places on a single click (plan revision 5, Q1); a double-click does.
     await page().mouse.click(shown.surface.x + 200, shown.surface.y + 40);
-    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a click on the roll placed no note");
+    await page().waitForTimeout(400);
+    expect(await read(() => window.dawsuUi.bridge.keysoundRoll?.notes.length) === 0, "a single click with Select placed a note");
+    await page().mouse.dblclick(shown.surface.x + 200, shown.surface.y + 40);
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a double-click on the roll placed no note");
     await until(() => !document.querySelector(".ks-empty"), null, "the empty-track hint stays after a note is placed");
     // The colour on the canvas where the note should be, from its time on the editor's own axis.
     const noteIsDrawn = () => {
@@ -1265,11 +1269,48 @@ try {
     }
 
     // Edit › Undo follows the keysound history here: it takes the note back and leaves the hits alone.
-    await page().mouse.click(shown.surface.x + 200, shown.surface.y + 40);
-    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a second click on the roll placed no note");
+    await page().mouse.dblclick(shown.surface.x + 200, shown.surface.y + 40);
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a second double-click on the roll placed no note");
     await fromMenu("Edit", "Undo");
     await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 0, null, "Edit › Undo did not undo the keysound note");
     expect((await hits()).length === hitsBefore, "Edit › Undo in Keysounds mode changed the hits");
+
+    // Draw, picked by its own key in this preset, places a note on the snap step, one step long;
+    // Erase then removes it (plan task 5.3).
+    const drawKey = await read(() => window.dawsuUi.bridge.callAction("toolKey", "Draw"));
+    expect(!!drawKey, "no key picks the Draw tool");
+    await page().mouse.move(shown.surface.x + 230, shown.surface.y + 70);
+    await page().keyboard.press(drawKey);
+    await until(() => window.view.tool === "Draw", null, `the ${drawKey} key did not pick Draw in Keysounds mode`);
+    await page().mouse.click(shown.surface.x + 230, shown.surface.y + 70);
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a Draw click placed no note");
+    const drawn = await read(() => {
+      const scene = window.scene;
+      const note = window.dawsuUi.bridge.keysoundRoll.notes[0];
+      const [origin, beat] = scene.sections.filter(section => section[0] <= note.startMs).pop() ?? scene.sections[0];
+      return { note, snap: scene.snap, mode: scene.snapMode, origin, beat,
+        step: beat * Math.max(1, scene.beats || 1) / Math.max(1, scene.divisor || 4) };
+    });
+    if (drawn.snap && drawn.mode !== "objects") {
+      const offset = (drawn.note.startMs - drawn.origin) / drawn.step;
+      expect(Math.abs(offset - Math.round(offset)) * drawn.step <= 1 &&
+        Math.abs(drawn.note.endMs - drawn.note.startMs - drawn.step) <= 1,
+        `the Draw click did not land on a ${drawn.step} ms snap step: ${JSON.stringify(drawn)}`);
+    } else {
+      expect(Math.abs(drawn.note.endMs - drawn.note.startMs - drawn.beat) <= 1,
+        `the Draw click with Snap off or on objects is not one beat long: ${JSON.stringify(drawn)}`);
+    }
+    await pickTool("Erase");
+    const middle = await read(() => {
+      const roll = window.dawsuUi.bridge.keysoundRoll;
+      const note = roll.notes[0];
+      return { x: (note.startMs - window.scene.viewStart) * window.scene.zoom + 3,
+        y: roll.top + roll.pitches.indexOf(note.pitch) * roll.rowHeight - roll.scrollY + roll.rowHeight / 2 };
+    });
+    await page().mouse.click(shown.grid.x + middle.x, shown.grid.y + middle.y);
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 0, null, "an Erase click did not remove the drawn note");
+    await pickTool("Select");
+    expect((await hits()).length === hitsBefore, "Draw and Erase in Keysounds mode changed the hits");
 
     await page().click("#keysounds-view");
     await until(() => window.dawsuUi.bridge.mode !== "keysounds" && !document.querySelector(".ks-workspace"), null,

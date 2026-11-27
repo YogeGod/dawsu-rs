@@ -1,5 +1,5 @@
 import {
-  actions, hasOpenModal, modals, openModal, registerAction, registerTimelineTheme, showToast,
+  actions, hasOpenModal, modals, onlyModalOpen, openModal, registerAction, registerTimelineTheme, showToast,
 } from "../lib/registry.js";
 // Main editor runtime entry point: composes the modular editor subsystems, wires top-level
 // controls, keyboard and Tauri listeners, and registers runtime actions on the bridge registry.
@@ -21,7 +21,7 @@ import { attachModal } from "./modal.js";
 import { attachPanels } from "./panels.js";
 import { createState } from "./state.js";
 import { attachTimeline } from "./timeline.js";
-import { createQuasimodeController } from "../lib/quasimode.js";
+import { createQuasimodeController, toolKeyFor } from "../lib/quasimode.js";
 import { resolveVisibleTapRow, tapLaneSlotForKey } from "../lib/tapRecord.js";
 import { attachGlobalWheelGuard } from "../lib/wheelGuard.js";
 
@@ -86,7 +86,7 @@ const exportedMethods = [
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
-  "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd",
+  "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd", "toolKey",
   "startTelemetry", "parseTelemetryFrame",
 ];
 
@@ -157,6 +157,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     isDragging: () => Boolean(state.drag || state.rulerDrag),
     openMoreTools: openMoreToolsPicker,
   });
+  // The key that picks `tool` in the current preset and shortcuts, for hints that name it.
+  ctx.toolKey = tool => toolKeyFor(quasimode.getKeyMap(), tool);
   ctx.notifyStrokeStart = () => quasimode.notifyStrokeStart();
   ctx.notifyStrokeEnd = () => quasimode.notifyStrokeEnd();
   ctx.setQuasimodeShortcuts = (shortcuts) => quasimode.setShortcuts(shortcuts);
@@ -311,8 +313,18 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   Object.assign(ctx, { clampSnapInput, popoverAction, startScreenAction, statusBarAction });
 
   const notifyToast = toast => (env !== globalThis ? env.window?.showToast?.(toast) : showToast(toast));
-  const modalOpen = () => (env === globalThis && hasOpenModal()) ||
+  const otherModalOpen = () =>
     Boolean(env.window?.dawsuPreferencesOpen || env.window?.dawsuModalOpen || env.window?.dawsuCommandPaletteOpen);
+  // Keysounds mode owns the keyboard like a modal, except for its plain tool keys (keysoundsToolKey).
+  const keysoundsMode = () => ctx.ui()?.mode?.() === "keysounds";
+  const modalOpen = () => (env === globalThis && hasOpenModal()) || otherModalOpen() || keysoundsMode();
+  // Plain 1-4 in Keysounds mode with nothing else open: the tool quasimode (plan 3.5, task 5.2).
+  // Every other key stays with the Keysounds host, so no hit is tapped, deleted or edited.
+  // Numpad digits are tap-lane keys, never tool keys, so they stay blocked here too.
+  const keysoundsToolKey = (event, key) => keysoundsMode() && /^[1-4]$/.test(key) &&
+    !String(event.code ?? "").startsWith("Numpad") && !otherModalOpen() &&
+    (env !== globalThis || onlyModalOpen("keysounds")) && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+    !event.altKey && $("editor-menu")?.hidden !== false;
 
   // Bind remaining top-level controls.
   $("ramp-shape").addEventListener("change", () => {
@@ -403,6 +415,13 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   env.document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.isComposing || elements.dialog.open ||
         event.target.closest("input, select, textarea, [contenteditable]")) return;
+    if (keysoundsToolKey(event, event.key)) {
+      if (state.scene && !state.drag && !state.rulerDrag &&
+          quasimode.handleKeyDown({ key: event.key, repeat: Boolean(event.repeat) })) {
+        event.preventDefault();
+      }
+      return;
+    }
     // An open menu, Preferences or a Svelte modal (MIDI import, Keysounds, Command Palette) owns the keyboard:
     // no timeline shortcut runs behind it.
     if ($("editor-menu")?.hidden === false || modalOpen()) {

@@ -32,3 +32,17 @@ export function generateFooter(model) {
     disabled: !model || !!model.loading || !model.anyNotes,
   };
 }
+
+// The selected note's index once the notes at `deleted` are gone (Rust keeps the rest in order),
+// or null when it was one of them. Delete then still acts on the note that was selected.
+export function selectionAfterDelete(selected, deleted) {
+  if (selected == null || deleted.includes(selected)) return null;
+  return selected - deleted.filter(index => index < selected).length;
+}
+
+// The roll's line for a track with no notes (plan revision 5, Q6). `drawKey` is the key bound to
+// the Draw tool in the current preset: 3 on DAW, 2 on osu!.
+export function emptyRollHint(trackName, drawKey) {
+  const draw = drawKey ? `Draw (${drawKey.toUpperCase()})` : "Draw";
+  return `No notes on ${trackName || "this track"} yet. Double-click in the roll, or pick ${draw}, to place one.`;
+}

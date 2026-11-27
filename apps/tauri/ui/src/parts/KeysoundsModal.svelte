@@ -4,13 +4,13 @@
   import { invoke } from "../lib/ipc.js";
   import {
     NO_PLUGINS, findNoteIndex, generateToast, instrumentChoices,
-    keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote, keysoundsGenerate,
+    keysoundsAdd, keysoundsAddNote, keysoundsDelete, keysoundsDeleteNote, keysoundsDeleteNotes, keysoundsGenerate,
     keysoundsHumanise, keysoundsLoadVst3, keysoundsPreview, keysoundsRenameTrack, keysoundsScan,
     keysoundsSetVelocity, keysoundsSnapToGrid, keysoundsStrum, keysoundsSyncToObjects, keysoundsToggleMute,
     keysoundsToggleSolo, keysoundsTranspose, keysoundsTrimOverlaps, keysoundsVelocityRamp, keysoundsView,
     scalePitchMask, sidecarStatus, visibleRollPitches,
   } from "../lib/midi.js";
-  import { keysoundsStatus } from "../lib/keysounds.js";
+  import { keysoundsStatus, selectionAfterDelete } from "../lib/keysounds.js";
   import {
     createMusicalTypingState, handleMusicalTypingKeyDown, handleMusicalTypingKeyUp,
   } from "../lib/musicalTyping.js";
@@ -298,8 +298,9 @@
     send(build(trackId));
   }
 
-  async function addNote(startMs, pitch) {
-    if (await send(keysoundsAddNote(trackId, startMs, pitch))) {
+  // The roll places a note with the length the editor's Snap gives it (rollSnap.js).
+  async function addNote(startMs, pitch, lengthMs) {
+    if (await send(keysoundsAddNote(trackId, startMs, pitch, 100, lengthMs))) {
       selected = findNoteIndex(notes, startMs, pitch);
       preview(pitch);
     }
@@ -318,6 +319,15 @@
     if (loading || trackId == null || index == null) return;
     selected = null;
     send(keysoundsDeleteNote(trackId, index));
+  }
+
+  // The roll's Erase drag: every note it crossed, as one undo step.
+  async function deleteNotes(indices) {
+    if (loading || trackId == null || !indices?.length) return;
+    // Cleared while the summary lands (send drops an index past the end), then moved to its new index.
+    const next = selectionAfterDelete(selected, indices);
+    selected = null;
+    if (await send(keysoundsDeleteNotes(trackId, indices))) selected = next;
   }
 
   function setVelocity(index, velocity) {
@@ -622,6 +632,7 @@
           onaddnote={addNote}
           ondragnote={dragNote}
           {deleteNote}
+          ondeletenotes={deleteNotes}
           side={trackList}
         />
       {/if}

@@ -129,6 +129,7 @@ export const keysoundsMoveNote = (trackId, noteIndex, startMs, pitch) =>
   ({ kind: "move_note", trackId, noteIndex, startMs: ms(startMs), pitch: whole(pitch, 0, 127) });
 export const keysoundsResizeNote = (trackId, noteIndex, endMs) => ({ kind: "resize_note", trackId, noteIndex, endMs: ms(endMs) });
 export const keysoundsDeleteNote = (trackId, noteIndex) => ({ kind: "delete_note", trackId, noteIndex });
+export const keysoundsDeleteNotes = (trackId, noteIndices) => ({ kind: "delete_notes", trackId, noteIndices });
 export const keysoundsSetVelocity = (trackId, noteIndex, velocity) =>
   ({ kind: "set_velocity", trackId, noteIndex, velocity: whole(velocity, 1, 127) });
 export const keysoundsQuantize = (trackId, stepMs = QUANTIZE_MS) => ({ kind: "quantize_notes", trackId, stepMs });
@@ -261,15 +262,18 @@ function nearestPitchIndex(visiblePitches, pitch) {
 // What a finished note drag sends: a move snaps start and pitch to the grid, a resize the end.
 // Null when the note did not change (a plain click selects it).
 // `pxPerMs` and `rowPx` are the roll's scale: the editor's zoom and the roll's row height.
+// `snap` (rollSnap.js noteSnap) replaces the fixed `stepMs` grid with the editor's own Snap.
 export function noteDragPayload(trackId, note, mode, dx, dy, stepMs = QUANTIZE_MS, visiblePitches = null,
-  pxPerMs = PX_PER_MS, rowPx = ROW_PX) {
+  pxPerMs = PX_PER_MS, rowPx = ROW_PX, snap = null) {
+  const nearest = snap ? snap.nearest : ms => Math.round(ms / stepMs) * stepMs;
   if (mode === "resize") {
     if (!dx) return null;
-    const endMs = Math.max(note.startMs + stepMs, Math.round((note.endMs + dx / pxPerMs) / stepMs) * stepMs);
+    const shortest = snap ? snap.minLength(note.startMs) : stepMs;
+    const endMs = Math.max(note.startMs + shortest, nearest(note.endMs + dx / pxPerMs));
     return endMs === note.endMs ? null : keysoundsResizeNote(trackId, note.index, endMs);
   }
   if (!dx && !dy) return null;
-  const startMs = Math.max(0, Math.round((note.startMs + dx / pxPerMs) / stepMs) * stepMs);
+  const startMs = Math.max(0, nearest(note.startMs + dx / pxPerMs));
   let pitch;
   if (Array.isArray(visiblePitches) && visiblePitches.length) {
     const curIdx = nearestPitchIndex(visiblePitches, note.pitch);

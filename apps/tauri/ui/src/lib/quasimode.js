@@ -208,3 +208,8 @@ export function createQuasimodeController({
     },
   };
 }
+
+// The plain key bound to `tool` in a key map, or null when none is.
+export function toolKeyFor(keyMap, tool) {
+  return Object.keys(keyMap ?? {}).find(key => keyMap[key] === tool) ?? null;
+}

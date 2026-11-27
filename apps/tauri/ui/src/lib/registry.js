@@ -43,6 +43,12 @@ export function hasOpenModal() {
   return openModals.size > 0;
 }
 
+// True when no modal other than `id` is open.
+export function onlyModalOpen(id) {
+  for (const open of openModals) if (open !== id) return false;
+  return true;
+}
+
 export function setShortcutCapturing(on) {
   shortcutCapturing = Boolean(on);
 }
