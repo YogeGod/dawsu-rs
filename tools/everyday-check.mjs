@@ -1094,7 +1094,7 @@ try {
   });
 
   // After every save check, so the keysound track it adds reaches no saved file compared above.
-  await step("Keysounds mode: the roll sits under the ruler, takes a note, zooms with the ruler, undoes it and leaves the hits alone", async () => {
+  await step("Keysounds mode: the roll sits under the ruler, takes a note, zooms with the ruler, undoes it from the keys and from Edit, and leaves the hits alone", async () => {
     const hitsBefore = (await hits()).length;
     const lanesTop = await read(() => document.getElementById("scroll").scrollTop);
     await page().click("#keysounds-view");
@@ -1180,6 +1180,34 @@ try {
 
     await page().keyboard.press("Control+z");
     await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 0, null, "Ctrl+Z did not undo the note");
+
+    // The mode's chrome: its track in the lane column, its section in the Inspector with Generate
+    // pinned at the Inspector's bottom edge, and its three pills in the Audition well's place.
+    const chrome = await read(() => {
+      const rect = element => element?.getBoundingClientRect().toJSON() ?? null;
+      return {
+        tracks: document.querySelectorAll(".ks-track").length,
+        active: !!document.querySelector(".ks-track.active"),
+        pills: Array.from(document.querySelectorAll('[data-ui-mount="audition"] button'), button => button.getAttribute("aria-label")),
+        section: !!document.getElementById("inspector-keysounds-body"),
+        laneHidden: document.querySelector('[data-ui-mount="inspector-lane"] > .insp')?.hidden === true,
+        foot: rect(document.querySelector(".insp-ks-foot")), inspector: rect(document.getElementById("editor-inspector")),
+      };
+    });
+    expect(chrome.tracks === 1 && chrome.active, `the track list does not show the one active track: ${JSON.stringify(chrome)}`);
+    expect(chrome.pills.join() === "Ghosts,Object lines,Typing", `the toolbar pills in Keysounds mode are ${chrome.pills.join()}`);
+    expect(chrome.section && chrome.laneHidden, "the Inspector does not show the Keysounds section in place of Selection and Lane");
+    if (chrome.inspector?.width > 0 && chrome.inspector.height > 0) {
+      expect(chrome.foot && Math.abs(chrome.foot.bottom - chrome.inspector.bottom) < 2,
+        `Generate is not pinned to the Inspector's bottom edge: ${JSON.stringify([chrome.foot, chrome.inspector])}`);
+    }
+
+    // Edit › Undo follows the keysound history here: it takes the note back and leaves the hits alone.
+    await page().mouse.click(shown.surface.x + 200, shown.surface.y + 40);
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 1, null, "a second click on the roll placed no note");
+    await fromMenu("Edit", "Undo");
+    await until(() => window.dawsuUi.bridge.keysoundRoll?.notes.length === 0, null, "Edit › Undo did not undo the keysound note");
+    expect((await hits()).length === hitsBefore, "Edit › Undo in Keysounds mode changed the hits");
 
     await page().click("#keysounds-view");
     await until(() => window.dawsuUi.bridge.mode !== "keysounds" && !document.querySelector(".ks-workspace"), null,
