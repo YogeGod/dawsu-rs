@@ -81,6 +81,8 @@ export class Bridge {
   spectrum = $state.raw(null);
   // Top-level 3-path Mapset Intake Card payload (shown outside #home so folder drops work while editing).
   intakeMapset = $state.raw(null);
+  // Bumped after every Shared Base change made outside BaseDiffStrip, so the strip reloads its status.
+  sharedBaseRev = $state(0);
 
   // No map, a job running or a fault: the parts show but take no input.
   get disabled() {
@@ -118,6 +120,10 @@ export class Bridge {
   handOverMenu(model, flush = flushSync) {
     this.menu = model;
     flush();
+  }
+
+  bumpSharedBaseRev() {
+    this.sharedBaseRev += 1;
   }
 
   setViewport(zoom, rowHeight) {
@@ -345,6 +351,8 @@ export class Bridge {
 }
 
 export const bridge = new Bridge();
+// menus.js and boot.js reach the bridge only through the registry.
+registerAction("bumpSharedBaseRev", () => bridge.bumpSharedBaseRev());
 
 // Routes editor actions through the bridge registry (falling back to globalThis for isolated tests).
 export const act = action => bridge.callAction("act", action);

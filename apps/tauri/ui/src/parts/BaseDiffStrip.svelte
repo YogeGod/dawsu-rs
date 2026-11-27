@@ -1,7 +1,7 @@
 <script>
   import { act, bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
-  import { applyArgs } from "../lib/sharedBase.js";
+  import { applyAllConfirm, applyArgs, applyToast, askFirst, baseCountLabel, confirmCaptureFirst } from "../lib/sharedBase.js";
 
   const scene = $derived(bridge.scene);
   const disabled = $derived(bridge.disabled);
@@ -11,7 +11,8 @@
   let status = $state(null);
   let projections = $state([]);
   let busy = $state(false);
-  let lastLoadedPath = null;
+  let lastLoadedKey = null;
+  let refreshSeq = 0;
 
   function diffLabel(path) {
     const file = String(path ?? "").split(/[\\/]/).pop() ?? "";
@@ -38,8 +39,9 @@
     return null;
   });
 
-  async function refreshBase() {
-    if (!scene?.path) {
+  async function refreshBase(targetPath = activePath) {
+    const seq = ++refreshSeq;
+    if (!targetPath) {
       status = null;
       projections = [];
       return;
@@ -49,6 +51,7 @@
         invoke("shared_base_action", { action: { kind: "status" } }),
         invoke("shared_base_action", { action: { kind: "diff_projections", leniencyMs: 5 } }).catch(() => []),
       ]);
+      if (seq !== refreshSeq || activePath !== targetPath) return;
       status = nextStatus ?? null;
       projections = Array.isArray(nextProj) ? nextProj : [];
     } catch {
@@ -56,13 +59,17 @@
     }
   }
 
+  // Path plus bridge.sharedBaseRev: a change from the dialog, palette or difficulty list reloads too.
   $effect(() => {
     const p = activePath;
-    if (p && p !== lastLoadedPath) {
-      lastLoadedPath = p;
-      refreshBase();
+    const rev = bridge.sharedBaseRev;
+    const key = `${p}|${rev}`;
+    if (p && key !== lastLoadedKey) {
+      lastLoadedKey = key;
+      refreshBase(p);
     } else if (!p) {
-      lastLoadedPath = null;
+      lastLoadedKey = null;
+      refreshSeq += 1;
       status = null;
       projections = [];
     }
@@ -73,13 +80,18 @@
     act({ kind: "open", path });
   }
 
+  const confirm = request => bridge.callAction("confirm", request);
+
   async function captureBase() {
-    if (busy || disabled) return;
+    const pathAtStart = activePath;
+    if (busy || disabled || !pathAtStart) return;
     busy = true;
     try {
+      if (!(await confirmCaptureFirst({ invoke, confirm }))) return;
+      if (activePath !== pathAtStart || disabled) return;
       status = await invoke("shared_base_action", { action: { kind: "capture" } });
-      await refreshBase();
-      bridge.showToast({ tone: "success", title: "Shared Base captured", body: `${status?.momentCount ?? 0} moments saved to Base.` });
+      await refreshBase(pathAtStart);
+      bridge.showToast({ tone: "success", title: "Shared Base captured", body: `${baseCountLabel(status)} moments saved to Base.` });
     } catch (err) {
       bridge.showToast({ tone: "error", title: "Shared Base", body: String(err) });
     } finally {
@@ -88,20 +100,19 @@
   }
 
   async function applyBase(all = false) {
-    if (busy || disabled) return;
+    const pathAtStart = activePath;
+    if (busy || disabled || !pathAtStart) return;
     busy = true;
     try {
+      if (all && !(await askFirst(confirm, applyAllConfirm(difficulties.length - 1)))) return;
+      if (activePath !== pathAtStart || disabled) return;
       const args = applyArgs({ leniencyMs: 5, overwriteOverrides: false });
       const res = all
         ? await invoke("shared_base_action", { action: { kind: "apply_all", ...args } })
         : await invoke("shared_base_action", { action: { kind: "apply", ...args } });
       await bridge.callAction("update", null, true);
-      await refreshBase();
-      bridge.showToast({
-        tone: "success",
-        title: all ? "Applied Base to all diffs" : "Applied Base to difficulty",
-        body: res?.summary ?? "Shared Base applied.",
-      });
+      await refreshBase(pathAtStart);
+      bridge.showToast(applyToast(all, res));
     } catch (err) {
       bridge.showToast({ tone: "error", title: "Apply Base", body: String(err) });
     } finally {
@@ -126,7 +137,7 @@
       class:enabled={!!status?.enabled}
       aria-selected={!!hsDiffPath && activePath === hsDiffPath}
       title={status?.enabled
-        ? `Shared Base active (${status.momentCount ?? 0} moments) — click to switch to [HS] diff or open Base Studio`
+        ? `Shared Base active (${baseCountLabel(status)} moments) — click to switch to [HS] diff or open Base Studio`
         : "Open Shared Base Studio"}
       disabled={disabled || busy}
       onclick={() => (hsDiffPath && hsDiffPath !== activePath ? switchDiff(hsDiffPath) : openStudio())}
@@ -134,7 +145,7 @@
       <span class="bds-dot" aria-hidden="true"></span>
       Base
       {#if status?.enabled}
-        <span class="bds-count">{status.momentCount ?? 0}</span>
+        <span class="bds-count">{baseCountLabel(status)}</span>
       {/if}
     </button>
 

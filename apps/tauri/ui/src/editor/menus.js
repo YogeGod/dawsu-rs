@@ -1,4 +1,5 @@
 import * as registry from "../lib/registry.js";
+import { applyAllConfirm, applyToast, askFirst, confirmCaptureFirst } from "../lib/sharedBase.js";
 
 export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bridgeOverride = registry, session = null } = {}) {
   const doc = env.document;
@@ -55,6 +56,10 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   const callAction = (name, ...args) => (env !== globalThis
     ? env[name]?.(...args)
     : bridgeOverride.callAction(name, ...args));
+  const confirm = request => callAction("confirm", request);
+  // Tells BaseDiffStrip to reload its Shared Base status.
+  const bumpSharedBaseRev = () => callAction("bumpSharedBaseRev");
+  let sharedBaseBusy = false;
 
   const menuPopup = $("editor-menu");
   // The bar's order; a test checks it against menuBar in ui/src/lib/commands.js and index.html.
@@ -251,52 +256,68 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
         notifyToast({ tone: "error", title: "Could not create [Hitsounds] diff", body: String(error) });
       }
     }),
-    captureSharedBase: () => run(async () => {
+    // Each question comes before run(): run() queues every other editor action behind its task.
+    // Inside run(), call update(...) instead of act(...) so the queued task never deadlocks on state.pending.
+    captureSharedBase: async () => {
+      const map = getScene()?.path;
+      if (!map || getView()?.busy || sharedBaseBusy) return;
+      sharedBaseBusy = true;
       try {
-        await invoke("shared_base_action", { action: { kind: "capture" } });
-        notifyToast({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
-        openModal("openSharedBase");
-        await act(null, false);
-      } catch (error) {
-        notifyToast({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
+        try {
+          if (!(await confirmCaptureFirst({ invoke, confirm }))) return;
+        } catch (error) {
+          notifyToast({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
+          return;
+        }
+        await run(async () => {
+          if (getScene()?.path !== map || getView()?.busy) return;
+          try {
+            await invoke("shared_base_action", { action: { kind: "capture" } });
+            bumpSharedBaseRev();
+            notifyToast({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
+            openModal("openSharedBase");
+            await update(null, false);
+          } catch (error) {
+            notifyToast({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
+          }
+        });
+      } finally {
+        sharedBaseBusy = false;
       }
-    }),
+    },
     toggleSharedBase: () => run(async () => {
       const next = !getView()?.sharedBaseEnabled;
       try {
         await invoke("shared_base_action", { action: { kind: "set_enabled", enabled: next } });
-        await act(null, false);
+        bumpSharedBaseRev();
+        await update(null, false);
       } catch (error) {
         notifyToast({ tone: "error", title: "Could not toggle Shared Base", body: String(error) });
       }
     }),
-    applySharedBaseAll: () => {
-      modal(
-        "shared-base-apply-all",
-        "Apply Shared Base to all difficulties?",
-        [paragraph("Writes the Shared Base onto every difficulty in the mapset within 5 ms, preserving existing per-difficulty overrides.")],
-        [
-          ["Cancel", closeModal],
-          ["Apply to all", () => {
-            closeModal();
-            run(async () => {
-              try {
-                const res = await invoke("shared_base_action", {
-                  action: { kind: "apply_all", leniencyMs: 5, overwriteOverrides: false },
-                });
-                await act(null, true);
-                notifyToast({
-                  tone: "success",
-                  title: "Shared Base applied",
-                  body: `Updated ${res?.updatedDiffs ?? 0} ${res?.updatedDiffs === 1 ? "difficulty" : "difficulties"}.`,
-                });
-              } catch (error) {
-                notifyToast({ tone: "error", title: "Could not apply Shared Base", body: String(error) });
-              }
+    applySharedBaseAll: async () => {
+      const map = getScene()?.path;
+      if (!map || getView()?.busy || !getView()?.sharedBaseEnabled || sharedBaseBusy) return;
+      sharedBaseBusy = true;
+      try {
+        const others = (getScene()?.difficulties?.length ?? 1) - 1;
+        if (!(await askFirst(confirm, applyAllConfirm(others)))) return;
+        await run(async () => {
+          if (getScene()?.path !== map || getView()?.busy || !getView()?.sharedBaseEnabled) return;
+          try {
+            const res = await invoke("shared_base_action", {
+              action: { kind: "apply_all", leniencyMs: 5, overwriteOverrides: false },
             });
-          }, true],
-        ],
-      );
+            await update(null, true);
+            bumpSharedBaseRev();
+            notifyToast(applyToast(true, res));
+          } catch (error) {
+            notifyToast({ tone: "error", title: "Could not apply Shared Base", body: String(error) });
+          }
+        });
+      } finally {
+        sharedBaseBusy = false;
+      }
     },
     toggleCentrePlayhead: () => ui()?.toggleCentre?.(),
     showBottomVolume: () => ui()?.setBottomTab?.("volume"),

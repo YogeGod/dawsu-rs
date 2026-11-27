@@ -951,11 +951,108 @@ test("paletteMenu handles null target safely for lane actions and asks confirmat
   assert.equal(paletteMenu.isEnabled(applyAllItem), false);
   view.sharedBaseEnabled = true;
   assert.equal(paletteMenu.isEnabled(applyAllItem), true);
-  paletteMenu.runItem(applyAllItem);
-  assert.equal(modals.length, 1);
-  assert.equal(modals[0].kind, "shared-base-apply-all");
+  const asked = [];
+  context.confirm = async request => { asked.push(request); return false; };
+  await paletteMenu.runItem(applyAllItem);
+  await new Promise(done => setTimeout(done, 0));
+  assert.equal(modals.length, 0, "the old modal(...) prompt is gone");
+  assert.equal(asked.length, 1);
   assert.equal(calls.some(c => Array.isArray(c) && c[0] === "shared_base_action"), false, "no apply_all IPC before confirm");
   assert.ok(scene);
+});
+
+// The palette's Shared Base rows, with confirm, toast and strip-refresh spies.
+function sharedBaseFixture({ answer = true, hasBase = true, applyAll = null } = {}) {
+  const f = fixture();
+  f.view.sharedBaseEnabled = true;
+  f.scene.difficulties = ["Test.osu", "Test [Hard].osu", "Test [Insane].osu"];
+  f.asked = [];
+  f.toasts = [];
+  f.bumps = 0;
+  f.updates = [];
+  f.context.confirm = async request => { f.asked.push(request); return answer; };
+  f.context.bumpSharedBaseRev = () => { f.bumps += 1; };
+  f.context.openSharedBase = () => {};
+  // update(null, full) refreshes the view inside run() without re-entering run().
+  f.context.update = async (action, full) => {
+    if (action) f.calls.push(action);
+    f.updates.push(full);
+  };
+  f.window.showToast = toast => f.toasts.push(toast);
+  f.responses.shared_base_action = ({ action }) => {
+    if (action.kind === "status") return { hasBase, enabled: hasBase, sourceDifficulty: "Insane", baseMomentCount: 9 };
+    if (action.kind === "apply_all") return applyAll;
+    return { hasBase: true, enabled: true, baseMomentCount: 9 };
+  };
+  f.sharedBaseCalls = () => f.calls.filter(c => Array.isArray(c) && c[0] === "shared_base_action").map(c => c[1].action.kind);
+  f.runPalette = async id => {
+    await f.menusApi.paletteMenu.runItem(commandList.paletteOnly.find(item => item.id === id));
+    for (let i = 0; i < 5; i++) await new Promise(done => setTimeout(done, 0));
+  };
+  return f;
+}
+
+test("palette Apply Shared Base to all asks with the disk warning, then toasts the result and refreshes the strip", async () => {
+  const failed = { updatedDiffs: 1, totalAppliedMoments: 4, totalSkippedOverrides: 0, failedDiffs: ["Hard: could not read"] };
+  const f = sharedBaseFixture({ applyAll: failed });
+  await f.runPalette("paletteApplySharedBaseAll");
+  assert.equal(f.asked.length, 1);
+  assert.equal(f.asked[0].body,
+    "Writes the Shared Base into 2 other difficulty files on disk within 5 ms. Ctrl+Z does not undo this. " +
+    "dawsu! keeps backups: File › Revert mapset to original…");
+  assert.deepEqual(f.sharedBaseCalls(), ["apply_all"]);
+  assert.deepEqual(f.updates, [true]);
+  assert.equal(f.toasts.at(-1).tone, "error");
+  assert.match(f.toasts.at(-1).body, /Hard: could not read/);
+  assert.equal(f.bumps, 1);
+
+  const no = sharedBaseFixture({ answer: false });
+  await no.runPalette("paletteApplySharedBaseAll");
+  assert.deepEqual(no.sharedBaseCalls(), [], "Cancel sends nothing");
+  assert.equal(no.bumps, 0);
+});
+
+test("palette Capture asks only when a Base already exists, and both Capture and Toggle refresh the strip", async () => {
+  const over = sharedBaseFixture({ answer: false, hasBase: true });
+  await over.runPalette("paletteCaptureSharedBase");
+  assert.equal(over.asked.length, 1);
+  assert.match(over.asked[0].body, /9 moments from Insane/);
+  assert.deepEqual(over.sharedBaseCalls(), ["status"], "Cancel sends no capture");
+  assert.equal(over.bumps, 0);
+
+  const first = sharedBaseFixture({ hasBase: false });
+  await first.runPalette("paletteCaptureSharedBase");
+  assert.equal(first.asked.length, 0, "a first Capture asks nothing");
+  assert.deepEqual(first.sharedBaseCalls(), ["status", "capture"]);
+  assert.deepEqual(first.updates, [false]);
+  assert.equal(first.bumps, 1);
+
+  const toggle = sharedBaseFixture();
+  await toggle.runPalette("paletteToggleSharedBase");
+  assert.deepEqual(toggle.sharedBaseCalls(), ["set_enabled"]);
+  assert.deepEqual(toggle.updates, [false]);
+  assert.equal(toggle.bumps, 1);
+  assert.deepEqual([...first.toasts, ...toggle.toasts].filter(toast => toast.tone === "error"), []);
+});
+
+test("palette Apply Shared Base to all ignores rapid re-entry and aborts if the active difficulty changes during confirm", async () => {
+  const f = sharedBaseFixture();
+  let resolveConfirm;
+  f.context.confirm = request => {
+    f.asked.push(request);
+    return new Promise(resolve => { resolveConfirm = resolve; });
+  };
+  const item = commandList.paletteOnly.find(entry => entry.id === "paletteApplySharedBaseAll");
+  const firstRun = f.menusApi.paletteMenu.runItem(item);
+  const secondRun = f.menusApi.paletteMenu.runItem(item);
+  await new Promise(done => setTimeout(done, 0));
+  assert.equal(f.asked.length, 1, "rapid double trigger asks only once while confirm is open");
+  f.scene.path = "Other.osu";
+  resolveConfirm(true);
+  await Promise.all([firstRun, secondRun]);
+  for (let i = 0; i < 5; i++) await new Promise(done => setTimeout(done, 0));
+  assert.deepEqual(f.sharedBaseCalls(), [], "switching maps during confirm skips apply_all");
+  assert.equal(f.bumps, 0);
 });
 
 test("File opens and saves the keysound project through the Keysounds host, in any mode", () => {
