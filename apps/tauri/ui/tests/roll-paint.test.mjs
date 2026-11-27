@@ -291,3 +291,14 @@ test("a pointer move that leaves the Draw or Erase preview as it was keeps it, s
   assert.match(onMove, /event\.key === "Alt" && pointer && !drag\) hover\(pointer\.x, pointer\.y, event\.type === "keydown"\)/);
   assert.match(onMove, /bridge\.view\?\.tool;\s*untrack\(\(\) => \{ if \(pointer && !drag\) hover\(/);
 });
+
+test("an Erase drag hits every note along the pointer's path, not only where moves were reported", async () => {
+  const { notesAlong } = await import("../src/lib/rollPaint.js");
+  // Two short notes on C5 at x 100-110 and 300-310; one reported move jumps from x 50 to x 400.
+  const notes = [note(0, 1000, 1100, 72), note(1, 3000, 3100, 72), note(2, 5000, 5100, 72)];
+  const view = { start: 0, zoom: 0.1 };
+  const y = (84 - 72) * 14 + 5;
+  assert.deepEqual(notesAlong(notes, { x: 50, y }, { x: 400, y }, view, roll), [0, 1]);
+  assert.deepEqual(notesAlong(notes, { x: 50, y: y + 14 }, { x: 400, y: y + 14 }, view, roll), [], "the row below");
+  assert.deepEqual(notesAlong(notes, { x: 105, y }, { x: 105, y }, view, roll), [0], "a press without a move");
+});

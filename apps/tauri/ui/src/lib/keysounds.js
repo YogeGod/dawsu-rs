@@ -43,6 +43,7 @@ export function selectionAfterDelete(selected, deleted) {
 // The roll's line for a track with no notes (plan revision 5, Q6). `drawKey` is the key bound to
 // the Draw tool in the current preset: 3 on DAW, 2 on osu!.
 export function emptyRollHint(trackName, drawKey) {
-  const draw = drawKey ? `Draw (${drawKey.toUpperCase()})` : "Draw";
+  // Only plain 1-4 get through the Keysounds key gate (boot.js), so only those are offered.
+  const draw = /^[1-4]$/.test(drawKey ?? "") ? `Draw (${drawKey})` : "Draw";
   return `No notes on ${trackName || "this track"} yet. Double-click in the roll, or pick ${draw}, to place one.`;
 }

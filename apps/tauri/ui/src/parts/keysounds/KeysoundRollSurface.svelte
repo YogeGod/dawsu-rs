@@ -3,7 +3,7 @@
   import { bridge } from "../../lib/bridge.svelte.js";
   import { isBlackKey, noteDragPayload, pitchName } from "../../lib/midi.js";
   import {
-    ROLL_ROW_MAX, ROLL_ROW_MIN, hitTest, maxScrollY, noteIndex, pointAt, rollTool, rollWheelAction, sameIndices,
+    ROLL_ROW_MAX, ROLL_ROW_MIN, hitTest, maxScrollY, noteIndex, notesAlong, pointAt, rollTool, rollWheelAction, sameIndices,
     sameLanding, visibleRows,
   } from "../../lib/rollPaint.js";
   import { drawEnd, noteSnap, placeNote } from "../../lib/rollSnap.js";
@@ -165,7 +165,7 @@
     const tool = rollTool(bridge.view?.tool);
     const hit = hitTest(notes, x, y, view(), roll, index);
     if (tool === "erase") {
-      drag = { kind: "erase", indices: new Set(hit ? [hit.note.index] : []) };
+      drag = { kind: "erase", indices: new Set(hit ? [hit.note.index] : []), last: { x, y } };
       erasing = [...drag.indices];
     } else if (hit) {
       selected = hit.note.index;
@@ -218,9 +218,10 @@
       return;
     }
     if (drag.kind === "erase") {
-      const hit = hitTest(notes, x, y, view(), roll, index);
-      if (hit && !drag.indices.has(hit.note.index)) {
-        drag.indices.add(hit.note.index);
+      const crossed = notesAlong(notes, drag.last, { x, y }, view(), roll, index).filter(at => !drag.indices.has(at));
+      drag.last = { x, y };
+      if (crossed.length) {
+        for (const at of crossed) drag.indices.add(at);
         erasing = [...drag.indices];
       }
       return;
@@ -249,6 +250,13 @@
     } else if (done.payload) {
       await ondragnote(done.note, done.mode, done.payload.action);
     }
+  }
+
+  // The system took the pointer away (a gesture, a window switch): drop the gesture, commit nothing.
+  function onCancel() {
+    drag = null;
+    landing = null;
+    erasing = [];
   }
 
   function onLeave() {
@@ -290,7 +298,7 @@
   <div class="ks-surface" bind:this={surface} role="application" tabindex="-1"
     aria-label="Piano roll: double-click or draw to place a note, drag to move, drag the right edge to resize, right-click to delete"
     style:cursor={cursor}
-    onwheel={onWheel} onpointerdown={onDown} onpointermove={onMove} onpointerup={onUp} onpointercancel={onUp}
+    onwheel={onWheel} onpointerdown={onDown} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
     onpointerleave={onLeave} ondblclick={onDoubleClick} oncontextmenu={onContextMenu}>
     {#if !loading && trackId != null && !notes.length}
       <p class="ks-empty">{emptyRollHint(trackName, drawKey)}</p>

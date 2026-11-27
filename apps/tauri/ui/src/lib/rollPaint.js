@@ -156,6 +156,18 @@ export function noteRect(note, view, roll) {
   };
 }
 
+// The notes under a pointer's path from `from` to `to` (canvas points), in hit order: a fast drag
+// reports few moves, so the path is sampled every few px and nothing it crosses is skipped.
+export function notesAlong(notes, from, to, view, roll, index = noteIndex(notes)) {
+  const steps = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / (NOTE_MIN_PX / 2)));
+  const seen = [];
+  for (let i = 0; i <= steps; i++) {
+    const hit = hitTest(notes, from.x + (to.x - from.x) * i / steps, from.y + (to.y - from.y) * i / steps, view, roll, index);
+    if (hit && !seen.includes(hit.note.index)) seen.push(hit.note.index);
+  }
+  return seen;
+}
+
 // The time and pitch under a canvas point.
 export function pointAt(x, y, view, roll) {
   const row = Math.floor((y - roll.top + roll.scrollY) / roll.rowHeight);

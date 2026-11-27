@@ -721,3 +721,11 @@ test("Keysounds mode lets only plain tool keys through: no tap lane, no hit dele
   await settle();
   assert.deepEqual(sent(), [], "nothing reaches the hitsound editor");
 });
+
+test("a cancelled pointer gesture in the roll commits nothing", async () => {
+  const surface = await readFile(new URL("../ui/src/parts/keysounds/KeysoundRollSurface.svelte", import.meta.url), "utf8");
+  assert.match(surface, /onpointerup=\{onUp\} onpointercancel=\{onCancel\}/);
+  const cancel = surface.match(/function onCancel\(\) \{[^]*?\n  \}/)?.[0] ?? "";
+  assert.ok(cancel, "onCancel exists");
+  assert.doesNotMatch(cancel, /onaddnote|ondeletenotes|ondragnote/, "a cancel only clears the gesture");
+});

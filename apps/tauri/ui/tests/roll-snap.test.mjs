@@ -87,3 +87,10 @@ test("the empty-track hint names the key bound to Draw in the current preset", a
   assert.equal(emptyRollHint("Lead", "2"), "No notes on Lead yet. Double-click in the roll, or pick Draw (2), to place one.");
   assert.equal(emptyRollHint("", null), "No notes on this track yet. Double-click in the roll, or pick Draw, to place one.");
 });
+
+test("the hint names the Draw key only when the Keysounds key gate lets it through (plain 1-4)", async () => {
+  const { emptyRollHint } = await import("../src/lib/keysounds.js");
+  assert.equal(emptyRollHint("Lead", "3"), "No notes on Lead yet. Double-click in the roll, or pick Draw (3), to place one.");
+  assert.equal(emptyRollHint("Lead", "d"), "No notes on Lead yet. Double-click in the roll, or pick Draw, to place one.",
+    "a letter bound to Draw is blocked in Keysounds mode, so the hint does not offer it");
+});
