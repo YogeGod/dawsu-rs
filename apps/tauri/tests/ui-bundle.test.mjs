@@ -21,7 +21,7 @@ const definedProperties = css => new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].ma
 
 test("parts use none of the selectors the editor runtime wires and no static style attribute", () => {
   // editor/boot.js adds listeners to these by selector at load, so a Svelte part using one would act twice.
-  const shared = /data-(?:action|command|volume|locator|map|doc|playback-speed)\b|editor-tool-button/;
+  const shared = /data-(?:action|command|volume|locator|map|doc)\b|editor-tool-button/;
   const partsDir = fileURLToPath(new URL("parts/", uiSource));
   for (const { name, text } of sources()) {
     if (name.startsWith(partsDir)) assert.doesNotMatch(text, shared, name);

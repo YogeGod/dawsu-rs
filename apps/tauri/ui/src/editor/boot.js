@@ -102,7 +102,6 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     ruler: $("ruler"),
     overview: $("overview"),
     dialog: $("dialog"),
-    speedButtons: [...env.document.querySelectorAll("[data-playback-speed]")],
   };
 
   const dock = env.window.editorDocking?.attach($("editor-dock"));
@@ -719,7 +718,6 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       ruler: { value: elements.ruler, writable: true, configurable: true },
       overview: { value: elements.overview, writable: true, configurable: true },
       dialog: { value: elements.dialog, writable: true, configurable: true },
-      speedButtons: { value: elements.speedButtons, writable: true, configurable: true },
       dock: { value: dock, writable: true, configurable: true },
       playbackStartChoices: { value: playbackStartChoices, writable: true, configurable: true },
       sampleFolderNames: { value: sampleFolderNames, writable: true, configurable: true },

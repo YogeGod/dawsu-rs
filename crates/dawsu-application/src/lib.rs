@@ -913,7 +913,7 @@ impl Application {
             external_osu_changed: self.external_osu_changed,
             has_original_snapshot: self.has_original_snapshot(),
             can_undo_revert: self.can_undo_revert(),
-            tap_recording_armed: self.tap_recording_armed,
+            tap_recording_armed: self.tap_recording_armed(),
             tap_recorded_count: self.tap_recorded_hits.len(),
             output_problems_len: self.output_problems.len(),
             output_problem_revision: self.output_problem_revision,

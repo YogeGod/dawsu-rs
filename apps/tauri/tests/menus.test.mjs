@@ -97,9 +97,6 @@ function fixture() {
   get("editor-menus").append(...["file", "edit", "playback", "map", "view", "help"].map(name => get("menu-" + name)));
   get("editor-menu").offsetWidth = 330;
   get("editor-menu").offsetHeight = 220;
-  const speedButtons = [.25, .5, .75, 1, 1.25, 1.5].map(value => ({
-    dataset: { playbackSpeed: String(value) }, textContent: (value * 100) + "%",
-  }));
   const view = { speed: 1, playbackStart: "cursor", follow: false, activeLane: 0 };
   const scene = { path: "Test.osu", selection: {count:1}, lanes: [
     {sourceKey:"first", canDelete:false}, {sourceKey:"second", canDelete:true, canReplace:true, canAddLayer:true, colourKey:"second"},
@@ -109,7 +106,7 @@ function fixture() {
   const window = { innerWidth: 900, innerHeight: 640, addEventListener() {},
     dawsuUi: { commands: commandList, menu: drawMenu } };
   const context = {
-    $: get, document, window, view, scene, speedButtons, drag: null, dialog: {},
+    $: get, document, window, view, scene, drag: null, dialog: {},
     lanePositions: new Map([[0,0],[1,1]]),
     // app.js: the active lane when it can be deleted, and the Delete lane dialog.
     deletableLane: () => scene.lanes[view.activeLane]?.canDelete ? scene.lanes[view.activeLane] : null,
@@ -256,6 +253,9 @@ test("Playback keeps its segmented choices and switches open, Map keeps Generate
   follow.click();
   assert.equal(follow.attributes["aria-checked"], "true");
   assert.equal(choices("Speed · pitch stays the same").length, 6);
+  // The list comes from the status bar's own speeds, with the current one marked.
+  assert.deepEqual(choices("Speed · pitch stays the same")
+    .filter(button => button.attributes["aria-checked"] === "true").map(button => button.textContent), ["100"]);
   choices("Speed · pitch stays the same").at(-1).click();
   assert.deepEqual(calls, [
     { kind: "playback_start", value: "left" }, { kind: "follow", on: true }, { kind: "speed", value: 1.5 },

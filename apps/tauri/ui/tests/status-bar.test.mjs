@@ -84,7 +84,11 @@ test("StatusBar renders controls in v3 order with speed buttons, zoom, file name
   assert.match(html, /id="problem-summary-text">2 moments can't be saved</);
   assert.match(html, /id="hit-lane-counts"[^>]*>3 hits · 2 lanes</);
   assert.match(html, /id="audio"[^>]*aria-label="Audio output: Speakers \(Realtek\)"[^>]*>Speakers \(Realtek\)</);
-  assert.doesNotMatch(html, /\sstyle=|data-playback-speed|data-doc|data-map|data-action/);
+  // Tests and tools find each speed button by its value.
+  assert.deepEqual([...html.matchAll(/data-playback-speed="([^"]+)"/g)].map(match => match[1]),
+    ["0.25", "0.5", "0.75", "1", "1.25", "1.5"]);
+  assert.match(html, /<button[^>]*data-playback-speed="0.75"[^>]*aria-pressed="true"|<button[^>]*aria-pressed="true"[^>]*data-playback-speed="0.75"/);
+  assert.doesNotMatch(html, /\sstyle=|data-doc|data-map|data-action/);
 });
 
 test("StatusBar hides map controls when no map is open and disables jobs cleanly", () => {

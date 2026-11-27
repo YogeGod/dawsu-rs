@@ -724,15 +724,19 @@ impl Application {
         drum_map: Option<&dawsu_hitsounding::drums::DrumMap>,
         snap_divisor: Option<u32>,
     ) -> Result<midi_record::MidiRecordStatus, String> {
-        if self.midi_recorder.armed {
+        if self.tap_recording_armed() {
             let port_name = self.midi_recorder.port_name.clone();
-            let snap = self.clock_snapshot();
-            let notes = self.midi_recorder.disarm_with_snapshot(
-                snap,
-                self.position_ms(),
-                self.is_playing(),
-                self.playback_speed,
-            );
+            let notes = if self.midi_recorder.armed {
+                let snap = self.clock_snapshot();
+                self.midi_recorder.disarm_with_snapshot(
+                    snap,
+                    self.position_ms(),
+                    self.is_playing(),
+                    self.playback_speed,
+                )
+            } else {
+                Vec::new()
+            };
             self.tap_recording_armed = false;
             let taps = std::mem::take(&mut self.tap_recorded_hits);
             let summary =

@@ -2893,6 +2893,24 @@ mod tests {
     }
 
     #[test]
+    fn record_button_stops_tap_recording_armed_from_the_playback_menu() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("record-stops-tap", "256,192,1000,1,0,0:0:0:0:\r\n");
+        app.reset_fresh_open_for_tests();
+        let before = app.document().unwrap().composer.hitsounds().moments().len();
+
+        // Playback › Tap record arms; the transport's Record button must stop and commit.
+        assert!(app.toggle_tap_recording().unwrap().armed);
+        app.seek(1122.0);
+        assert!(app.tap_lane(0));
+        let done = app.toggle_midi_recording(None, None, None).unwrap();
+        assert!(!done.armed);
+        assert_eq!(done.committed_notes, 1);
+        assert!(!app.tap_recording_armed());
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before + 1);
+    }
+
+    #[test]
     fn toggle_tap_disarm_commits_armed_midi_and_unarmed_taps_capture_retrospectively() {
         let (_scratch, _map_dir, mut app) =
             setup_mapset("retro-and-disarm", "256,192,1000,1,0,0:0:0:0:\r\n");
