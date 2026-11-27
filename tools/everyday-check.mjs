@@ -896,6 +896,27 @@ try {
     await windowClosed(window, "drum");
   });
 
+  await step("The inline map preview draws", async () => {
+    if (await read(() => document.getElementById("view-inspector").getAttribute("aria-pressed") !== "true")) await page().click("#view-inspector");
+    if (await read(() => !window.dawsuUi?.bridge?.mapPreview)) await fromMenu("View", "Map preview");
+    const size = await until(() => {
+      const canvas = document.querySelector("#inspector-preview-body canvas");
+      return canvas && { width: canvas.clientWidth, height: canvas.clientHeight, backing: canvas.width };
+    }, null, "the Inspector shows no map preview canvas", 5000);
+    // A preview squeezed to nothing draws a black box: wait for layout, then report what it got.
+    const drawn = ({ width, height, backing }) => width >= 100 && height >= 75 && backing > 0;
+    let seen = size;
+    for (let i = 0; i < 20 && !drawn(seen); i++) {
+      await sleep(100);
+      seen = await read(() => {
+        const canvas = document.querySelector("#inspector-preview-body canvas");
+        return { width: canvas.clientWidth, height: canvas.clientHeight, backing: canvas.width };
+      });
+    }
+    expect(drawn(seen), `the inline map preview is ${seen.width} × ${seen.height} px (backing width ${seen.backing}), not at least 100 × 75`);
+    return `${seen.width} × ${seen.height} px, backing width ${seen.backing}`;
+  });
+
   await step("Open and close the map preview window", async () => {
     // The preview sits in the Inspector: show it first if a step before folded it.
     if (await read(() => document.getElementById("view-inspector").getAttribute("aria-pressed") !== "true")) await page().click("#view-inspector");
