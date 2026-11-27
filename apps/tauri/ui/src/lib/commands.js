@@ -187,6 +187,8 @@ export const menus = {
   help: ["quickStart", "shortcuts", "-", "helpWiki", "helpFaq", "helpBugReport", "-", "openCrashLogs"],
   tool: ["toolSelect", "toolDraw", "toolErase", "toolMute", "toolGrab", "toolRange", "toolRamp"],
   lane: ["laneRename", "laneMoveUp", "laneMoveDown", "laneReplaceSample", "laneColour", "laneAddLayer", "laneCloneVariant", "laneAlternate", "laneAdd", "laneDelete"],
+  // "+ Stem" on the Song row, while no drum stem is loaded.
+  stem: ["separateDrumsAi", "attachDrumStem"],
 };
 
 // Keysounds mode covers the hitsound lanes, so a row that edits hits there would change what the

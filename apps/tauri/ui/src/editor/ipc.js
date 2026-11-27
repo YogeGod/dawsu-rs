@@ -740,6 +740,13 @@ export function attachIpc(ctx) {
       const stemName = state.view.stemName || "stem";
       stemButton.ariaPressed = String(stemActive);
       stemButton.dataset.loaded = String(stemLoaded);
+      // With no stem the button opens the stem menu; once one loads it toggles Song and Stem.
+      if (!stemLoaded && !stemLoading) {
+        stemButton.setAttribute("aria-haspopup", "menu");
+      } else {
+        stemButton.removeAttribute?.("aria-haspopup");
+        stemButton.removeAttribute?.("aria-expanded");
+      }
       if (stemLoading) {
         stemButton.textContent = "Stem…";
         stemButton.title = `Loading drum stem (${stemName})…`;
@@ -752,7 +759,7 @@ export function attachIpc(ctx) {
         stemButton.setAttribute("aria-label", stemActive ? `Monitoring stem ${stemName}` : `Monitoring song, switch to stem ${stemName}`);
       } else {
         stemButton.textContent = "+ Stem";
-        stemButton.title = "Attach a drum stem audio file (T toggles Song / Stem)";
+        stemButton.title = "Add a drum stem: separate with AI or attach a file";
         stemButton.setAttribute("aria-label", "Attach drum stem");
       }
     }
