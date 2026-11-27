@@ -8,13 +8,18 @@ use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LATEST_RELEASE_API_URL: &str =
     "https://api.github.com/repos/YogeGod/dawsu-rs/releases/latest";
+/// Release list queried by pre-release builds (`/releases/latest` never returns pre-releases).
+pub const RELEASE_LIST_API_URL: &str =
+    "https://api.github.com/repos/YogeGod/dawsu-rs/releases?per_page=10";
+/// Maximum allowed release list response size (2 MiB).
+pub const MAX_RELEASE_LIST_BYTES: u64 = 2 * 1024 * 1024;
 pub const RELEASE_ASSET_URL_PREFIX: &str =
     "https://github.com/YogeGod/dawsu-rs/releases/download/";
 /// Maximum allowed installer download size (256 MiB).
@@ -325,6 +330,16 @@ pub fn parse_semver(raw: &str) -> Option<SemVer> {
     })
 }
 
+/// Picks the GitHub Releases endpoint for the running build: a build whose own version has a
+/// pre-release part asks for the release list, a stable build keeps `/releases/latest`.
+pub fn release_api_url(current: &str) -> &'static str {
+    if parse_semver(current).is_some_and(|v| !v.pre.is_empty()) {
+        RELEASE_LIST_API_URL
+    } else {
+        LATEST_RELEASE_API_URL
+    }
+}
+
 /// Returns `true` when `candidate` is strictly newer than `current`.
 pub fn is_newer_version(current: &str, candidate: &str) -> bool {
     match (parse_semver(current), parse_semver(candidate)) {
@@ -383,6 +398,8 @@ struct GitHubReleasePayload {
     tag_name: String,
     html_url: String,
     #[serde(default)]
+    draft: bool,
+    #[serde(default)]
     body: Option<String>,
     #[serde(default)]
     assets: Vec<GitHubAssetPayload>,
@@ -409,7 +426,25 @@ fn require_https(url: &str, field: &str) -> Result<String, String> {
 pub fn parse_github_release(json_str: &str) -> Result<ParsedRelease, String> {
     let payload: GitHubReleasePayload =
         serde_json::from_str(json_str).map_err(|e| format!("Invalid release JSON: {e}"))?;
+    release_from_payload(payload)
+}
 
+/// Parses a GitHub `/releases` list and returns the highest-semver release that is not a draft
+/// and has a valid tag.
+pub fn pick_newest_release(json_str: &str) -> Result<ParsedRelease, String> {
+    let payloads: Vec<GitHubReleasePayload> =
+        serde_json::from_str(json_str).map_err(|e| format!("Invalid release list JSON: {e}"))?;
+    let newest = payloads
+        .into_iter()
+        .filter(|p| !p.draft)
+        .filter_map(|p| parse_semver(&p.tag_name).map(|v| (v, p)))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, p)| p)
+        .ok_or("No published release with a valid version tag was found.")?;
+    release_from_payload(newest)
+}
+
+fn release_from_payload(payload: GitHubReleasePayload) -> Result<ParsedRelease, String> {
     let tag_name = payload.tag_name.trim().to_string();
     if parse_semver(&tag_name).is_none() {
         return Err(format!("Release tag '{tag_name}' is not a valid semver."));
@@ -442,31 +477,10 @@ pub fn parse_github_release(json_str: &str) -> Result<ParsedRelease, String> {
         })
         .map(|a| a.download_url.clone());
 
-    let installer_url = assets
-        .iter()
-        .find(|a| {
-            let lower = a.name.to_ascii_lowercase();
-            lower.ends_with(".exe") && (lower.contains("setup") || lower.contains("installer"))
-        })
-        .or_else(|| {
-            assets
-                .iter()
-                .find(|a| a.name.to_ascii_lowercase().ends_with(".exe"))
-        })
-        .map(|a| a.download_url.clone());
-
-    let portable_url = assets
-        .iter()
-        .find(|a| {
-            let lower = a.name.to_ascii_lowercase();
-            lower.ends_with(".zip") && lower.contains("portable")
-        })
-        .or_else(|| {
-            assets
-                .iter()
-                .find(|a| a.name.to_ascii_lowercase().ends_with(".zip"))
-        })
-        .map(|a| a.download_url.clone());
+    let (installer_url, portable_url) = select_platform_assets(
+        &assets,
+        platform_token(std::env::consts::OS, std::env::consts::ARCH),
+    );
 
     Ok(ParsedRelease {
         tag_name,
@@ -478,6 +492,41 @@ pub fn parse_github_release(json_str: &str) -> Result<ParsedRelease, String> {
         sha256sums_url,
         assets,
     })
+}
+
+/// Release asset name token for a platform (`tools/package-release.ps1` names assets
+/// `dawsu-v<version>-windows-x64-{setup.exe,portable.zip}`). Platforms without published
+/// packages return `None`.
+pub fn platform_token(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("windows", "x86_64") => Some("windows-x64"),
+        _ => None,
+    }
+}
+
+/// Returns `(installer_url, portable_url)` for the assets that carry `token`. With no token,
+/// nothing matches, so the UI only offers the release page.
+pub fn select_platform_assets(
+    assets: &[ReleaseAsset],
+    token: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let Some(token) = token.filter(|t| !t.is_empty()) else {
+        return (None, None);
+    };
+    let token = token.to_ascii_lowercase();
+    let find = |is_match: &dyn Fn(&str) -> bool| {
+        assets
+            .iter()
+            .find(|a| {
+                let lower = a.name.to_ascii_lowercase();
+                lower.contains(&token) && is_match(&lower)
+            })
+            .map(|a| a.download_url.clone())
+    };
+    let installer =
+        find(&|n| n.ends_with(".exe") && (n.contains("setup") || n.contains("installer")));
+    let portable = find(&|n| n.ends_with(".zip") && n.contains("portable"));
+    (installer, portable)
 }
 
 /// Returns true when the given executable sits inside an installed copy (e.g. Inno Setup
@@ -788,6 +837,91 @@ fn build_curl_command(timeout_secs: u64, max_filesize: u64, accept: Option<&str>
     cmd
 }
 
+/// Maximum bytes of curl stderr retained for diagnostics (remainder drained to avoid pipe deadlock).
+const MAX_CURL_STDERR_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedRead {
+    WithinLimit(Vec<u8>),
+    Exceeded,
+}
+
+/// Reads at most `max_bytes` from `reader` without unbounded allocation.
+fn read_bounded<R: Read>(reader: R, max_bytes: u64) -> std::io::Result<BoundedRead> {
+    let mut buf = Vec::new();
+    reader
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_bytes {
+        return Ok(BoundedRead::Exceeded);
+    }
+    Ok(BoundedRead::WithinLimit(buf))
+}
+
+/// Collects stdout/stderr from a piped child while strictly bounding memory to `max_bytes`
+/// (+ `MAX_CURL_STDERR_BYTES` for stderr). Kills and reaps the child immediately if stdout
+/// exceeds `max_bytes` (even on chunked responses with no `Content-Length`).
+fn collect_bounded_output(
+    mut child: Child,
+    context: &str,
+    is_release_check: bool,
+    max_bytes: u64,
+) -> Result<Vec<u8>, String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("Could not capture stdout for {context}."))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("Could not capture stderr for {context}."))?;
+
+    let (stdout_res, stderr_bytes) = std::thread::scope(|scope| {
+        let stderr_handle = scope.spawn(move || {
+            let mut err_buf = Vec::new();
+            let _ = (&mut stderr)
+                .take(MAX_CURL_STDERR_BYTES)
+                .read_to_end(&mut err_buf);
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+            err_buf
+        });
+
+        let out_res = read_bounded(stdout, max_bytes);
+        // stdout was dropped above; if the cap was exceeded or reading failed, kill and reap the
+        // child before joining stderr_handle so it cannot block on stdout or hold stderr open.
+        if !matches!(out_res, Ok(BoundedRead::WithinLimit(_))) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let err_bytes = stderr_handle.join().unwrap_or_default();
+        (out_res, err_bytes)
+    });
+
+    let buf = match stdout_res {
+        Ok(BoundedRead::WithinLimit(buf)) => buf,
+        Ok(BoundedRead::Exceeded) => {
+            return Err(format!("{context} response is larger than allowed."));
+        }
+        Err(e) => {
+            return Err(format!("Could not read {context} response ({e})."));
+        }
+    };
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Could not wait for {context} ({e})."))?;
+    if !status.success() {
+        let stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+        return Err(format_curl_error(
+            context,
+            is_release_check,
+            &stderr_text,
+            status,
+        ));
+    }
+    Ok(buf)
+}
+
 fn curl_https_bytes(
     url: &str,
     context: &str,
@@ -798,17 +932,16 @@ fn curl_https_bytes(
 ) -> Result<Vec<u8>, String> {
     let url = require_https(url, context)?;
     let mut cmd = build_curl_command(timeout_secs, max_filesize, accept);
-    cmd.arg("--").arg(&url);
+    cmd.arg("--")
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    let output = cmd
-        .output()
+    let child = cmd
+        .spawn()
         .map_err(|e| format!("Could not run HTTPS request ({e})."))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format_curl_error(context, is_release_check, &stderr, output.status));
-    }
-    Ok(output.stdout)
+    collect_bounded_output(child, context, is_release_check, max_filesize)
 }
 
 fn curl_https_to_file(
@@ -877,17 +1010,28 @@ pub fn verify_file_sha256(path: &Path, expected_hex: &str) -> Result<(), String>
 /// Fetches the latest release JSON from GitHub Releases over HTTPS with a short timeout.
 /// Returns both the UI result and the raw `ParsedRelease` for Rust-side download trust.
 pub fn check_latest_release_parsed() -> Result<(UpdateCheckResult, ParsedRelease), String> {
+    let url = release_api_url(CURRENT_VERSION);
+    let is_list = url == RELEASE_LIST_API_URL;
+    let max_bytes = if is_list {
+        MAX_RELEASE_LIST_BYTES
+    } else {
+        MAX_SHA256SUMS_BYTES
+    };
     let stdout = curl_https_bytes(
-        LATEST_RELEASE_API_URL,
+        url,
         "GitHub Releases check",
         true,
         8,
-        MAX_SHA256SUMS_BYTES,
+        max_bytes,
         Some("application/vnd.github+json"),
     )?;
     let body = String::from_utf8(stdout)
         .map_err(|e| format!("GitHub Releases returned non-UTF-8 response: {e}"))?;
-    let parsed = parse_github_release(&body)?;
+    let parsed = if is_list {
+        pick_newest_release(&body)?
+    } else {
+        parse_github_release(&body)?
+    };
     let result = build_update_result(CURRENT_VERSION, parsed.clone());
     Ok((result, parsed))
 }
@@ -1147,6 +1291,28 @@ fn strip_unc_prefix(path: &Path) -> String {
     }
 }
 
+/// Relaunch step of the portable helper. Packages may ship the exe as `dawsu.exe` while the
+/// running copy has an older name: start `dawsu.exe` and remove the old exe then. `-ine` is
+/// case-insensitive, so a running `DAWSU.EXE` (the same NTFS file) never deletes itself.
+#[cfg(any(target_os = "windows", test))]
+const PORTABLE_RELAUNCH_PS: &str = "$newExe = Join-Path $env:DAWSU_DIR 'dawsu.exe'; \
+    if ((Test-Path -LiteralPath $newExe) -and ([IO.Path]::GetFileName($env:DAWSU_EXE) -ine 'dawsu.exe')) \
+    { Remove-Item -LiteralPath $env:DAWSU_EXE -Force -ErrorAction SilentlyContinue; Start-Process -FilePath $newExe } \
+    else { Start-Process -FilePath $env:DAWSU_EXE }";
+
+/// PowerShell text for the portable update helper: wait for `DAWSU_PID` to exit, extract
+/// `DAWSU_ZIP` over `DAWSU_DIR`, then relaunch.
+#[cfg(any(target_os = "windows", test))]
+fn portable_swap_script() -> String {
+    format!(
+        "$pidToWait = [int]$env:DAWSU_PID; \
+        while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; \
+        Start-Sleep -Milliseconds 300; \
+        Expand-Archive -LiteralPath $env:DAWSU_ZIP -DestinationPath $env:DAWSU_DIR -Force -ErrorAction Stop; \
+        {PORTABLE_RELAUNCH_PS}"
+    )
+}
+
 /// Spawns a detached helper that waits for this portable process to exit, extracts the verified
 /// flat portable ZIP over the portable install directory, and relaunches `dawsu!`.
 fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
@@ -1160,11 +1326,7 @@ fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const SCRIPT: &str = "$pidToWait = [int]$env:DAWSU_PID; \
-            while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }; \
-            Start-Sleep -Milliseconds 300; \
-            Expand-Archive -LiteralPath $env:DAWSU_ZIP -DestinationPath $env:DAWSU_DIR -Force -ErrorAction Stop; \
-            Start-Process -FilePath $env:DAWSU_EXE";
+        let script = portable_swap_script();
         Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -1172,7 +1334,7 @@ fn spawn_portable_swap(zip_path: &Path) -> Result<(), String> {
                 "-WindowStyle",
                 "Hidden",
                 "-Command",
-                SCRIPT,
+                &script,
             ])
             .env("DAWSU_PID", pid.to_string())
             .env("DAWSU_ZIP", strip_unc_prefix(zip_path))
@@ -1210,6 +1372,71 @@ mod tests {
         assert!(parse_semver(CURRENT_VERSION).is_some());
         assert_ne!(CURRENT_VERSION, "0.1.0");
         assert!(!is_newer_version(CURRENT_VERSION, CURRENT_VERSION));
+    }
+
+    #[test]
+    fn release_api_url_lists_releases_for_prerelease_builds_only() {
+        assert_eq!(
+            release_api_url("1.3.0-alpha.1"),
+            "https://api.github.com/repos/YogeGod/dawsu-rs/releases?per_page=10"
+        );
+        assert_eq!(
+            release_api_url("1.3.0"),
+            "https://api.github.com/repos/YogeGod/dawsu-rs/releases/latest"
+        );
+        assert_eq!(MAX_RELEASE_LIST_BYTES, 2 * 1024 * 1024);
+    }
+
+    fn release_entry(tag: &str, draft: bool) -> String {
+        format!(
+            r#"{{"tag_name": "{tag}", "draft": {draft},
+                "html_url": "https://github.com/YogeGod/dawsu-rs/releases/tag/{tag}",
+                "body": "notes {tag}", "assets": []}}"#
+        )
+    }
+
+    #[test]
+    fn pick_newest_release_skips_drafts_and_bad_tags() {
+        // The draft and the bad tag would win if they were not filtered out.
+        let list = format!(
+            "[{}, {}, {}, {}, {}]",
+            release_entry("v9.9.9", true),
+            release_entry("v99-not-semver", false),
+            release_entry("v1.3.0-alpha.1", false),
+            release_entry("v1.3.0-alpha.10", false),
+            release_entry("v1.2.0", false),
+        );
+        let picked = pick_newest_release(&list).expect("a valid release");
+        assert_eq!(picked.tag_name, "v1.3.0-alpha.10");
+        assert_eq!(picked.version, "1.3.0-alpha.10");
+        assert_eq!(picked.notes, "notes v1.3.0-alpha.10");
+
+        // `draft` is optional in the payload.
+        let no_draft_field = r#"[{"tag_name": "v1.2.0",
+            "html_url": "https://github.com/YogeGod/dawsu-rs/releases/tag/v1.2.0"}]"#;
+        assert_eq!(pick_newest_release(no_draft_field).unwrap().version, "1.2.0");
+
+        // Stable release outranks pre-release of the same core version.
+        let with_stable = format!(
+            "[{}, {}]",
+            release_entry("v1.3.0-alpha.10", false),
+            release_entry("v1.3.0", false),
+        );
+        assert_eq!(pick_newest_release(&with_stable).unwrap().version, "1.3.0");
+    }
+
+    #[test]
+    fn pick_newest_release_errors_clearly_when_nothing_is_usable() {
+        let empty = pick_newest_release("[]").expect_err("empty list must fail");
+        assert!(empty.contains("No published release"), "{empty}");
+        let none_valid = format!(
+            "[{}, {}]",
+            release_entry("v2.0.0", true),
+            release_entry("nightly", false)
+        );
+        let err = pick_newest_release(&none_valid).expect_err("no usable release must fail");
+        assert!(err.contains("No published release"), "{err}");
+        assert!(pick_newest_release("{}").is_err());
     }
 
     #[test]
@@ -1256,13 +1483,23 @@ mod tests {
         let parsed = parse_github_release(payload).expect("valid release JSON");
         assert_eq!(parsed.tag_name, "v0.3.0");
         assert_eq!(parsed.version, "0.3.0");
+        let (installer_url, portable_url) =
+            select_platform_assets(&parsed.assets, platform_token("windows", "x86_64"));
         assert_eq!(
-            parsed.installer_url.as_deref(),
+            installer_url.as_deref(),
             Some("https://github.com/YogeGod/dawsu-rs/releases/download/v0.3.0/dawsu-v0.3.0-windows-x64-setup.exe")
         );
         assert_eq!(
-            parsed.portable_url.as_deref(),
+            portable_url.as_deref(),
             Some("https://github.com/YogeGod/dawsu-rs/releases/download/v0.3.0/dawsu-v0.3.0-windows-x64-portable.zip")
+        );
+        // The host-bound parse uses the same filter for the running platform.
+        assert_eq!(
+            (parsed.installer_url.clone(), parsed.portable_url.clone()),
+            select_platform_assets(
+                &parsed.assets,
+                platform_token(std::env::consts::OS, std::env::consts::ARCH)
+            )
         );
         assert_eq!(
             parsed.sha256sums_url.as_deref(),
@@ -1274,6 +1511,90 @@ mod tests {
         assert_eq!(result.current_version, "0.1.0");
         assert_eq!(result.latest_version, "0.3.0");
         assert_eq!(result.notes, "Installer, portable ZIP, and update checker.");
+    }
+
+    fn asset(name: &str) -> ReleaseAsset {
+        ReleaseAsset {
+            name: name.to_string(),
+            download_url: format!(
+                "https://github.com/YogeGod/dawsu-rs/releases/download/v1.3.0/{name}"
+            ),
+            size: 1,
+        }
+    }
+
+    #[test]
+    fn platform_token_names_the_windows_release_assets() {
+        assert_eq!(platform_token("windows", "x86_64"), Some("windows-x64"));
+        assert_eq!(platform_token("windows", "aarch64"), None);
+        assert_eq!(platform_token("macos", "aarch64"), None);
+        assert_eq!(platform_token("linux", "x86_64"), None);
+    }
+
+    #[test]
+    fn asset_filter_requires_the_platform_token_and_never_picks_stray_files() {
+        // Stray files come first so a fallback or first-match bug would pick them.
+        let assets = vec![
+            asset("foo.exe"),
+            asset("foo.zip"),
+            asset("tools-setup.exe"),
+            asset("extras-portable.zip"),
+            asset("dawsu-v1.3.0-windows-x64-setup.exe"),
+            asset("dawsu-v1.3.0-windows-x64-portable.zip"),
+            asset("SHA256SUMS.txt"),
+        ];
+        let url = |n: &str| Some(asset(n).download_url);
+        assert_eq!(
+            select_platform_assets(&assets, platform_token("windows", "x86_64")),
+            (
+                url("dawsu-v1.3.0-windows-x64-setup.exe"),
+                url("dawsu-v1.3.0-windows-x64-portable.zip")
+            )
+        );
+        for (os, arch) in [("macos", "aarch64"), ("linux", "x86_64")] {
+            assert_eq!(
+                select_platform_assets(&assets, platform_token(os, arch)),
+                (None, None),
+                "{os}/{arch} must get no package from Windows-only assets"
+            );
+        }
+        let stray_only = vec![asset("foo.exe"), asset("foo.zip")];
+        assert_eq!(
+            select_platform_assets(&stray_only, platform_token("windows", "x86_64")),
+            (None, None)
+        );
+        assert_eq!(select_platform_assets(&assets, Some("")), (None, None));
+    }
+
+    #[test]
+    fn bounded_read_enforces_cap_without_unbounded_allocation() {
+        assert_eq!(
+            read_bounded(std::io::Cursor::new(vec![b'a'; 16]), 16).unwrap(),
+            BoundedRead::WithinLimit(vec![b'a'; 16])
+        );
+        assert_eq!(
+            read_bounded(std::io::Cursor::new(vec![b'a'; 17]), 16).unwrap(),
+            BoundedRead::Exceeded
+        );
+        assert_eq!(
+            read_bounded(std::io::repeat(b'x'), 1024).unwrap(),
+            BoundedRead::Exceeded
+        );
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            let child = Command::new("cmd")
+                .args(["/C", "for /L %i in (1,1,5000) do @echo 0123456789"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .unwrap();
+            let err = collect_bounded_output(child, "GitHub Releases check", true, 32)
+                .expect_err("oversized stream must fail");
+            assert!(err.contains("larger than allowed"), "{err}");
+        }
     }
 
     #[test]
@@ -1305,6 +1626,87 @@ mod tests {
 
         assert!(parse_sha256sums(&manifest, "missing-file.zip").is_none());
         assert!(verify_sha256(data, "not-hex").is_err());
+    }
+
+    #[test]
+    fn portable_swap_script_relaunches_renamed_exe_case_insensitively() {
+        let script = portable_swap_script();
+        let expand = script.find("Expand-Archive").expect("extracts the ZIP");
+        let relaunch = script.find(PORTABLE_RELAUNCH_PS).expect("ends with the relaunch step");
+        assert!(expand < relaunch, "relaunch must run after extraction");
+        assert!(script.ends_with(PORTABLE_RELAUNCH_PS));
+        assert!(!script.contains('"'), "-Command mangles double quotes");
+        for needle in [
+            "$newExe = Join-Path $env:DAWSU_DIR 'dawsu.exe'",
+            "if ((Test-Path -LiteralPath $newExe) -and ([IO.Path]::GetFileName($env:DAWSU_EXE) -ine 'dawsu.exe'))",
+            "Remove-Item -LiteralPath $env:DAWSU_EXE -Force -ErrorAction SilentlyContinue; Start-Process -FilePath $newExe",
+            "else { Start-Process -FilePath $env:DAWSU_EXE }",
+        ] {
+            assert!(PORTABLE_RELAUNCH_PS.contains(needle), "missing: {needle}");
+        }
+    }
+
+    /// Runs the shipped relaunch step in Windows PowerShell with `Start-Process` swapped for an
+    /// echo, against real files: returns (launched path, whether the running exe still exists).
+    #[cfg(target_os = "windows")]
+    fn run_relaunch_step(tag: &str, running: &str, extracted: &[&str]) -> (String, bool) {
+        let dir = temp_test_dir(tag);
+        let exe = dir.join(running);
+        fs::write(&exe, b"old").unwrap();
+        for name in extracted {
+            fs::write(dir.join(name), b"new").unwrap();
+        }
+        let script = PORTABLE_RELAUNCH_PS.replace("Start-Process -FilePath", "Write-Output");
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .env("DAWSU_DIR", &dir)
+            .env("DAWSU_EXE", &exe)
+            .output()
+            .expect("run powershell");
+        let still_there = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy() == running);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let launched = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (
+            Path::new(&launched)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(launched),
+            still_there,
+        )
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn portable_relaunch_step_runs_correctly_in_powershell() {
+        // Old name: the renamed dawsu.exe replaces it.
+        assert_eq!(
+            run_relaunch_step("relaunch-old-name", "dawsu-tauri.exe", &["dawsu.exe"]),
+            ("dawsu.exe".to_string(), false)
+        );
+        // Already dawsu.exe: relaunch itself, delete nothing.
+        assert_eq!(
+            run_relaunch_step("relaunch-same-name", "dawsu.exe", &[]),
+            ("dawsu.exe".to_string(), true)
+        );
+        // DAWSU.EXE is the same NTFS file as dawsu.exe: it must not delete itself.
+        assert_eq!(
+            run_relaunch_step("relaunch-upper-case", "DAWSU.EXE", &[]),
+            ("DAWSU.EXE".to_string(), true)
+        );
+        // Old package without dawsu.exe: keep and relaunch the running exe.
+        assert_eq!(
+            run_relaunch_step("relaunch-no-new-exe", "dawsu-tauri.exe", &[]),
+            ("dawsu-tauri.exe".to_string(), true)
+        );
+        // Paths containing spaces, brackets, and single quotes must not break relaunch.
+        assert_eq!(
+            run_relaunch_step("relaunch [special] 'dir'", "dawsu-tauri.exe", &["dawsu.exe"]),
+            ("dawsu.exe".to_string(), false)
+        );
     }
 
     fn temp_test_dir(tag: &str) -> PathBuf {
