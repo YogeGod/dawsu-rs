@@ -28,7 +28,9 @@
   let open = $state(false);
   let loading = $state(false);
   let error = $state("");
-  let summary = $state(null);
+  // Replaced whole by every answer from Rust and never written in place, so raw: a track's
+  // thousands of notes stay plain objects for the roll's paint to read.
+  let summary = $state.raw(null);
   let name = $state("");
   let pluginId = $state("");
   let trackId = $state(null);

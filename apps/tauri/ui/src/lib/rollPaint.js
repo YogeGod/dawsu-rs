@@ -37,27 +37,27 @@ const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const pitchName = pitch => `${NAMES[pitch % 12]}${Math.floor(pitch / 12) - 1}`;
 const isBlack = pitch => NAMES[pitch % 12].length > 1;
 
-// The longest note of a track, found once per summary; visibleNotes() needs it.
-export function longestNoteMs(notes) {
+// What visibleNotes() needs to know about a track's notes, found once per summary and not once per
+// paint: the longest note, and whether the notes are in start order.
+export function noteIndex(notes) {
   let longest = 0;
-  for (const note of notes ?? []) longest = Math.max(longest, note.endMs - note.startMs);
-  return longest;
-}
-
-function sortedByStart(notes) {
-  for (let i = 1; i < notes.length; i++) if (notes[i].startMs < notes[i - 1].startMs) return false;
-  return true;
+  let sorted = true;
+  for (let i = 0; i < (notes?.length ?? 0); i++) {
+    longest = Math.max(longest, notes[i].endMs - notes[i].startMs);
+    if (i && notes[i].startMs < notes[i - 1].startMs) sorted = false;
+  }
+  return { longest, sorted };
 }
 
 // The notes that overlap [startMs, endMs]. Notes arrive sorted by start, so a binary search finds
 // the first candidate; it starts `longest` ms early so a long note whose head is off-screen stays.
 // Notes out of order (never from Rust, but cheap to survive) are scanned whole.
-export function visibleNotes(notes, startMs, endMs, longest = longestNoteMs(notes)) {
+export function visibleNotes(notes, startMs, endMs, index = noteIndex(notes)) {
   if (!notes?.length) return [];
-  if (!sortedByStart(notes)) return notes.filter(note => note.endMs >= startMs && note.startMs <= endMs);
+  if (!index.sorted) return notes.filter(note => note.endMs >= startMs && note.startMs <= endMs);
   let low = 0;
   let high = notes.length;
-  const from = startMs - longest;
+  const from = startMs - index.longest;
   while (low < high) {
     const middle = (low + high) >> 1;
     if (notes[middle].startMs < from) low = middle + 1;
@@ -109,9 +109,9 @@ export function pointAt(x, y, view, roll) {
 }
 
 // The note under a canvas point, the last drawn first; `edge` when the point is on its resize edge.
-export function hitTest(notes, x, y, view, roll, longest = longestNoteMs(notes)) {
+export function hitTest(notes, x, y, view, roll, index = noteIndex(notes)) {
   const reach = NOTE_MIN_PX / view.zoom;
-  const near = visibleNotes(notes, view.start + x / view.zoom - reach, view.start + x / view.zoom + reach, longest);
+  const near = visibleNotes(notes, view.start + x / view.zoom - reach, view.start + x / view.zoom + reach, index);
   for (let i = near.length - 1; i >= 0; i--) {
     const box = noteRect(near[i], view, roll);
     if (!box || x < box.x || x > box.x + box.w || y < box.y || y > box.y + box.h) continue;
@@ -126,7 +126,7 @@ function inScale(pitch, mask) {
 
 // The whole roll inside its part of the canvas: rows, the map's grid (drawGrid, the editor's own),
 // object lines, other tracks' notes as ghosts, then this track's notes.
-// model: { notes, longest, ghosts, objectTimes, sustainSpans, selected, drag, scaleMask, foldToScale }
+// model: { notes, index, ghosts, objectTimes, sustainSpans, selected, drag, scaleMask, foldToScale }
 // with `drag` the dragged note as it would land: { index, startMs, endMs, pitch }.
 export function paintRoll(context2d, width, view, roll, model, drawGrid = null) {
   const { top, height, rowHeight } = roll;
@@ -193,7 +193,7 @@ export function paintRoll(context2d, width, view, roll, model, drawGrid = null) 
     }
   };
   // The dragged note may start outside the window it is dragged into, so it is always a candidate.
-  for (const note of visibleNotes(model.notes, view.start, endMs, model.longest)) {
+  for (const note of visibleNotes(model.notes, view.start, endMs, model.index)) {
     if (model.selected === note.index || model.drag?.index === note.index) selectedNote = note;
     else drawNote(note);
   }
@@ -214,14 +214,14 @@ export function shownVelocity(note, model) {
 }
 
 // The velocity lane: one bar per note in view, at the note's start, on the editor's time axis.
-// model: { notes, longest, selected, velocityDrag: { index, velocity }, ramp }.
+// model: { notes, index, selected, velocityDrag: { index, velocity }, ramp }.
 export function paintVelocity(context2d, width, height, view, model) {
   context2d.fillStyle = colours.velocityLane;
   context2d.fillRect(0, 0, width, height);
   context2d.fillStyle = colours.velocityGuide;
   for (const fraction of [0, 0.5, 1]) context2d.fillRect(0, Math.round((height - 1) * fraction), width, 1);
   const endMs = view.start + width / view.zoom;
-  for (const note of visibleNotes(model.notes, view.start, endMs, model.longest)) {
+  for (const note of visibleNotes(model.notes, view.start, endMs, model.index)) {
     const velocity = shownVelocity(note, model);
     const barHeight = Math.max(1, Math.round((height - 2) * velocity / 127));
     context2d.fillStyle = note.muted ? colours.noteMuted : model.selected === note.index ? colours.noteSelected : colours.note;
