@@ -19,7 +19,7 @@ New to dawsu!? Read [Setting Up](docs/wiki/Setting-Up.md) and walk through [Firs
 
 - **Start fast with 3 mapset paths:** Search your osu! Songs folder right from the Start screen, drag and drop a `.osu`, `.osz`, or mapset folder, use **Open from osu!**, or click **Try practice mapset**. Start a blank `[Hitsounds]` difficulty with **Custom samples only** or **12 osu! default lanes**, or edit any difficulty directly.
 - **Hitsound timeline editing:** Draw, select, erase, mute, grab, range-edit, and ramp hits across real sample lanes synced to the song waveform and gameplay objects. Switch between **Grid**, **Grid relative**, and **Objects** snap, stamp patterns with **Rhythm gallery**, tap hits live with `Numpad 1–9` or `A–L`, or use beat step-sequencer **Pads**.
-- **Volume, Mixer & playback speed:** Shape per-hit loudness in the **Volume** lane, balance individual lanes in the **Mixer**, audition or solo lanes, loop between L/R locators, and slow passages down to **50%** or **75%** with pitch preservation.
+- **Volume, Mixer & playback speed:** Shape per-hit loudness in the **Volume** lane, balance individual lanes in the **Mixer**, audition or solo lanes, loop between L/R locators, and change playback speed from **25%** to **150%** with pitch preservation.
 - **Shared Base Layer across difficulties:** Capture a difficulty as the mapset's **Shared Base** and project it across your spread with live `matched`, `empty`, and `orphaned` counts, non-destructive per-difficulty **Lane rules**, and green-line-only **Volume curves** that create zero extra sample mixes.
 - **Drums, AI Drum Stems & Keysounding:**
   - Switch to **Drums** mode with 11 built-in drum map presets, host Drum VST3 instruments, and bounce kits with a `.osz` 10 MB ranking-size gauge.

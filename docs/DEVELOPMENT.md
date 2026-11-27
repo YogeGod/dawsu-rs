@@ -72,16 +72,11 @@ cargo run -p dawsu-tauri --locked -- "path/to/a/copied-difficulty.osu"
 
 The Windows binary is `dawsu-tauri.exe`. macOS and Linux build and runtime checks remain open.
 
-## Local Windows Machine Notes
+## Local Windows Notes
 
-On the primary Windows development environment:
-
-- `LIBCLANG_PATH`: `E:/Claude/drum-onnx/venv311/Lib/site-packages/clang/native`
-- Cargo executable: `C:/Users/yogem/.cargo/bin/cargo.exe`
-- Isolated dependency cache for the unified workspace: `E:/dawsu-mixed-save-20261117/asio-local/cargo-home`
-- Keep build and temporary files on `E:`.
-- Pinned osu!lazer source cache: `E:/dawsu-source-cache/ppy-osu-131fe72`
-- Design vault (ADRs, sprint state, UI spec, module map): `E:/Obsidian/Workspace/dawsu-rewrite`
+- Set `LIBCLANG_PATH` to your LLVM `libclang` folder before building.
+- Keeping Cargo's build output and temporary files on a drive with plenty of free space helps; `tools/setup-worktree.ps1` can set this up.
+- The osu!lazer source used as the behavioural reference is `ppy/osu` at `131fe72`.
 
 ### Local ASIO Build on Windows
 
@@ -121,5 +116,5 @@ These tools require Windows (WebView2), except `tools/lazer-oracle`.
 
 ## CI Workflows
 
-- [windows-checks.yml](../.github/workflows/windows-checks.yml) — runs Svelte UI build/tests, frontend integration tests, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` on Windows for PRs touching non-Markdown files and on pushes to `main`.
+- [windows-checks.yml](../.github/workflows/windows-checks.yml) — currently disabled on GitHub, so run its checks locally (see [AGENTS.md](../AGENTS.md#verification)). When enabled, it runs Svelte UI build/tests, frontend integration tests, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` on Windows for PRs touching non-Markdown files and on pushes to `main`.
 - [release.yml](../.github/workflows/release.yml) — builds the VST3 sidecar, UI bundle, release binary, Inno Setup installer, portable ZIP, and `SHA256SUMS.txt` on `v*` tags or manual dispatch.

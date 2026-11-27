@@ -16,7 +16,7 @@ Edit, audition, share across difficulties, verify, and safely export osu! map au
 
 Shipped in `v1.3.0-alpha.1` (Alpha):
 
-- Hitsound timeline editor with 3-path mapset intake, bundled synthetic practice mapset, fast `osu!.db`-cached Songs browser, seven editing tools, Rhythm Gallery presets, live tap recording (`Numpad 1–9` / `A–L`), Volume and Mixer panel, and pitch-preserving playback speed (`50%`, `75%`, `100%`).
+- Hitsound timeline editor with 3-path mapset intake, bundled synthetic practice mapset, fast `osu!.db`-cached Songs browser, seven editing tools, Rhythm Gallery presets, live tap recording (`Numpad 1–9` / `A–L`), Volume and Mixer panel, and pitch-preserving playback speed (`25%`–`150%`).
 - Shared Base Layer across difficulties with live `Matched / Empty / Orphaned` counts, non-destructive per-difficulty lane rules, and green-line-only volume curves.
 - Export Review with coverage strips, `▶ Listen` auditioning, line-by-line `.osu` diff preview, Ranking Criteria sample auto-fix, and 4-part pre-write read-back verification.
 - Drum VST3 hosting with `.osz` budget-aware kit bouncing, Drum Hit Detection & Node Graph, optional on-demand local CPU HT-Demucs drum stem separation, inline Keysounding Piano Roll with pure-Rust `.sf2`/`.sfz` sampler + VST3 + live MIDI recording, osu! client link + reload-after-Save, crash recovery/logging, and SHA-256 verified auto-updates.
