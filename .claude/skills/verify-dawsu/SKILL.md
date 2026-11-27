@@ -16,11 +16,18 @@ Run from the Rust checkout root with the toolchain in `rust-toolchain.toml`. Use
 
 ## Checks
 
+Run `node tools/verify-handoff.mjs --auto` (add `--with-everyday` on screen, UI, IPC, or workflow changes; `--nextest` uses `cargo-nextest`).
+
+- **UI-only fast-path:** When committed + working-tree diff touches zero `*.rs`, `Cargo.*`, `rust-toolchain.toml`, `apps/tauri/capabilities/*`, `apps/tauri/tauri.conf.json`, or `apps/tauri/icons/*`, skip local Clippy and `cargo test --workspace` (`.github/workflows/windows-checks.yml` runs full Rust gate on PR). UI build, UI unit tests, frontend integration tests, `cargo build -p dawsu-tauri --locked`, and `everyday-check.mjs` stay required.
+- **Single gate owner:** Implementer runs targeted tests during TDD plus the full gate once before handoff; `/ready-review` runs only touched tests unless editing code; orchestrator skips re-running an unchanged green gate.
+
+Individual commands (what `verify-handoff.mjs` wraps):
+
 1. **UI bundle & unit tests:** `npm --prefix apps/tauri/ui run build` and `npm --prefix apps/tauri/ui test`.
 2. **Frontend integration & capability checks:** on POSIX, `node --test apps/tauri/tests/*.test.mjs`; on Windows `pwsh`, expand first with `$tests = @(Get-ChildItem apps/tauri/tests/*.test.mjs | Sort-Object Name | ForEach-Object { $_.FullName }); node --test @tests`. Chain native commands directly with `&&` — never wrap them inside `& { ... } && ...` (masks non-zero exit codes).
 3. **Rust Clippy (CI gate):** `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 4. **Rust workspace tests:** `cargo test --workspace --locked` (add `-- --show-output` when auditing skipped corpus tests). For targeted `--release` unit benchmarks/tests (e.g. `songs_index_bench_5000`), pass `--lib` (`cargo test -p <crate> --lib --release --locked -- --ignored ...`) so Cargo does not recompile every integration test binary in release mode.
-5. **Built-editor smoke check (UI/IPC/workflow changes):** build `cargo build -p dawsu-tauri --locked` (or `--release`), then run `node tools/everyday-check.mjs --exe target/<profile>/dawsu-tauri.exe`. Respect provenance freshness (exe mtime >= `HEAD` and `build-stamp.json`; run against a fresh build before amending test-only commits, or rebuild after Rust/UI edits) and delete temporary `target/everyday-check/` afterwards.
+5. **Built-editor smoke check (UI/IPC/workflow changes):** build `cargo build -p dawsu-tauri --locked`, then run `node tools/everyday-check.mjs --exe <target-dir>/debug/dawsu-tauri.exe` (or run `node tools/verify-handoff.mjs --auto --with-everyday`, which auto-resolves `CARGO_TARGET_DIR` / `cargo metadata` `target_directory` and pre-starts `sccache --start-server` to prevent Windows `os error 10048` races). For 2-wide parallel worktree waves, set `CARGO_TARGET_DIR=<worktree>\target` (using `tools/setup-worktree.ps1`'s `E:` junction) instead of sharing one `CARGO_TARGET_DIR` across concurrent builds. Provenance freshness compares against the latest code commit (`crates`, `apps/tauri`, `Cargo.*`, `rust-toolchain.toml`) and `build-stamp.json`; delete temporary `target/everyday-check/` afterwards.
 6. If `apps/tauri/Cargo.toml` defines a separate workspace, also run `cargo test --manifest-path apps/tauri/Cargo.toml --locked -- --show-output` and `cargo build --manifest-path apps/tauri/Cargo.toml --locked`.
 7. Record any actual native window, picker, playback, audio listening, or osu! import checks separately.
 
