@@ -206,3 +206,15 @@ test("Draw tool single-click keeps pointer down/up intact without invoking paint
     ],
   );
 });
+
+test("computeDrawStrokeSteps skips steps occupied on any member of a merged Set", () => {
+  const scene = sampleScene({
+    moments: [
+      [1000, 100, true, [[0, false, false, 100]]],
+      [1250, 90, false, [[1, false, false, 90]]],
+    ],
+  });
+  const merged = computeDrawStrokeSteps(scene, 1000, 1500, new Set([0, 1]));
+  assert.deepEqual(merged.steps, [1000, 1125, 1250, 1375, 1500]);
+  assert.deepEqual(merged.newSteps, [1125, 1375, 1500]);
+});

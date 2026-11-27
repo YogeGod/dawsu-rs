@@ -47,6 +47,7 @@ impl Application {
     }
 
     pub fn set_tool(&mut self, tool: ToolKind) {
+        self.drum_move_stroke = None;
         self.cancel_controller_stroke();
         if let Some(d) = self.document.as_mut() {
             self.tools.select_tool(tool, &mut d.composer);
@@ -79,7 +80,17 @@ impl Application {
     }
 
     pub fn pointer_scoped(&mut self, phase: PointerPhase, input: PointerInput, volume_lanes: Option<&[usize]>) {
-        self.pointer_input(phase, input, volume_lanes);
+        self.pointer_in_view(phase, input, volume_lanes, None);
+    }
+
+    pub fn pointer_in_view(
+        &mut self,
+        phase: PointerPhase,
+        input: PointerInput,
+        volume_lanes: Option<&[usize]>,
+        visible_rows: Option<&[usize]>,
+    ) {
+        self.pointer_input(phase, input, volume_lanes, visible_rows);
         self.refresh_recovery_edit();
         self.bump_view_revision();
     }
@@ -102,6 +113,7 @@ impl Application {
             return;
         };
         if self.tools.is_stroke_open() {
+            self.drum_move_stroke = None;
             self.tools.cancel(&mut d.composer);
         }
         if let Some(lane) = active_lane.filter(|&row| row < d.composer.lanes.len()) {
@@ -143,6 +155,7 @@ impl Application {
         phase: PointerPhase,
         input: PointerInput,
         volume_lanes: Option<&[usize]>,
+        visible_rows: Option<&[usize]>,
     ) {
         if self.busy {
             return;
@@ -155,7 +168,7 @@ impl Application {
                 && self.tools.active() == ToolKind::Select
                 && !self.is_stroke_open()
             {
-                self.select_double_click(input);
+                self.select_double_click(input, visible_rows);
             }
             return;
         }
@@ -174,7 +187,13 @@ impl Application {
         }
         if matches!(phase, PointerPhase::Down) {
             if input.surface == PointerSurface::Grid {
-                self.active_lane = input.row.max(0) as usize;
+                let raw_row = input.row.max(0) as usize;
+                self.active_lane = self
+                    .drum_row_groups
+                    .as_ref()
+                    .and_then(|g| g.members_for_row(raw_row))
+                    .and_then(|m| m.first().copied())
+                    .unwrap_or(raw_row);
             } else if !input.mods.shift() && self.tools.active() != ToolKind::Ramp {
                 if !self.tools.is_stroke_open() {
                     let scope = volume_lanes
@@ -201,32 +220,87 @@ impl Application {
                 return;
             }
         }
-        match phase {
-            PointerPhase::Down => self.tools.down(&mut d.composer, input),
-            PointerPhase::Move => self.tools.moved(&mut d.composer, input),
-            PointerPhase::Up => self.tools.up(&mut d.composer, input),
-            PointerPhase::Cancel => self.tools.cancel(&mut d.composer),
+        if let Some(groups) = self.drum_row_groups.as_ref() {
+            let ctx = crate::drum_editing::DrumGroupContext::new(
+                groups,
+                &d.composer.lanes,
+                visible_rows,
+            );
+            let translated = ctx.translate_pointer(input);
+            let mut target = crate::drum_editing::DrumRowTarget {
+                composer: &mut d.composer,
+                file: &d.file,
+                ctx,
+                move_stroke: &mut self.drum_move_stroke,
+            };
+            match phase {
+                PointerPhase::Down => self.tools.down(&mut target, translated),
+                PointerPhase::Move => self.tools.moved(&mut target, translated),
+                PointerPhase::Up => self.tools.up(&mut target, translated),
+                PointerPhase::Cancel => self.tools.cancel(&mut target),
+            }
+        } else {
+            match phase {
+                PointerPhase::Down => self.tools.down(&mut d.composer, input),
+                PointerPhase::Move => self.tools.moved(&mut d.composer, input),
+                PointerPhase::Up => self.tools.up(&mut d.composer, input),
+                PointerPhase::Cancel => self.tools.cancel(&mut d.composer),
+            }
         }
     }
-    pub(crate) fn select_double_click(&mut self, input: PointerInput) {
+    pub(crate) fn select_double_click(&mut self, input: PointerInput, visible_rows: Option<&[usize]>) {
         let Some(document) = self.document.as_mut() else { return };
-        let composer = &mut document.composer;
         let Ok(row) = usize::try_from(input.row) else { return };
-        if row >= composer.lanes.len() {
+        if row >= document.composer.lanes.len() {
             return;
         }
-        self.active_lane = row;
-        if let Some(hit) = composer.hit_test(&input) {
-            let moment = &composer.hitsounds().moments()[hit.moment];
-            let time = moment.time().ms();
-            let gain = moment.hit_volume(&hit.lane) as f32 / 100.0;
-            let lane = hit.lane.clone();
-            composer.selected.replace([hit]);
-            self.seek(time);
-            self.audition_lane(&lane, gain);
+        let primary_row = self
+            .drum_row_groups
+            .as_ref()
+            .and_then(|g| g.members_for_row(row))
+            .and_then(|m| m.first().copied())
+            .unwrap_or(row);
+        self.active_lane = primary_row;
+
+        if let Some(groups) = self.drum_row_groups.as_ref() {
+            let ctx = crate::drum_editing::DrumGroupContext::new(
+                groups,
+                &document.composer.lanes,
+                visible_rows,
+            );
+            let translated = ctx.translate_pointer(input);
+            let mut target = crate::drum_editing::DrumRowTarget {
+                composer: &mut document.composer,
+                file: &document.file,
+                ctx,
+                move_stroke: &mut self.drum_move_stroke,
+            };
+            if let Some(hit) = target.hit_test(&translated) {
+                let moment = &document.composer.hitsounds().moments()[hit.moment];
+                let time = moment.time().ms();
+                let gain = moment.hit_volume(&hit.lane) as f32 / 100.0;
+                let lane = hit.lane.clone();
+                document.composer.selected.replace([hit]);
+                self.seek(time);
+                self.audition_lane(&lane, gain);
+            } else {
+                self.tools.down(&mut target, translated);
+                self.tools.up(&mut target, translated);
+            }
         } else {
-            self.tools.down(composer, input);
-            self.tools.up(composer, input);
+            let composer = &mut document.composer;
+            if let Some(hit) = composer.hit_test(&input) {
+                let moment = &composer.hitsounds().moments()[hit.moment];
+                let time = moment.time().ms();
+                let gain = moment.hit_volume(&hit.lane) as f32 / 100.0;
+                let lane = hit.lane.clone();
+                composer.selected.replace([hit]);
+                self.seek(time);
+                self.audition_lane(&lane, gain);
+            } else {
+                self.tools.down(composer, input);
+                self.tools.up(composer, input);
+            }
         }
         self.bump_view_revision();
     }
@@ -327,9 +401,27 @@ impl Application {
         let Some(d) = self.document.as_mut() else {
             return 0;
         };
-        let placed = d.composer.paint_hits_on_lane(row, start_ms, end_ms);
+        let (target_row, placed) = if let Some(members) = self
+            .drum_row_groups
+            .as_ref()
+            .and_then(|g| g.members_for_row(row))
+            .filter(|m| m.len() > 1)
+        {
+            (
+                members[0],
+                crate::drum_editing::paint_hits_on_group(
+                    &mut d.composer,
+                    &d.file,
+                    members,
+                    start_ms,
+                    end_ms,
+                ),
+            )
+        } else {
+            (row, d.composer.paint_hits_on_lane(row, start_ms, end_ms))
+        };
         if placed > 0 {
-            self.active_lane = row;
+            self.active_lane = target_row;
             self.refresh_recovery_edit();
             self.bump_view_revision();
         }
@@ -344,10 +436,23 @@ impl Application {
         let Some(d) = self.document.as_mut() else {
             return false;
         };
-        if !d.composer.toggle_step_hit(row, ms) {
+        let (target_row, changed) = if let Some(members) = self
+            .drum_row_groups
+            .as_ref()
+            .and_then(|g| g.members_for_row(row))
+            .filter(|m| m.len() > 1)
+        {
+            (
+                members[0],
+                crate::drum_editing::toggle_step_hit_group(&mut d.composer, &d.file, members, ms),
+            )
+        } else {
+            (row, d.composer.toggle_step_hit(row, ms))
+        };
+        if !changed {
             return false;
         }
-        self.active_lane = row;
+        self.active_lane = target_row;
         self.record_shared_base_overrides_if_needed();
         self.sync_audio();
         self.refresh_recovery_edit();
@@ -571,6 +676,7 @@ impl Application {
         self.bump_view_revision();
     }
     /// Replaces the active lane's editable hits, retaining its logical slot.
+    /// In Drums view, consolidates all lanes merged into that drum row in one undoable step.
     pub fn replace_lane_sample(
         &mut self,
         expected_map: &Path,
@@ -585,9 +691,29 @@ impl Application {
         if d.path != expected_map || current != Some(expected_lane) {
             return Err("The active lane changed while choosing a sample.".into());
         }
-        if matches!(expected_lane, SampleIdentity::Standard { sound: Sound::Slider(_), .. }) {
+        let member_lanes: Vec<SampleIdentity> = self
+            .drum_row_groups
+            .as_ref()
+            .and_then(|g| g.members_for_row(self.active_lane))
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|&r| d.composer.lanes.get(r).cloned())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| v.len() > 1 && v.contains(expected_lane))
+            .unwrap_or_else(|| vec![expected_lane.clone()]);
+        if member_lanes
+            .iter()
+            .any(|l| matches!(l, SampleIdentity::Standard { sound: Sound::Slider(_), .. }))
+        {
             return Err("Slider body samples are read-only here.".into());
         }
+        let primary_lane = member_lanes[0].clone();
+        let secondaries: Vec<SampleIdentity> = member_lanes
+            .iter()
+            .filter(|l| *l != &primary_lane)
+            .cloned()
+            .collect();
 
         let root = d.path.parent().ok_or("Missing mapset folder")?;
         let source = source.canonicalize().map_err(|e| format!("Opening {}: {e}", source.display()))?;
@@ -595,23 +721,25 @@ impl Application {
             .map(str::to_ascii_lowercase).filter(|ext| matches!(ext.as_str(), "wav" | "ogg" | "mp3"))
             .ok_or("Choose a WAV, OGG, or MP3 sample.")?;
         let hits = d.composer.hitsounds();
-        let logical = hits.lane_slot(expected_lane).unwrap_or(expected_lane);
+        let logical = hits.lane_slot(&primary_lane).unwrap_or(&primary_lane);
         let file_path = |lane: &SampleIdentity| match &hits.lane(lane)?.source {
             LaneSource::File(name) => safe_child(root, name).ok(),
             LaneSource::Skin => None,
         };
-        if file_path(expected_lane).as_ref() == Some(&source) {
+        if secondaries.is_empty() && file_path(&primary_lane).as_ref() == Some(&source) {
             return Ok(());
         }
         let existing = source.starts_with(root).then(|| hits.lanes().iter().find(|candidate| {
             let lane = &candidate.identity;
-            let compatible = match (expected_lane, lane) {
+            let compatible = match (&primary_lane, lane) {
                 (SampleIdentity::Standard { set, sound, .. }, SampleIdentity::Standard { set: other_set, sound: other_sound, .. }) =>
                     set == other_set && sound == other_sound,
                 (SampleIdentity::File(_), SampleIdentity::File(_)) => true,
                 _ => false,
             };
-            compatible && self.clip_for_lane(lane).is_some()
+            compatible
+                && !member_lanes.contains(lane)
+                && self.clip_for_lane(lane).is_some()
                 && (lane == logical || hits.lane_slot(lane).is_none())
                 && !hits.lane_slots().any(|(_, slot)| slot == lane)
                 && !hits.moments().iter().any(|moment| moment.hits().any(|used| used == lane))
@@ -626,10 +754,10 @@ impl Application {
                 return Err("The sample changed while it was being read. Choose it again.".into());
             }
             let allow_index_one = matches!(
-                expected_lane,
+                primary_lane,
                 SampleIdentity::Standard { index, .. } if index.get() == 0
             );
-            let name = layers::create_backing(d, expected_lane, &extension, &bytes, allow_index_one)?;
+            let name = layers::create_backing(d, &primary_lane, &extension, &bytes, allow_index_one)?;
             let lane = dawsu_hitsounding::rules::read_sample_file_name(&name)
                 .unwrap_or_else(|| SampleIdentity::File(name.clone()));
             self.document.as_mut().expect("open document").pending.add(&name, &bytes)?;
@@ -637,13 +765,44 @@ impl Application {
             lane
         };
         let composer = &mut self.document.as_mut().expect("open document").composer;
-        let selected = composer.selected.items().iter().cloned().map(|mut hit| {
-            if hit.lane == *expected_lane {
-                hit.lane = replacement.clone();
+        let replaced_set: BTreeSet<SampleIdentity> = member_lanes.iter().cloned().collect();
+        let mut seen_selected = BTreeSet::new();
+        let selected = composer
+            .selected
+            .items()
+            .iter()
+            .cloned()
+            .filter_map(|mut hit| {
+                if replaced_set.contains(&hit.lane) {
+                    hit.lane = replacement.clone();
+                }
+                seen_selected.insert((hit.moment, hit.lane.clone())).then_some(hit)
+            })
+            .collect::<Vec<_>>();
+        let tx_label = if secondaries.is_empty() {
+            "Replace lane sample"
+        } else {
+            "Replace drum sample"
+        };
+        composer.apply(tx_label, |hits| {
+            hits.replace_lane(&primary_lane, replacement.clone());
+            for sec in &secondaries {
+                let moves: Vec<(dawsu_hitsounding::MomentId, i32)> = hits
+                    .moments()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, moment)| moment.has_hit(sec))
+                    .map(|(i, moment)| (dawsu_hitsounding::MomentId(i), moment.hit_volume(sec)))
+                    .collect();
+                for (moment_id, vol) in moves {
+                    hits.remove_hit(moment_id, sec);
+                    if !hits.moments()[moment_id.0].has_hit(&replacement) {
+                        hits.add_hit_with_volume(moment_id, replacement.clone(), vol);
+                    }
+                }
+                hits.set_lane_hidden(sec, true);
             }
-            hit
-        }).collect::<Vec<_>>();
-        composer.apply("Replace lane sample", |hits| hits.replace_lane(expected_lane, replacement.clone()));
+        });
         composer.selected.replace(selected);
         self.active_lane = composer.lanes.iter().position(|lane| lane == &replacement)
             .expect("the backing lane is registered before replacing hits");

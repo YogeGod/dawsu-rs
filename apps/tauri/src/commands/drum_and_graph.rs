@@ -347,12 +347,12 @@ pub(crate) fn handle_drum_vst_action(
                 .map(str::to_owned);
             app.load_drum_vst(PathBuf::from(path), uid)
                 .map_err(|e| e.to_string())?;
-            drums.0.sync_vst(app);
+            drums.0.sync_app(app);
             Ok(drum_vst_status_json(app))
         }
         "toggle" => {
             let on = payload.get("enabled").and_then(Value::as_bool).unwrap_or(false);
-            drums.0.sync_vst(app);
+            drums.0.sync_app(app);
             app.set_drum_vst_enabled(on);
             Ok(drum_vst_status_json(app))
         }
@@ -361,7 +361,7 @@ pub(crate) fn handle_drum_vst_action(
                 .get("row")
                 .and_then(Value::as_u64)
                 .ok_or("Missing lane row")? as usize;
-            drums.0.sync_vst(app);
+            drums.0.sync_app(app);
             app.toggle_drum_vst_lane(row)?;
             Ok(drum_vst_status_json(app))
         }
@@ -473,7 +473,7 @@ pub(crate) fn handle_drum_vst_action(
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
-            drums.0.sync_vst(app);
+            drums.0.sync_app(app);
             let plan = app.plan_drum_vst_render(mode)?;
             let base_bytes: u64 = app
                 .document()
@@ -512,7 +512,7 @@ pub(crate) fn handle_drum_vst_action(
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
-            drums.0.sync_vst(app);
+            drums.0.sync_app(app);
             app.preview_drum_vst_render_with_options(mode, format, normalize, auto_trim)
         }
         "render_wavs" => {
@@ -528,7 +528,7 @@ pub(crate) fn handle_drum_vst_action(
             } else {
                 dawsu_application::VelocityExportMode::Tiered { max_interval: 20 }
             };
-            drums.0.sync_vst(app);
+            drums.0.sync_app(app);
             let (plan, outputs) =
                 app.render_drum_vst_with_options(mode, format, normalize, auto_trim)?;
             Ok(json!({

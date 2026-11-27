@@ -1156,7 +1156,11 @@ export function attachCanvas(ctx) {
       const y = row * rowHeight - scrollTop;
       const lane = state.laneRows[row];
       const laneObj = typeof lane === "number" ? state.scene.lanes?.[lane] : null;
-      const highlighted = lane === state.view.activeLane || (laneObj != null && state.selectionLaneKeys?.has(laneObj.key));
+      const members = typeof lane === "number" ? (state.drumRowMembers?.get(lane) ?? [lane]) : [];
+      const highlighted = members.some(m => {
+        const mObj = state.scene.lanes?.[m];
+        return m === state.view.activeLane || (mObj != null && state.selectionLaneKeys?.has(mObj.key));
+      });
       g.ctx.fillStyle = highlighted ? slateTimeline.activeRow : row % 2 ? slateTimeline.alternateRow : slateTimeline.arrange;
       if (lane === undefined) g.ctx.fillStyle = slateTimeline.arrange;
       else if (typeof lane === "string") g.ctx.fillStyle = slateTimeline.group;
@@ -1172,8 +1176,11 @@ export function attachCanvas(ctx) {
       g.ctx.fillStyle = "#77bdfa35";
       const width = xOf(range[1]) - xOf(range[0]);
       if (state.markedRange?.path === state.scene.path) {
+        const drawnPositions = new Set();
         for (const row of state.markedRange.rows) {
           for (const position of state.laneVisualPositions.get(row) ?? []) {
+            if (drawnPositions.has(position)) continue;
+            drawnPositions.add(position);
             g.ctx.fillRect(xOf(range[0]), position * rowHeight - scrollTop, width, rowHeight);
           }
         }
@@ -1233,8 +1240,14 @@ export function attachCanvas(ctx) {
       g.ctx.stroke();
     }
     const volumeLanes = v
-      ? new Set(visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys) ?? [])
+      ? new Set(visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys, state.drumRowMembers, state.drumRowByMember) ?? [])
       : null;
+    const activePrimary = state.view.activeLane != null
+      ? (state.drumRowByMember?.get(state.view.activeLane) ?? state.view.activeLane)
+      : null;
+    const activeVolumeMembers = new Set(
+      activePrimary != null ? (state.drumRowMembers?.get(activePrimary) ?? [activePrimary]) : [],
+    );
     let liveMarquee = null;
     if (state.drag?.marquee && state.drag.lastPoint) {
       const fx = state.drag.firstPoint.x, fy = state.drag.firstPoint.y;
@@ -1255,7 +1268,7 @@ export function attachCanvas(ctx) {
         const [time, volume, , mHits] = moments[i];
         const vHits = mHits.filter(([row]) => volumeLanes.has(row));
         if (vHits.length > 0) {
-          const primary = vHits.find(([row]) => row === state.view.activeLane) ?? vHits[0];
+          const primary = vHits.find(([row]) => activeVolumeMembers.has(row)) ?? vHits[0];
           const barVolume = primary[3] ?? volume;
           const volH = limit(barVolume, 0, 100) / 100 * (v.height - 3);
           prevVolumePt = [xOf(time), v.height - volH];
@@ -1271,7 +1284,7 @@ export function attachCanvas(ctx) {
       if (v && volumeLanes.size > 0) {
         const volumeHits = hits.filter(([row]) => volumeLanes.has(row));
         if (volumeHits.length > 0) {
-          const primary = volumeHits.find(([row]) => row === state.view.activeLane) ?? volumeHits[0];
+          const primary = volumeHits.find(([row]) => activeVolumeMembers.has(row)) ?? volumeHits[0];
           const barVolume = primary[3] ?? volume;
           const barColour = volumeColour(barVolume);
           const volumeHeight = limit(barVolume, 0, 100) / 100 * (v.height - 3);
@@ -1304,24 +1317,37 @@ export function attachCanvas(ctx) {
         }
       }
       const hasProblem = problemTimes.has(Math.round(time));
+      const seenVisible = new Map();
       for (const [row, selected, listenMuted, hitVolume] of hits) {
         for (const visibleRow of state.laneVisualPositions.get(row) ?? []) {
-          const y = (visibleRow + 0.5) * rowHeight - scrollTop;
-          if (y < -8 || y > g.height + 8) continue;
-          const inLiveBox = liveMarquee !== null
-            && time >= liveMarquee.minMs && time <= liveMarquee.maxMs
-            && visibleRow >= liveMarquee.loVis && visibleRow <= liveMarquee.hiVis;
-          const isSelected = liveMarquee !== null
-            ? (liveMarquee.additive ? (selected || inLiveBox) : inLiveBox)
-            : selected;
-          g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
-          fillHitDiamond(g.ctx, x, y);
-          if (isSelected || hasProblem) {
-            g.ctx.lineWidth = 2;
-            g.ctx.strokeStyle = isSelected ? "#ffffff" : "#e86b72";
-            g.ctx.stroke();
-            g.ctx.lineWidth = 1;
+          const existing = seenVisible.get(visibleRow);
+          if (!existing) {
+            seenVisible.set(visibleRow, { selected, listenMuted, hitVolume });
+          } else {
+            existing.selected = existing.selected || selected;
+            if (existing.listenMuted && !listenMuted) {
+              existing.listenMuted = false;
+              existing.hitVolume = hitVolume;
+            }
           }
+        }
+      }
+      for (const [visibleRow, { selected, listenMuted, hitVolume }] of seenVisible) {
+        const y = (visibleRow + 0.5) * rowHeight - scrollTop;
+        if (y < -8 || y > g.height + 8) continue;
+        const inLiveBox = liveMarquee !== null
+          && time >= liveMarquee.minMs && time <= liveMarquee.maxMs
+          && visibleRow >= liveMarquee.loVis && visibleRow <= liveMarquee.hiVis;
+        const isSelected = liveMarquee !== null
+          ? (liveMarquee.additive ? (selected || inLiveBox) : inLiveBox)
+          : selected;
+        g.ctx.fillStyle = listenMuted ? "#858585" : volumeColour(hitVolume ?? volume);
+        fillHitDiamond(g.ctx, x, y);
+        if (isSelected || hasProblem) {
+          g.ctx.lineWidth = 2;
+          g.ctx.strokeStyle = isSelected ? "#ffffff" : "#e86b72";
+          g.ctx.stroke();
+          g.ctx.lineWidth = 1;
         }
       }
       if (state.previewParents.size) {

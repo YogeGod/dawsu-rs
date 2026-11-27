@@ -103,13 +103,14 @@ export function attachTimeline(ctx) {
     const tool = !valueLane && event.altKey ? "Draw" : state.view.tool;
     const rightClick = gesture.button === "right";
     const volumeLanes = valueLane
-      ? visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys)
+      ? visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys, state.drumRowMembers, state.drumRowByMember)
       : null;
     if (!valueLane && typeof lane === "number" && (
       ((phase === "down" || phase === "double_click") && (rightClick || ["Select", "Erase", "Mute", "Ramp"].includes(tool))) ||
       (phase === "move" && (rightClick || ["Erase", "Mute"].includes(tool)))
     )) {
-      const hit = nearestHitTime(ms, row, gesture.zoom);
+      const targetScope = drumMemberSet(row) ?? row;
+      const hit = nearestHitTime(ms, targetScope, gesture.zoom);
       if (hit != null) {
         if (phase !== "move") gesture.hit = hit;
         ms = hit;
@@ -122,10 +123,14 @@ export function attachTimeline(ctx) {
         ms = hit;
       }
     }
+    const visibleRows = state.view.drumView?.enabled
+      ? gesture.rows.filter(r => typeof r === "number")
+      : null;
     return {
       kind: "pointer", phase, ms, row, x, y,
       value: valueLane ? limit((height - y) / Math.max(1, height - 3) * 100, 1, 100) : null,
       ...(volumeLanes?.length ? { volume_lanes: volumeLanes } : {}),
+      ...(visibleRows?.length ? { visible_rows: visibleRows } : {}),
       shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey,
       ...(rightClick ? { button: "right" } : {}),
     };
@@ -258,6 +263,28 @@ export function attachTimeline(ctx) {
     if (state.hoveredHit && state.lastHover) handOverHitCard(hitCardAt(state.lastHover));
   }
 
+  function drumMembersOf(row) {
+    if (typeof row !== "number") return [];
+    const primary = state.drumRowByMember?.get(row) ?? row;
+    return state.drumRowMembers?.get(primary) ?? [row];
+  }
+
+  function drumMemberSet(row) {
+    const members = drumMembersOf(row);
+    return members.length ? new Set(members) : null;
+  }
+
+  function expandDrumRows(rows) {
+    const expanded = [];
+    for (const r of rows) {
+      if (typeof r !== "number") continue;
+      for (const m of drumMembersOf(r)) {
+        if (!expanded.includes(m)) expanded.push(m);
+      }
+    }
+    return expanded;
+  }
+
   function hitCardAt(event) {
     state.lastHover = { clientX: event.clientX, clientY: event.clientY };
     // No card while a menu is open over the timeline.
@@ -267,22 +294,28 @@ export function attachTimeline(ctx) {
     const visibleRow = Math.floor((pointerY + scrollTop) / state.scene.rowHeight);
     const row = state.laneRows[visibleRow];
     if (typeof row !== "number") return null;
+    const members = drumMemberSet(row);
     const ms = state.scene.viewStart + pointerX / state.scene.zoom;
     const found = findNearestMoment(
       state.scene.moments,
       ms,
       hitHalfWidth / state.scene.zoom,
       (moment) => {
-        const hit = moment[3].find(([lane]) => lane === row);
+        const hit = moment[3].find(([lane]) => lane === row)
+          ?? moment[3].find(([lane]) => members?.has(lane));
         return hit ? [moment, hit] : undefined;
       },
       { strict: false },
     );
     if (!found) return null;
-    const [[time, volume, onObject], [, , , hitVolume]] = found;
-    const lane = state.scene.lanes?.[row];
-    const name = state.renamedLanes.has(lane?.colourKey) ? ctx.laneDisplayName(lane) : ctx.laneSound(lane).name;
-    const set = sampleFolderNames[lane?.group];
+    const [[time, volume, onObject], [hitRow, , , hitVolume]] = found;
+    const lane = state.scene.lanes?.[hitRow] ?? state.scene.lanes?.[row];
+    const drumEntry = state.view.drumView?.enabled
+      ? state.scene.drumRows?.find(entry => entry?.row === row && entry?.name)
+      : null;
+    const name = drumEntry?.name
+      ?? (state.renamedLanes.has(lane?.colourKey) ? ctx.laneDisplayName(lane) : ctx.laneSound(lane).name);
+    const set = state.view.drumView?.enabled ? null : sampleFolderNames[lane?.group];
     // The card is placed in CSS pixels, which the UI scale enlarges again: the grid's screen edge
     // is divided by it, the offsets inside the grid already are CSS pixels.
     const s = uiScale();
@@ -758,7 +791,7 @@ export function attachTimeline(ctx) {
       const rect = controller.getBoundingClientRect();
       const { x } = pointerIn(controller, event);
       const ms = state.scene.viewStart + x / state.scene.zoom;
-      const volumeLanes = visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys);
+      const volumeLanes = visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys, state.drumRowMembers, state.drumRowByMember);
       const target = nearestHitTime(ms, volumeLanes?.length ? new Set(volumeLanes) : null, state.scene.zoom);
       if (target == null) return;
       const bubble = volumeBubbleAtMoment(state.scene, target, rect, {
@@ -826,11 +859,12 @@ export function attachTimeline(ctx) {
         let optimisticDraw = false;
         if (drawingStroke) {
           const snappedStart = snapTimeInScene(state.scene, state.drag.firstPoint.ms);
+          const paintMembers = drumMemberSet(state.drag.firstPoint.row) ?? new Set([state.drag.firstPoint.row]);
           const startsOnHit = !!findNearestMoment(
             state.scene.moments,
             snappedStart,
             5.0,
-            ([, , , hits]) => (hits.some(([r]) => r === state.drag.firstPoint.row) ? true : undefined),
+            ([, , , hits]) => (hits.some(([r]) => paintMembers.has(r)) ? true : undefined),
             { strict: false },
           );
           if (!startsOnHit) {
@@ -860,7 +894,7 @@ export function attachTimeline(ctx) {
         if (surface === controller && state.scene && !state.view.busy) {
           const { x } = pointerIn(controller, event);
           const ms = state.scene.viewStart + x / state.scene.zoom;
-          const volumeLanes = visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys);
+          const volumeLanes = visibleVolumeLanes(state.scene, state.view, state.selectionLaneKeys, state.drumRowMembers, state.drumRowByMember);
           const hovered = nearestHitTime(ms, volumeLanes?.length ? new Set(volumeLanes) : null, state.scene.zoom);
           if (hovered !== state.volumeHoverTime) {
             state.volumeHoverTime = hovered;
@@ -887,7 +921,12 @@ export function attachTimeline(ctx) {
           const dp = state.drag.drawPaint;
           const { x } = pointerIn(grid, event);
           const currentMs = Math.max(0, state.drag.start + x / state.drag.zoom);
-          const { steps, newSteps } = computeDrawStrokeSteps(state.scene, dp.startMs, currentMs, dp.row);
+          const { steps, newSteps } = computeDrawStrokeSteps(
+            state.scene,
+            dp.startMs,
+            currentMs,
+            drumMemberSet(dp.row) ?? dp.row,
+          );
           if (steps.length > 1 || dp.active) {
             dp.active = true;
             dp.endMs = currentMs;
@@ -930,7 +969,7 @@ export function attachTimeline(ctx) {
                 const loVis = Math.max(0, Math.floor(minY / rowHeight));
                 const hiVis = Math.min(drag.rows.length - 1, Math.floor(maxY / rowHeight));
                 const rows = loVis <= hiVis
-                  ? [...new Set(drag.rows.slice(loVis, hiVis + 1).filter(row => typeof row === "number"))]
+                  ? expandDrumRows(drag.rows.slice(loVis, hiVis + 1))
                   : [];
                 ctx.act({
                   kind: "select_box",
@@ -964,7 +1003,12 @@ export function attachTimeline(ctx) {
             ctx.paintSoon();
           }
           if (released && dp?.active) {
-            const { steps, newSteps } = computeDrawStrokeSteps(state.scene, dp.startMs, end.ms, dp.row);
+            const { steps, newSteps } = computeDrawStrokeSteps(
+              state.scene,
+              dp.startMs,
+              end.ms,
+              drumMemberSet(dp.row) ?? dp.row,
+            );
             if (steps.length > 1) {
               for (const stepTime of newSteps) {
                 state.pendingDrawHits.push({ row: dp.row, time: stepTime, volume: state.scene.insertVolume ?? 100 });
@@ -988,8 +1032,7 @@ export function attachTimeline(ctx) {
             const last = state.drag.lastVisualRow ?? -1;
             state.markedRange = moved && first >= 0 && last >= 0 ? {
               path: state.scene.path,
-              rows: [...new Set(state.drag.rows.slice(Math.min(first, last), Math.max(first, last) + 1)
-                .filter(row => typeof row === "number"))],
+              rows: expandDrumRows(state.drag.rows.slice(Math.min(first, last), Math.max(first, last) + 1)),
             } : null;
           }
           if (moved) {

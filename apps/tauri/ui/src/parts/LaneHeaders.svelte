@@ -85,7 +85,7 @@
       {/if}
       {#if names && row.tag}<span class="tag-slot"><span class="tag">{row.tag}</span></span>{/if}
       {#if names && stepPadsOn}
-        <StepPadsRow laneRow={row.row} laneName={row.display} />
+        <StepPadsRow laneRow={row.row} memberRows={row.memberRows ?? [row.row]} laneName={row.display} />
       {/if}
       {#if row.addLayer}
         <button type="button" class="lane-add-layer" aria-label={row.addLayer} title={row.addLayer}

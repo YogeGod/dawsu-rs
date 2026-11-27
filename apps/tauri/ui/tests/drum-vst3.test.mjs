@@ -152,6 +152,23 @@ test("detectedRowsToDrumNotes and sceneDrumHitsToNotes convert hits into dedupli
     { startMs: 250, pitch: 42, velocity: 102 },
     { startMs: 500, pitch: 42, velocity: 127 },
   ]);
+
+  // Merged drum rows map hits on any member row in entry.rows to the row's MIDI note.
+  const mergedScene = {
+    drumRows: [
+      { row: 0, rows: [0, 3, 4], name: "Kick", drumRowIndex: 0 },
+      { row: 1, rows: [1], name: "Closed Hi-Hat", drumRowIndex: 1 },
+    ],
+    moments: [
+      [100, 90, true, [[3, false]]],
+      [300, 100, true, [[4, false], [1, false]]],
+    ],
+  };
+  assert.deepEqual(sceneDrumHitsToNotes(mergedScene, null), [
+    { startMs: 100, pitch: 36, velocity: 114 },
+    { startMs: 300, pitch: 36, velocity: 127 },
+    { startMs: 300, pitch: 42, velocity: 127 },
+  ]);
 });
 
 test("syncDrumVst3Track sends atomic sync_drum_track via keysounds_action without deleting user tracks", async () => {

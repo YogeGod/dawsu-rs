@@ -620,24 +620,51 @@ impl Application {
         if self.busy {
             return false;
         }
-        let Some((lane, volume)) = self.document.as_ref().and_then(|d| {
-            let lane = d.composer.lanes.get(row)?.clone();
-            let vol = d.composer.insert_volume.clamp(1, 100);
-            Some((lane, vol))
-        }) else {
+        let pos_ms = self.position_ms().max(0.0);
+        let armed = self.tap_recording_armed();
+        let Some((audition_row, primary, recorded_lane, volume)) =
+            self.document.as_ref().and_then(|d| {
+                let members: Vec<usize> = self
+                    .drum_row_groups
+                    .as_ref()
+                    .and_then(|g| g.members_for_row(row))
+                    .map(|rows| rows.to_vec())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec![row]);
+                let primary_row = members[0];
+                let primary = d.composer.lanes.get(primary_row)?.clone();
+                let vol = d.composer.insert_volume.clamp(1, 100);
+                let recorded = if armed && members.len() > 1 {
+                    let member_ids: Vec<SampleIdentity> = members
+                        .iter()
+                        .filter_map(|&r| d.composer.lanes.get(r).cloned())
+                        .collect();
+                    crate::drum_editing::choose_member_lane(
+                        d.composer.hitsounds(),
+                        &d.file,
+                        pos_ms,
+                        &member_ids,
+                        Some(&primary),
+                    )
+                } else {
+                    primary.clone()
+                };
+                Some((primary_row, primary, recorded, vol))
+            })
+        else {
             return false;
         };
-        if self.active_lane != row {
-            self.active_lane = row;
+        if self.active_lane != audition_row {
+            self.active_lane = audition_row;
             self.bump_view_revision();
         }
-        self.audition_lane(&lane, volume as f32 / 100.0);
+        self.audition_lane(&primary, volume as f32 / 100.0);
         let tap = midi_record::RecordedTap {
-            time_ms: self.position_ms().max(0.0),
-            lane,
+            time_ms: pos_ms,
+            lane: recorded_lane,
             volume,
         };
-        if self.tap_recording_armed() {
+        if armed {
             self.tap_recorded_hits.push(tap);
             self.bump_view_revision();
         } else {

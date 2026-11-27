@@ -106,7 +106,7 @@ fn the_scene_lists_the_times_of_hits_with_no_object() {
     let row = snapshot(&app, true)["scene"]["lanes"].as_array().unwrap().iter()
         .position(|lane| lane["name"] == "normal-hitclap").unwrap() as i32;
     Action::Pointer {
-        phase: "double_click".into(), ms: 1500.0, row, x: 12.0, y: 12.0, value: None, volume_lanes: None, button: None, shift: false, ctrl: false, alt: false,
+        phase: "double_click".into(), ms: 1500.0, row, x: 12.0, y: 12.0, value: None, volume_lanes: None, visible_rows: None, button: None, shift: false, ctrl: false, alt: false,
     }.run(&mut app);
     assert_eq!(snapshot(&app, true)["scene"]["orphanedHits"], serde_json::json!([1500.0]));
     Action::HsMode { on: true }.run(&mut app);
@@ -126,7 +126,7 @@ fn select_double_click_seeks_to_an_existing_hit_and_inserts_once_on_empty_space(
         .position(|lane| lane["name"] == "normal-hitclap").unwrap() as i32;
     let click = |app: &mut Application, ms, ctrl| {
         Action::Pointer {
-            phase: "double_click".into(), ms, row, x: 12.0, y: 12.0, value: None, volume_lanes: None, button: None,
+            phase: "double_click".into(), ms, row, x: 12.0, y: 12.0, value: None, volume_lanes: None, visible_rows: None, button: None,
             shift: false, ctrl, alt: false,
         }.run(app);
     };
@@ -196,7 +196,7 @@ fn gameplay_overlay_projects_objects_and_skips_unanchored_hits() {
     Action::Tool { name: "Draw".into() }.run(&mut app);
     for phase in ["down", "up"] {
         Action::Pointer {
-            phase: phase.into(), ms: 4250.0, row: 1, x: 4250.0, y: 12.0, value: None, volume_lanes: None, button: None,
+            phase: phase.into(), ms: 4250.0, row: 1, x: 4250.0, y: 12.0, value: None, volume_lanes: None, visible_rows: None, button: None,
             shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }

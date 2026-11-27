@@ -325,6 +325,8 @@ pub(crate) enum Action {
         #[serde(default)]
         volume_lanes: Option<Vec<usize>>,
         #[serde(default)]
+        visible_rows: Option<Vec<usize>>,
+        #[serde(default)]
         button: Option<String>,
         shift: bool,
         ctrl: bool,
@@ -796,6 +798,7 @@ impl Action {
                 y,
                 value,
                 volume_lanes,
+                visible_rows,
                 button,
                 shift,
                 ctrl,
@@ -814,7 +817,7 @@ impl Action {
                         mods = mods.union(flag);
                     }
                 }
-                app.pointer_scoped(
+                app.pointer_in_view(
                     phase,
                     PointerInput {
                         time: SongTime::from_ms(ms.max(0.0)),
@@ -836,6 +839,7 @@ impl Action {
                         y,
                     },
                     volume_lanes.as_deref(),
+                    visible_rows.as_deref(),
                 );
             }
             Self::PaintDrawStroke {
@@ -859,12 +863,24 @@ impl Action {
             }
             Self::History { position } => app.go_to_history(position),
             Self::Lane { row, operation } => {
-                if let Some(lane) = app
-                    .document()
-                    .and_then(|d| d.composer.lanes.get(row))
-                    .cloned()
-                {
+                let target = app.document().and_then(|d| {
+                    let members: Vec<dawsu_foundation::SampleIdentity> = app
+                        .drum_row_groups()
+                        .and_then(|g| g.members_for_row(row))
+                        .map(|rows| {
+                            rows.iter()
+                                .filter_map(|&r| d.composer.lanes.get(r).cloned())
+                                .collect::<Vec<_>>()
+                        })
+                        .filter(|v| !v.is_empty())
+                        .or_else(|| d.composer.lanes.get(row).cloned().map(|l| vec![l]))?;
+                    Some((members[0].clone(), members))
+                });
+                if let Some((lane, members)) = target {
                     match operation.as_str() {
+                        "mute" | "solo" if members.len() > 1 => {
+                            mix_lanes(app, members, &operation, Some(lane));
+                        }
                         "mute" => app.mute(lane),
                         "solo" => app.solo(lane),
                         "add_layer" if !app.is_busy() => {
@@ -991,17 +1007,32 @@ impl Action {
             }
             Self::HitsoundsSolo { on } => app.set_hitsounds_solo(on),
             Self::LaneGain { row, gain } => {
-                let target = app.document().and_then(|d| {
-                    let lane = d.composer.lanes.get(row)?;
-                    Some(
-                        d.composer
-                            .hitsounds()
-                            .lane(lane)
-                            .map(|m| m.plays_as())
-                            .unwrap_or_else(|| lane.clone()),
-                    )
-                });
-                if let Some(lane) = target {
+                let targets: Vec<dawsu_foundation::SampleIdentity> = app
+                    .document()
+                    .map(|d| {
+                        let rows: Vec<usize> = app
+                            .drum_row_groups()
+                            .and_then(|g| g.members_for_row(row))
+                            .map(|s| s.to_vec())
+                            .unwrap_or_else(|| vec![row]);
+                        let mut unique = Vec::new();
+                        for r in rows {
+                            if let Some(lane) = d.composer.lanes.get(r) {
+                                let resolved = d
+                                    .composer
+                                    .hitsounds()
+                                    .lane(lane)
+                                    .map(|m| m.plays_as())
+                                    .unwrap_or_else(|| lane.clone());
+                                if !unique.contains(&resolved) {
+                                    unique.push(resolved);
+                                }
+                            }
+                        }
+                        unique
+                    })
+                    .unwrap_or_default();
+                for lane in targets {
                     app.set_lane_gain(lane, gain);
                 }
             }

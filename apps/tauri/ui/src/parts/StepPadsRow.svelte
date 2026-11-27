@@ -1,11 +1,12 @@
 <script>
   import { act, bridge } from "../lib/bridge.svelte.js";
 
-  let { laneRow = 0, laneName = "" } = $props();
+  let { laneRow = 0, memberRows = null, laneName = "" } = $props();
 
   const STEPS = 8;
   const scene = $derived(bridge.scene);
   const view = $derived(bridge.view);
+  const rowSet = $derived(new Set(Array.isArray(memberRows) && memberRows.length ? memberRows : [laneRow]));
 
   const stepGrid = $derived.by(() => {
     const sections = scene?.sections ?? [];
@@ -30,7 +31,7 @@
       for (const m of moments) {
         if (Math.abs(m[0] - t) <= 4) {
           const hits = m[3] ?? [];
-          if (hits.some(h => h[0] === laneRow)) {
+          if (hits.some(h => rowSet.has(h[0]))) {
             active = true;
             break;
           }

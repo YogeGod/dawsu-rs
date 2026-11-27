@@ -132,6 +132,7 @@
       peak={hitsoundsPeak} onlevel={hitsoundLevel} />
     {#each strips as strip (strip.key)}
       {@const fxKey = stripFxKey("lane", scene?.lanes?.[strip.row])}
+      {@const stripPeak = lanePeaks ? Math.max(0, ...(strip.memberRows ?? [strip.row]).map(r => lanePeaks.get(r) ?? 0)) : 0}
       <MixerStrip label={strip.name + ", lane " + strip.number} name={strip.name} set={strip.set} number={strip.number}
         icon={laneIcons[strip.icon] ?? laneIcons.file} colour={strip.colour} selected={strip.selected} quiet={strip.quiet}
         muted={strip.muted} solo={strip.solo} muteLabel={"Mute " + strip.name + " (" + strip.set + ")"} soloLabel={"Solo " + strip.name + " (" + strip.set + ")"} {disabled}
@@ -139,7 +140,7 @@
         onmute={() => lane("mix", strip.row, "mute")} onsolo={() => lane("mix", strip.row, "solo")}
         onselect={event => lane("select", strip.row, event)}
         gain={strip.gain ?? 1} min={0} max={2} gainLabel={strip.name + " volume"} readout={dbText(strip.gain ?? 1)}
-        peak={lanePeaks ? (strip.quiet ? 0 : (lanePeaks.get(strip.row) ?? 0) * (strip.gain ?? 1)) : null}
+        peak={lanePeaks ? (strip.quiet ? 0 : stripPeak * (strip.gain ?? 1)) : null}
         onlevel={laneLevel(strip.row)} />
     {/each}
   </div>

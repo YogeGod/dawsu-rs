@@ -2,6 +2,7 @@
 
 pub mod base_layer;
 pub mod desktop_services;
+mod drum_editing;
 pub mod drum_view;
 pub mod export_manifest;
 pub mod folders;
@@ -120,6 +121,7 @@ mod roll_back;
 pub mod sample_checks;
 pub mod sample_fingerprint;
 pub mod songs_index;
+pub(crate) mod sound_groups;
 mod sound_sets;
 pub mod spectrum;
 mod unwritten;
@@ -597,6 +599,8 @@ pub struct Application {
     pub mixer_fx: mixer_fx::MixerFxManager,
     pub(crate) drum_vst: Option<drum_vst::DrumVstLiveHandle>,
     pub(crate) drum_vst_loading: bool,
+    pub(crate) drum_row_groups: Option<drum_view::DrumRowGroups>,
+    pub(crate) drum_move_stroke: Option<drum_editing::DrumMoveStroke>,
     drum_vst_job: Option<mpsc::Receiver<JobResult>>,
     drum_vst_cancel: Arc<AtomicBool>,
     drum_vst_generation: u64,
@@ -808,6 +812,8 @@ impl Application {
             view_revision: 0,
             drum_vst: None,
             drum_vst_loading: false,
+            drum_row_groups: None,
+            drum_move_stroke: None,
             drum_vst_job: None,
             drum_vst_cancel: Arc::new(AtomicBool::new(false)),
             drum_vst_generation: 0,
@@ -992,6 +998,27 @@ impl Application {
     }
     pub fn drum_vst(&self) -> Option<&drum_vst::DrumVstLiveHandle> {
         self.drum_vst.as_ref()
+    }
+    pub fn drum_row_groups(&self) -> Option<&drum_view::DrumRowGroups> {
+        self.drum_row_groups.as_ref()
+    }
+    pub(crate) fn cancel_open_tool_stroke(&mut self) {
+        self.drum_move_stroke = None;
+        self.cancel_controller_stroke();
+        if let Some(d) = self.document.as_mut()
+            && self.tools.is_stroke_open()
+        {
+            self.tools.cancel(&mut d.composer);
+        }
+    }
+    pub fn set_drum_row_groups(&mut self, groups: Option<drum_view::DrumRowGroups>) {
+        if self.drum_row_groups != groups {
+            if self.drum_row_groups.is_some() != groups.is_some() {
+                self.cancel_open_tool_stroke();
+            }
+            self.drum_row_groups = groups;
+            self.bump_view_revision();
+        }
     }
     pub fn is_drum_vst_loading(&self) -> bool {
         self.drum_vst_loading

@@ -744,3 +744,689 @@ fn task3_path2_auto_activates_default_osu_kit_shows_other_lanes_survives_replace
         "Path 2 per-diff drum kit must not bleed into sibling gameplay diffs"
     );
 }
+
+#[test]
+fn drums_view_merges_identical_audio_lanes_in_autodetect_and_presets_and_routes_vst_notes() {
+    use dawsu_hitsounding::drums::{DrumMap, DrumRow, write_dawsudrum};
+
+    let make_wav = |frames: usize, mut synth: Box<dyn FnMut(f32) -> f32>| -> Vec<u8> {
+        let sr = 44_100u32;
+        let data_bytes = (frames * 2) as u32;
+        let mut out = Vec::with_capacity(44 + data_bytes as usize);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        for field in [16u32, 1 | (1 << 16), sr, sr * 2, 2 | (16 << 16)] {
+            out.extend_from_slice(&field.to_le_bytes());
+        }
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_bytes.to_le_bytes());
+        for i in 0..frames {
+            let s = synth(i as f32 / sr as f32).clamp(-1.0, 1.0);
+            out.extend_from_slice(&((s * 30_000.0) as i16).to_le_bytes());
+        }
+        out
+    };
+    let mut kick_phase = 0.0f32;
+    let kick_wave = make_wav(11_025, Box::new(move |t| {
+        let f = 55.0 + 110.0 * (-t / 0.030).exp();
+        kick_phase += 2.0 * std::f32::consts::PI * f / 44_100.0;
+        kick_phase.sin() * (-t / 0.065).exp()
+    }));
+    let mut rng = 1u64;
+    let snare_wave = make_wav(11_025, Box::new(move |t| {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let n = ((rng >> 32) as i32) as f32 / i32::MAX as f32;
+        (2.0 * std::f32::consts::PI * 200.0 * t).sin() * (-t / 0.050).exp() * 0.5
+            + n * (-t / 0.080).exp() * 0.45
+    }));
+
+    let fixture = Fixture::new("drum-view-merge-siblings");
+    let map = fixture.0.join("Map.osu");
+    for name in ["drum-hitnormal.wav", "drum-hitnormal2.wav", "drum-hitnormal3.wav"] {
+        fs::write(fixture.0.join(name), &kick_wave).unwrap();
+    }
+    fs::write(fixture.0.join("normal-hitclap.wav"), &snare_wave).unwrap();
+    fs::write(
+        &map,
+        b"osu file format v14\n\n[General]\nMode:0\nSampleSet:Drum\n\n[TimingPoints]\n0,500,4,3,1,100,1,0\n0,500,4,3,2,100,0,0\n0,500,4,3,3,100,0,0\n\n[HitObjects]\n256,192,500,1,0,0:0:0:0:\n256,192,1000,1,0,3:0:2:0:\n256,192,1500,1,0,3:0:3:0:\n256,192,2000,1,8,1:0:1:0:\n",
+    )
+    .unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let doc_path = app.document().unwrap().path.clone();
+    let mut drums = crate::drum_view::DrumView::for_editor();
+    let mut cache = crate::ViewTickCache::default();
+
+    let row_of_key = |app: &Application, key: &str| {
+        let model = app.document().unwrap().composer.hitsounds();
+        app.document()
+            .unwrap()
+            .composer
+            .lanes
+            .iter()
+            .position(|id| {
+                model
+                    .lane(id)
+                    .is_some_and(|lane| dawsu_hitsounding::drums::lane_key(lane) == key)
+            })
+            .unwrap()
+    };
+    let k1 = row_of_key(&app, "BeatmapFile|drum-hitnormal.wav");
+    let k2 = row_of_key(&app, "BeatmapFile|drum-hitnormal2.wav");
+    let k3 = row_of_key(&app, "BeatmapFile|drum-hitnormal3.wav");
+
+    drums.open_or_toggle_and_sync(&mut app, &doc_path, None, true).unwrap();
+    let mut shown = snapshot_view(&app, true);
+    drums.decorate(&app, &mut shown);
+    let shown = serde_json::to_value(shown).unwrap();
+    let drum_rows = shown["scene"]["drumRows"].as_array().unwrap();
+    let kick_entries: Vec<_> = drum_rows
+        .iter()
+        .filter(|r| {
+            r["rows"].as_array().is_some_and(|arr| {
+                arr.iter()
+                    .any(|v| v == k1 || v == k2 || v == k3)
+            })
+        })
+        .collect();
+    assert_eq!(kick_entries.len(), 1, "3 identical kicks must collapse to 1 row: {drum_rows:?}");
+    assert!(
+        kick_entries[0]["name"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("Kick")),
+        "expected merged row to classify as Kick: {:?}",
+        kick_entries[0]
+    );
+    let members: Vec<usize> = kick_entries[0]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as usize)
+        .collect();
+    assert_eq!(members, vec![k1, k2, k3]);
+    assert!(
+        !drum_rows.iter().any(|r| r["row"] == k2 || r["row"] == k3),
+        "secondary identical kicks must not also emit standalone Other rows: {drum_rows:?}"
+    );
+    let setup_kick = shown["drumView"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["laneKey"] == "BeatmapFile|drum-hitnormal.wav")
+        .unwrap();
+    assert_eq!(setup_kick["mergedLaneKeys"].as_array().unwrap().len(), 3);
+
+    // VST routing applies Kick's MIDI note to every merged identical sibling lane.
+    let routed = drums.routed_midi_notes(&app);
+    let lanes = app.document().unwrap().composer.lanes.clone();
+    for r in [k1, k2, k3] {
+        assert_eq!(routed.get(&lanes[r]).copied(), setup_kick["midiNote"].as_u64().map(|v| v as u8));
+    }
+
+    // Active DrumRowGroups maps every member back to the primary group.
+    let groups = app.drum_row_groups().expect("drum_row_groups synced");
+    assert_eq!(groups.members_for_row(k2), Some(&[k1, k2, k3][..]));
+
+    // Explicitly claiming two identical-audio lanes under two different preset rows preserves both claims.
+    let kit = DrumMap {
+        id: "bbbbbbbb-0000-4000-8000-000000000009".into(),
+        name: "Explicit Two Kicks".into(),
+        rows: vec![
+            DrumRow {
+                id: "aaaaaaaa-0000-4000-8000-000000000001".into(),
+                name: "Kick Main".into(),
+                lane: Some("BeatmapFile|drum-hitnormal.wav".into()),
+                slot: None,
+                midi_note: Some(36),
+                choke_group: None,
+            },
+            DrumRow {
+                id: "aaaaaaaa-0000-4000-8000-000000000002".into(),
+                name: "Kick Accent".into(),
+                lane: Some("BeatmapFile|drum-hitnormal2.wav".into()),
+                slot: None,
+                midi_note: Some(35),
+                choke_group: None,
+            },
+        ],
+        audio: Vec::new(),
+    };
+    let preset = fixture.0.join("ExplicitTwo.dawsudrum");
+    fs::write(&preset, write_dawsudrum(&kit).unwrap()).unwrap();
+    drums.open_or_toggle_and_sync(&mut app, &doc_path, Some(&preset), true).unwrap();
+    let mut explicit_view = snapshot_view(&app, true);
+    drums.decorate(&app, &mut explicit_view);
+    let explicit_view = serde_json::to_value(explicit_view).unwrap();
+    let explicit_rows = explicit_view["scene"]["drumRows"].as_array().unwrap();
+    let main_row = explicit_rows.iter().find(|r| r["name"] == "Kick Main").unwrap();
+    let accent_row = explicit_rows.iter().find(|r| r["name"] == "Kick Accent").unwrap();
+    assert_eq!(main_row["rows"], serde_json::json!([k1, k3]), "unclaimed k3 folds into k1 without stealing k2");
+    assert_eq!(accent_row["rows"], serde_json::json!([k2]), "explicit preset claim on k2 stays separate");
+    let explicit_routed = drums.routed_midi_notes(&app);
+    assert_eq!(explicit_routed.get(&lanes[k1]).copied(), Some(36));
+    assert_eq!(explicit_routed.get(&lanes[k3]).copied(), Some(36));
+    assert_eq!(explicit_routed.get(&lanes[k2]).copied(), Some(35));
+
+    // Deleting a secondary member lane & undoing refreshes drum_row_groups via sync_on_document_open.
+    let rev = app.document().unwrap().composer.history.version();
+    app.delete_lane(&doc_path, &lanes[k3], rev).unwrap();
+    assert!(drums.sync_on_document_open(&mut app, &mut cache));
+    assert_eq!(app.drum_row_groups().unwrap().members_for_row(k1), Some(&[k1][..]));
+    app.command("undo");
+    assert!(drums.sync_on_document_open(&mut app, &mut cache));
+    assert_eq!(app.drum_row_groups().unwrap().members_for_row(k3), Some(&[k1, k3][..]));
+}
+
+#[test]
+fn task3_drums_view_merged_editing_selection_step_pads_vst_and_single_undo_replace() {
+    use dawsu_application::PointerPhase;
+    use dawsu_editor::tools::PointerInput;
+    use dawsu_hitsounding::drums::lane_key;
+
+    struct NoopProcessor;
+    impl dawsu_application::drum_vst::DrumBlockProcessor for NoopProcessor {
+        fn process_block(&mut self, _: f64, _: &[dawsu_application::drum_vst::ShmEvent], l: &mut [f32], r: &mut [f32]) -> bool {
+            l.fill(0.0);
+            r.fill(0.0);
+            true
+        }
+    }
+
+    let make_wav = |frames: usize, freq_mul: f32| -> Vec<u8> {
+        let sr = 44_100u32;
+        let data_bytes = (frames * 2) as u32;
+        let mut out = Vec::with_capacity(44 + data_bytes as usize);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        for field in [16u32, 1 | (1 << 16), sr, sr * 2, 2 | (16 << 16)] {
+            out.extend_from_slice(&field.to_le_bytes());
+        }
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_bytes.to_le_bytes());
+        let mut phase = 0.0f32;
+        for i in 0..frames {
+            let t = i as f32 / sr as f32;
+            let f = 55.0 * freq_mul + 110.0 * (-t / 0.030).exp();
+            phase += 2.0 * std::f32::consts::PI * f / sr as f32;
+            let s = (phase.sin() * (-t / 0.065).exp()).clamp(-1.0, 1.0);
+            out.extend_from_slice(&((s * 30_000.0) as i16).to_le_bytes());
+        }
+        out
+    };
+
+    let fixture = Fixture::new("task3-merged-editing");
+    let map = fixture.0.join("Map.osu");
+    let kick_wav = make_wav(8820, 1.0);
+    let alt_kick_wav = make_wav(8820, 1.6);
+    for name in ["drum-hitnormal.wav", "drum-hitnormal2.wav", "drum-hitnormal3.wav"] {
+        fs::write(fixture.0.join(name), &kick_wav).unwrap();
+    }
+    let ext_kick = fixture.0.join("replaced-kick.wav");
+    fs::write(&ext_kick, &alt_kick_wav).unwrap();
+    fs::write(
+        &map,
+        b"osu file format v14\n\n[General]\nMode:0\nSampleSet:Drum\n\n[TimingPoints]\n0,500,4,3,1,100,1,0\n1500,-100,4,3,2,100,0,0\n\n[HitObjects]\n256,192,500,1,0,0:0:0:0:\n256,192,1000,1,0,3:0:3:0:\n256,192,2000,1,8,1:0:1:0:\n",
+    )
+    .unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let doc_path = app.document().unwrap().path.clone();
+    let mut drums = crate::drum_view::DrumView::for_editor();
+    let mut cache = crate::ViewTickCache::default();
+    drums.open_or_toggle_and_sync(&mut app, &doc_path, None, true).unwrap();
+
+    let row_of_key = |app: &Application, key: &str| {
+        let model = app.document().unwrap().composer.hitsounds();
+        app.document()
+            .unwrap()
+            .composer
+            .lanes
+            .iter()
+            .position(|id| model.lane(id).is_some_and(|lane| lane_key(lane) == key))
+            .unwrap()
+    };
+    let k1 = row_of_key(&app, "BeatmapFile|drum-hitnormal.wav");
+    let k2 = row_of_key(&app, "BeatmapFile|drum-hitnormal2.wav");
+    let k3 = row_of_key(&app, "BeatmapFile|drum-hitnormal3.wav");
+    let c1 = row_of_key(&app, "Skin|normal-hitclap");
+
+    // 1. Clicking primary row k1 at 1000 ms (where hit lives on k3!) selects k3's hit and moves it horizontally onto the active timing point's matching member (k1); Undo restores k3 at 1000 ms.
+    let k1_id_initial = app.document().unwrap().composer.lanes[k1].clone();
+    Action::Tool { name: "Select".into() }.run(&mut app);
+    let ptr_at = |ms: f64, row: usize| {
+        let mut p = PointerInput::at(ms, row as i32);
+        p.x = ms;
+        p.y = 12.0;
+        p
+    };
+    app.pointer(PointerPhase::Down, ptr_at(1000.0, k1));
+    assert_eq!(app.document().unwrap().composer.selected.items().len(), 1);
+    let selected_id = app.document().unwrap().composer.lanes[k3].clone();
+    assert_eq!(
+        app.document()
+            .unwrap()
+            .composer
+            .selected
+            .items()
+            .iter()
+            .next()
+            .unwrap()
+            .lane,
+        selected_id
+    );
+
+    app.pointer(PointerPhase::Move, ptr_at(1250.0, k1));
+    app.pointer(PointerPhase::Up, ptr_at(1250.0, k1));
+    let hits_after_move = app.document().unwrap().composer.hitsounds();
+    assert!(
+        hits_after_move
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1250.0).abs() < 1.0 && m.has_hit(&k1_id_initial))
+            && !hits_after_move
+                .moments()
+                .iter()
+                .any(|m| (m.time().ms() - 1000.0).abs() < 1.0 && m.has_hit(&selected_id)),
+        "horizontal move into (Drum, 1) timing point must place onto matching member k1 and vacate 1000 ms"
+    );
+    app.command("undo");
+    assert!(
+        app.document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1000.0).abs() < 1.0 && m.has_hit(&selected_id)),
+        "undo after horizontal move must restore k3 at 1000 ms"
+    );
+
+    // 2. Shift+Up/Down from an anchor sitting on secondary member k3 finds neighbor across drum rows.
+    app.pointer(PointerPhase::Down, PointerInput::at(1000.0, k1 as i32));
+    app.pointer(PointerPhase::Up, PointerInput::at(1000.0, k1 as i32));
+    let mut visible_primaries: Vec<usize> = app
+        .drum_row_groups()
+        .unwrap()
+        .groups
+        .iter()
+        .filter_map(|g| g.first().copied())
+        .collect();
+    if !visible_primaries.contains(&c1) {
+        visible_primaries.push(c1);
+    }
+    let nav_down = dawsu_editor::keys::KeyChord::new(
+        dawsu_editor::keys::Key::Down,
+        dawsu_editor::keys::Mods::SHIFT,
+    );
+    app.key_with_lane_view(nav_down, doc_path.clone(), visible_primaries, 5000.0);
+    assert!(
+        app.document().unwrap().composer.selected.items().len() >= 2,
+        "Shift+Down from secondary member k3 should select neighbor hit across drum rows"
+    );
+
+    // 3. Draw click at 1000 ms on primary k1 erases k3 hit instead of stacking a duplicate; Undo restores.
+    Action::Tool { name: "Draw".into() }.run(&mut app);
+    app.pointer(PointerPhase::Down, PointerInput::at(1000.0, k1 as i32));
+    app.pointer(PointerPhase::Up, PointerInput::at(1000.0, k1 as i32));
+    assert!(
+        !app.document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1000.0).abs() < 1.0 && m.has_hit(&selected_id)),
+        "Draw on occupied secondary hit should wipe it"
+    );
+    app.command("undo");
+
+    // 4. Double-click empty spot at 1500 ms on k1 (timing point index 2 active!) picks k2 cleanly; step pad at 1500 ms removes it instead of stacking.
+    Action::Tool { name: "Select".into() }.run(&mut app);
+    let mut dbl = PointerInput::at(1500.0, k1 as i32);
+    dbl.click_count = 2;
+    app.pointer(PointerPhase::Down, dbl);
+    let k2_id = app.document().unwrap().composer.lanes[k2].clone();
+    assert!(
+        app.document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1500.0).abs() < 1.0 && m.has_hit(&k2_id)),
+        "Double-click at 1500 ms must place on k2 matching timing point index 2"
+    );
+    assert!(app.toggle_step_hit(k1, 1500.0));
+    assert!(
+        !app.document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1500.0).abs() < 1.0 && m.has_hit(&k2_id)),
+        "Step pad on primary row k1 must remove co-timed k2 hit"
+    );
+
+    // 5. Action::Lane mute/solo, LaneGain, and toggle_drum_vst_lane apply uniformly across k1, k2, k3.
+    Action::Lane { row: k1, operation: "mute".into() }.run(&mut app);
+    for r in [k1, k2, k3] {
+        let lane = app.document().unwrap().composer.lanes[r].clone();
+        assert!(app.is_muted(&lane), "all merged members must mute uniformly");
+    }
+    Action::LaneGain { row: k1, gain: 0.65 }.run(&mut app);
+    for r in [k1, k2, k3] {
+        let doc = app.document().unwrap();
+        let lane = &doc.composer.lanes[r];
+        let plays_as = doc
+            .composer
+            .hitsounds()
+            .lane(lane)
+            .map(|m| m.plays_as())
+            .unwrap_or_else(|| lane.clone());
+        assert!((app.lane_gain(&plays_as) - 0.65).abs() < 1e-4);
+    }
+    let (handle, _src) = dawsu_application::drum_vst::DrumVstLiveHandle::new(
+        "vst-m".into(),
+        "Kit".into(),
+        "kit.vst3".into(),
+        None,
+        true,
+        Box::new(NoopProcessor),
+    );
+    app.install_drum_vst_for_test(handle);
+    app.set_drum_vst_routing(drums.routed_midi_notes(&app));
+    assert!(!app.toggle_drum_vst_lane(k1).unwrap());
+    for r in [k1, k2, k3] {
+        let lane = app.document().unwrap().composer.lanes[r].clone();
+        assert!(app.drum_vst().unwrap().is_lane_vst_muted(&lane));
+    }
+
+    // 6. Single-undo Sample Replacement consolidates k1 + k2 + k3 cleanly with zero phantom 0-hit rows, and Undo restores all!
+    let k1_id = app.document().unwrap().composer.lanes[k1].clone();
+    app.set_active_lane(k1);
+    app.replace_lane_sample(&doc_path, &k1_id, &ext_kick).unwrap();
+    drums.sync_on_document_open(&mut app, &mut cache);
+
+    let replacement = app.document().unwrap().composer.lanes[app.active_lane()].clone();
+    let hits_after = app.document().unwrap().composer.hitsounds();
+    assert!(hits_after.is_lane_hidden(&k2_id));
+    assert!(hits_after.is_lane_hidden(&selected_id));
+    assert!(
+        hits_after
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 500.0).abs() < 1.0 && m.has_hit(&replacement)),
+        "hit from primary k1 must move to replacement"
+    );
+    assert!(
+        hits_after
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1000.0).abs() < 1.0 && m.has_hit(&replacement)),
+        "hit from secondary k3 must move to replacement in same transaction"
+    );
+    let mut after_view = snapshot_view(&app, true);
+    drums.decorate(&app, &mut after_view);
+    let after_json = serde_json::to_value(after_view).unwrap();
+    let drum_rows_after = after_json["scene"]["drumRows"].as_array().unwrap();
+    assert!(
+        !drum_rows_after.iter().any(|r| r["row"] == k2 || r["row"] == k3),
+        "no phantom 0-hit rows for emptied secondaries: {drum_rows_after:?}"
+    );
+
+    // One single Undo restores k1, k2, k3 and every original hit cleanly!
+    app.command("undo");
+    drums.sync_on_document_open(&mut app, &mut cache);
+    let hits_undone = app.document().unwrap().composer.hitsounds();
+    assert!(!hits_undone.is_lane_hidden(&k2_id));
+    assert!(!hits_undone.is_lane_hidden(&selected_id));
+    assert!(
+        hits_undone
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1000.0).abs() < 1.0 && m.has_hit(&selected_id)),
+        "single Undo must restore secondary k3 hit at 1000 ms"
+    );
+    assert_eq!(app.drum_row_groups().unwrap().members_for_row(k1), Some(&[k1, k2, k3][..]));
+
+    // 7. Action::Pointer with visible_rows restricts vertical drag to visible rows & Erase removes secondary hit.
+    let ptr = |app: &mut Application, phase: &str, ms: f64, row: usize| {
+        Action::Pointer {
+            phase: phase.into(),
+            ms,
+            row: row as i32,
+            x: ms,
+            y: 12.0,
+            value: None,
+            volume_lanes: None,
+            visible_rows: Some(vec![k1, c1]),
+            button: None,
+            shift: false,
+            ctrl: false,
+            alt: false,
+        }
+        .run(app);
+    };
+    let c1_member_ids: Vec<_> = {
+        let doc = app.document().unwrap();
+        app.drum_row_groups()
+            .and_then(|g| g.members_for_row(c1))
+            .map(|rows| rows.iter().map(|&r| doc.composer.lanes[r].clone()).collect())
+            .unwrap_or_else(|| vec![doc.composer.lanes[c1].clone()])
+    };
+    assert!(!c1_member_ids.is_empty() && !c1_member_ids.contains(&selected_id));
+    Action::Tool { name: "Select".into() }.run(&mut app);
+    ptr(&mut app, "down", 1000.0, k1);
+    ptr(&mut app, "move", 1000.0, c1);
+    ptr(&mut app, "up", 1000.0, c1);
+    let hits_moved = app.document().unwrap().composer.hitsounds();
+    assert!(
+        hits_moved
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1000.0).abs() < 1.0
+                && c1_member_ids.iter().any(|id| m.has_hit(id))
+                && !m.has_hit(&selected_id)),
+        "filtered visible_rows [k1, c1] must move hit directly from merged k1(k3) onto c1's drum group"
+    );
+    app.command("undo");
+
+    Action::Tool { name: "Erase".into() }.run(&mut app);
+    ptr(&mut app, "down", 1000.0, k1);
+    ptr(&mut app, "up", 1000.0, k1);
+    assert!(
+        !app.document()
+            .unwrap()
+            .composer
+            .hitsounds()
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1000.0).abs() < 1.0 && m.has_hit(&selected_id)),
+        "Erase on primary row k1 with visible_rows must remove secondary k3 hit"
+    );
+    app.command("undo");
+
+    // 8. paint_hits_on_lane skips occupied secondary member (1000 ms on k3) & uses choose_member_lane (k2 at 1500 ms).
+    let placed = app.paint_hits_on_lane(k1, 500.0, 2000.0);
+    assert!(placed > 0);
+    let hits_painted = app.document().unwrap().composer.hitsounds();
+    let m1000 = hits_painted
+        .moments()
+        .iter()
+        .find(|m| (m.time().ms() - 1000.0).abs() < 1.0)
+        .unwrap();
+    let kick_count_at_1000 = [k1_id.clone(), k2_id.clone(), selected_id.clone()]
+        .iter()
+        .filter(|id| m1000.has_hit(id))
+        .count();
+    assert_eq!(kick_count_at_1000, 1, "must not stack duplicate kick onto already-occupied 1000 ms");
+    assert!(
+        hits_painted
+            .moments()
+            .iter()
+            .any(|m| (m.time().ms() - 1500.0).abs() < 1.0 && m.has_hit(&k2_id)),
+        "paint_hits_on_lane at 1500 ms must resolve to k2 via timing point index 2"
+    );
+}
+
+#[test]
+#[ignore = "real osu! mapset verification against local Caligula's Horse - Mute"]
+fn read_only_caligulas_horse_mute_merges_identical_lanes_and_sorts_canonically() {
+    use dawsu_hitsounding::drums::lane_key;
+
+    let src_dir = std::path::Path::new(r"F:\osu!\Songs\2218070 Caligula's Horse - Mute");
+    let src_osu = src_dir.join("Caligula's Horse - Mute (ravensong) [Quiescence of Vicissitude].osu");
+    if !src_osu.exists() {
+        return;
+    }
+
+    let fixture = Fixture::new("caligula-mute-readonly");
+    let mapset = fixture.0.join("mapset");
+    fs::create_dir_all(&mapset).unwrap();
+    let dst_osu = mapset.join(src_osu.file_name().unwrap());
+    fs::copy(&src_osu, &dst_osu).unwrap();
+    for entry in fs::read_dir(src_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("audio.ogg") {
+            continue;
+        }
+        if path.extension().is_some_and(|e| {
+            e.eq_ignore_ascii_case("wav") || e.eq_ignore_ascii_case("ogg") || e.eq_ignore_ascii_case("mp3")
+        }) {
+            fs::copy(&path, mapset.join(name)).unwrap();
+        }
+    }
+
+    let mut app = Application::headless_with_projects(fixture.0.join("data"));
+    open(&mut app, &dst_osu);
+    let doc_path = app.document().unwrap().path.clone();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        app.poll();
+        let all_files_loaded = {
+            let doc = app.document().unwrap();
+            let model = doc.composer.hitsounds();
+            model.lanes().iter().all(|lane| {
+                !matches!(lane.source, dawsu_hitsounding::LaneSource::File(_))
+                    || app.lane_clip(&lane.identity).is_some()
+            })
+        };
+        if all_files_loaded {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let raw_lane_count = app.document().unwrap().composer.lanes.len();
+    let mut drums = crate::drum_view::DrumView::for_editor();
+    drums.open_or_toggle_and_sync(&mut app, &doc_path, None, true).unwrap();
+    let mut view = snapshot_view(&app, true);
+    drums.decorate(&app, &mut view);
+    let view_json = serde_json::to_value(view).unwrap();
+    let drum_rows = view_json["scene"]["drumRows"].as_array().unwrap();
+
+    let model = app.document().unwrap().composer.hitsounds();
+    let composer_lanes = &app.document().unwrap().composer.lanes;
+    let key_of = |idx: usize| lane_key(model.lane(&composer_lanes[idx]).unwrap());
+
+    println!("Caligula raw lanes: {raw_lane_count}, drum rows: {}", drum_rows.len());
+    for row in drum_rows {
+        let keys: Vec<String> = row["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|v| key_of(v.as_u64().unwrap() as usize))
+            .collect();
+        println!(
+            "  row={:?} name={:?} members={keys:?}",
+            row["row"], row["name"]
+        );
+    }
+
+    let drum_normal_rows: Vec<_> = drum_rows
+        .iter()
+        .filter(|r| {
+            r["rows"].as_array().is_some_and(|arr| {
+                arr.iter()
+                    .map(|v| key_of(v.as_u64().unwrap() as usize))
+                    .any(|k| k.starts_with("BeatmapFile|drum-hitnormal"))
+            })
+        })
+        .collect();
+    assert_eq!(
+        drum_normal_rows.len(),
+        1,
+        "all 5 identical drum-hitnormal*.wav kicks must collapse into one single row: {drum_rows:?}"
+    );
+    assert!(
+        drum_normal_rows[0]["name"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("Kick")),
+        "merged drum-hitnormal*.wav row must classify as Kick: {:?}",
+        drum_normal_rows[0]
+    );
+    assert_eq!(
+        drum_normal_rows[0]["rows"].as_array().map(Vec::len),
+        Some(5),
+        "single merged Kick row must fold all 5 identical drum-hitnormal*.wav lanes: {:?}",
+        drum_normal_rows[0]
+    );
+    let kick_keys: Vec<String> = drum_normal_rows[0]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| key_of(v.as_u64().unwrap() as usize))
+        .collect();
+    for expected in [
+        "BeatmapFile|drum-hitnormal.wav",
+        "BeatmapFile|drum-hitnormal2.wav",
+        "BeatmapFile|drum-hitnormal3.wav",
+        "BeatmapFile|drum-hitnormal4.wav",
+        "BeatmapFile|drum-hitnormal5.wav",
+    ] {
+        assert!(
+            kick_keys.iter().any(|k| k == expected),
+            "expected {expected} inside merged Kick row {kick_keys:?}"
+        );
+    }
+
+    // Check canonical category ordering across named instrument rows.
+    let category_rank = |name: &str| -> usize {
+        if name.starts_with("Kick") { 0 }
+        else if name.starts_with("Snare") { 1 }
+        else if name.starts_with("Clap") { 2 }
+        else if name.contains("Tom") { 3 }
+        else if name.contains("Hat") { 4 }
+        else if name.starts_with("Ride") { 5 }
+        else if name.starts_with("Crash") { 6 }
+        else { 7 }
+    };
+    let named_ranks: Vec<(usize, &str)> = drum_rows
+        .iter()
+        .filter_map(|r| r["name"].as_str().map(|n| (category_rank(n), n)))
+        .filter(|(rank, _)| *rank < 7)
+        .collect();
+    for pair in named_ranks.windows(2) {
+        assert!(
+            pair[0].0 <= pair[1].0,
+            "expected canonical kit order Kick -> Snare/Clap -> Toms -> Hi-Hats -> Ride/Crash, got {named_ranks:?}"
+        );
+    }
+
+    // Raw Hitsounds view remains unmerged when Drums view is toggled off.
+    drums.open_or_toggle_and_sync(&mut app, &doc_path, None, false).unwrap();
+    let mut off_view = snapshot_view(&app, true);
+    drums.decorate(&app, &mut off_view);
+    let off_json = serde_json::to_value(off_view).unwrap();
+    assert_eq!(off_json["drumView"]["enabled"], false);
+    assert_eq!(off_json["scene"]["lanes"].as_array().unwrap().len(), raw_lane_count);
+}

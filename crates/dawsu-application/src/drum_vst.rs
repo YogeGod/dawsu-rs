@@ -149,6 +149,14 @@ impl DrumVstLiveHandle {
         self.muted_vst_lanes.contains(lane)
     }
 
+    pub fn set_lane_vst_muted(&mut self, lane: &SampleIdentity, muted: bool) {
+        if muted {
+            self.muted_vst_lanes.insert(lane.clone());
+        } else {
+            self.muted_vst_lanes.remove(lane);
+        }
+    }
+
     /// Toggles VST3 routing off/on for one lane. Returns `true` when routed to VST3,
     /// `false` when bypassed back to sample playback.
     pub fn toggle_lane_vst(&mut self, lane: &SampleIdentity) -> bool {

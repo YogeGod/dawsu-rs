@@ -345,3 +345,22 @@ test("Shift-click and Ctrl-click multi-lane selection includes the active anchor
   assert.equal(evaluate("JSON.stringify([...selectionLaneKeys])"), '["c2","k"]');
   assert.equal(lanes(evaluate).at(-1).selected, true, "bottom-most lane header is marked selected after Ctrl-click");
 });
+
+test("Drum Map Setup shows a merged badge without disturbing children[0..5]", async () => {
+  const { get, context } = await drumSetupEditor();
+  runInContext(fixture + `view.drumView = {
+    enabled: true,
+    name: "Auto",
+    presets: ["Auto"],
+    rows: [
+      { index: 0, name: "Kick", laneKey: "BeatmapFile|a.wav", mergedLaneKeys: ["BeatmapFile|a.wav", "BeatmapFile|b.wav", "BeatmapFile|c.wav"], assigned: true },
+    ],
+    lanes: [{ key: "BeatmapFile|a.wav", sceneKey: "a", name: "a.wav" }],
+  };
+  openDrumMapSetup();`, context);
+  const firstRow = get("dialog-body").children[1].children[0];
+  assert.equal(firstRow.children[1].value, "BeatmapFile|a.wav");
+  assert.equal(firstRow.children[2].disabled, true);
+  assert.equal(firstRow.children[6].textContent, "+2 merged");
+  assert.equal(firstRow.children[6].title, "BeatmapFile|a.wav\nBeatmapFile|b.wav\nBeatmapFile|c.wav");
+});

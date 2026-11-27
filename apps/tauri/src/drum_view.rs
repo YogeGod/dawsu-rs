@@ -3,7 +3,9 @@ pub(super) use dawsu_application::drum_view::{DrumMapAction, DrumRowSnapshot, Dr
 use dawsu_hitsounding::drums::DrumMap;
 #[cfg(test)]
 pub(super) use dawsu_hitsounding::drums::DEFAULT_OSU_KIT_NAME;
-use std::{collections::HashMap, path::Path};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Default)]
 pub(super) struct DrumView(pub(crate) dawsu_application::drum_view::DrumView);
@@ -110,10 +112,7 @@ impl DrumView {
             .set_midi_note(app, expected_map, row_index, midi_note)
     }
 
-    pub(super) fn choke_groups(&self, app: &Application) -> HashMap<u8, u8> {
-        self.0.choke_groups(app)
-    }
-
+    #[cfg(test)]
     pub(super) fn routed_midi_notes(
         &self,
         app: &Application,
@@ -128,6 +127,21 @@ impl DrumView {
         on: bool,
     ) -> Result<(), String> {
         self.0.toggle(app, expected_map, on)
+    }
+
+    pub(super) fn sync_app(&mut self, app: &mut Application) {
+        self.0.sync_app(app);
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_or_toggle_and_sync(
+        &mut self,
+        app: &mut Application,
+        expected_map: &Path,
+        preset: Option<&Path>,
+        on: bool,
+    ) -> Result<(), String> {
+        self.0.open_or_toggle_and_sync(app, expected_map, preset, on)
     }
 
     pub(super) fn decorate(&self, app: &Application, view: &mut super::ViewSnapshot) {

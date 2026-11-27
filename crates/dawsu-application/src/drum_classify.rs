@@ -5,6 +5,7 @@ use dawsu_hitsounding::{
     Lane,
     drums::{DrumMap, DrumRow, lane_key},
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -12,13 +13,13 @@ enum DrumRole {
     Kick,
     Snare,
     Clap,
-    ClosedHat,
-    OpenHat,
     HighTom,
     MidTom,
     FloorTom,
-    Crash,
+    ClosedHat,
+    OpenHat,
     Ride,
+    Crash,
     Perc,
 }
 
@@ -56,18 +57,19 @@ impl DrumRole {
     }
 }
 
-/// Core kit slots included in an auto-detected Drum Map in Cubase kit order.
+/// Core kit slots included in an auto-detected Drum Map in canonical kit order:
+/// Kick -> Snare/Clap -> Toms -> Hi-Hats -> Ride/Crash (with Perc appended if used).
 const CORE_SLOTS: [DrumRole; 10] = [
     DrumRole::Kick,
     DrumRole::Snare,
     DrumRole::Clap,
-    DrumRole::ClosedHat,
-    DrumRole::OpenHat,
     DrumRole::HighTom,
     DrumRole::MidTom,
     DrumRole::FloorTom,
-    DrumRole::Crash,
+    DrumRole::ClosedHat,
+    DrumRole::OpenHat,
     DrumRole::Ride,
+    DrumRole::Crash,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -92,16 +94,30 @@ pub(crate) struct AcousticFeatures {
     pub(crate) crest_factor: f32,
 }
 
-/// Automatically builds a kit `DrumMap` from `lanes` by inspecting custom filenames and
-/// analyzing each lane's decoded PCM audio clip. Silent samples are left unassigned.
+/// Automatically builds a kit `DrumMap` from `lanes` by grouping exact identical sounds,
+/// inspecting custom filenames, and analyzing each unique sound's primary lane audio clip.
+/// Silent samples and slider sounds are left unassigned.
 pub fn auto_detect_drum_map(
     lanes: &[Lane],
     clip_for: impl Fn(&SampleIdentity) -> Option<Arc<AudioClip>>,
 ) -> DrumMap {
+    auto_detect_drum_map_with_counts(lanes, clip_for, &HashMap::new())
+}
+
+pub(crate) fn auto_detect_drum_map_with_counts(
+    lanes: &[Lane],
+    clip_for: impl Fn(&SampleIdentity) -> Option<Arc<AudioClip>>,
+    hit_counts: &HashMap<SampleIdentity, usize>,
+) -> DrumMap {
+    let lane_refs: Vec<&Lane> = lanes.iter().collect();
+    let (groups, _) =
+        crate::sound_groups::group_lanes_by_sound(&lane_refs, &clip_for, hit_counts, false);
+
     let mut fixed_buckets: Vec<(DrumRole, &Lane)> = Vec::new();
     let mut toms: Vec<(f32, &Lane)> = Vec::new();
 
-    for lane in lanes {
+    for group in groups {
+        let lane = lane_refs[group.primary_index];
         let clip = clip_for(&lane.identity);
         let features = clip.as_deref().and_then(extract_features);
 
@@ -798,5 +814,180 @@ mod tests {
         );
         // Unused standard slots stay present as unassigned rows for Drum Map Setup.
         assert!(kit.rows.iter().any(|r| r.name == "Crash" && r.lane.is_none()));
+    }
+
+    #[test]
+    fn core_slots_follow_canonical_drum_kit_order() {
+        let lanes: Vec<Lane> = Vec::new();
+        let kit = auto_detect_drum_map(&lanes, |_| None);
+        let names: Vec<&str> = kit.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Kick",
+                "Snare",
+                "Clap",
+                "High Tom",
+                "Mid Tom",
+                "Floor Tom",
+                "Closed Hat",
+                "Open Hat",
+                "Ride",
+                "Crash",
+            ]
+        );
+    }
+
+    #[test]
+    fn identical_kick_lanes_collapse_to_single_row_while_distinct_kicks_stay_separate() {
+        fn indexed_kick(index: u32, name: &str) -> Lane {
+            Lane {
+                identity: SampleIdentity::Standard {
+                    set: SampleSet::Drum,
+                    sound: Sound::Hit(Hitsound::Normal),
+                    index: CustomIndex::new(index),
+                },
+                source: LaneSource::File(name.into()),
+            }
+        }
+        let mut alt_kick_clip = (*kick_clip()).clone();
+        alt_kick_clip.samples[10] += 0.25;
+        let alt_kick_clip = Arc::new(alt_kick_clip);
+
+        // 5 numbered kick lanes sharing identical PCM (plus negative zero equivalence) + 1 distinct kick.
+        let mut neg_zero_kick = (*kick_clip()).clone();
+        for s in &mut neg_zero_kick.samples {
+            if *s == 0.0 {
+                *s = -0.0;
+            }
+        }
+        let neg_zero_kick = Arc::new(neg_zero_kick);
+
+        let lanes = vec![
+            indexed_kick(5, "drum-hitnormal5.wav"),
+            indexed_kick(1, "drum-hitnormal.wav"),
+            indexed_kick(2, "drum-hitnormal2.wav"),
+            indexed_kick(3, "drum-hitnormal3.wav"),
+            indexed_kick(4, "drum-hitnormal4.wav"),
+            indexed_kick(6, "drum-hitnormal6.wav"),
+        ];
+        let mut clips: HashMap<SampleIdentity, Arc<AudioClip>> = HashMap::new();
+        clips.insert(lanes[0].identity.clone(), neg_zero_kick);
+        clips.insert(lanes[1].identity.clone(), kick_clip());
+        clips.insert(lanes[2].identity.clone(), kick_clip());
+        clips.insert(lanes[3].identity.clone(), kick_clip());
+        clips.insert(lanes[4].identity.clone(), kick_clip());
+        clips.insert(lanes[5].identity.clone(), alt_kick_clip);
+
+        let kit = auto_detect_drum_map(&lanes, |id| clips.get(id).cloned());
+        kit.validate().unwrap();
+        let kick_rows: Vec<&DrumRow> = kit
+            .rows
+            .iter()
+            .filter(|r| r.name.starts_with("Kick"))
+            .collect();
+        assert_eq!(kick_rows.len(), 2, "expected 1 merged Kick + 1 distinct Kick 2: {kick_rows:?}");
+        assert_eq!(kick_rows[0].name, "Kick");
+        assert_eq!(kick_rows[0].lane.as_deref(), Some("BeatmapFile|drum-hitnormal.wav"));
+        assert_eq!(kick_rows[1].name, "Kick 2");
+        assert_eq!(kick_rows[1].lane.as_deref(), Some("BeatmapFile|drum-hitnormal6.wav"));
+    }
+
+    #[test]
+    fn silent_clips_and_slider_lanes_never_merge_and_unloaded_skin_fallbacks_dedup() {
+        let mut lanes = vec![
+            std_lane(SampleSet::Soft, Hitsound::Normal),
+            Lane {
+                identity: SampleIdentity::Standard {
+                    set: SampleSet::Soft,
+                    sound: Sound::Hit(Hitsound::Normal),
+                    index: CustomIndex::new(2),
+                },
+                source: LaneSource::Skin,
+            },
+            Lane {
+                identity: SampleIdentity::Standard {
+                    set: SampleSet::Normal,
+                    sound: Sound::Slider(dawsu_foundation::SliderSound::Slide),
+                    index: CustomIndex::new(0),
+                },
+                source: LaneSource::Skin,
+            },
+            file_lane("silent-a.wav"),
+            file_lane("silent-b.wav"),
+        ];
+        let mut clips: HashMap<SampleIdentity, Arc<AudioClip>> = HashMap::new();
+        clips.insert(SampleIdentity::File("silent-a.wav".into()), silent_clip());
+        clips.insert(SampleIdentity::File("silent-b.wav".into()), silent_clip());
+
+        // Grouping directly with singleton=true keeps silent & slider lanes isolated in singletons,
+        // while merging the two missing Soft Normal skin lanes into one group anchored at index 0.
+        let lane_refs: Vec<&Lane> = lanes.iter().collect();
+        let (all_groups, _) = crate::sound_groups::group_lanes_by_sound(
+            &lane_refs,
+            &|id| clips.get(id).cloned(),
+            &HashMap::new(),
+            true,
+        );
+        assert_eq!(all_groups.len(), 4);
+        assert_eq!(all_groups[0].primary_index, 0);
+        assert_eq!(all_groups[0].member_indices, vec![0, 1]);
+        assert_eq!(all_groups[1].member_indices, vec![2]); // slider stays isolated
+        assert_eq!(all_groups[2].member_indices, vec![3]); // silent-a stays isolated
+        assert_eq!(all_groups[3].member_indices, vec![4]); // silent-b stays isolated
+
+        // auto_detect_drum_map collapses the skin fallback pair and skips silent & slider lanes.
+        lanes.push(std_lane(SampleSet::Drum, Hitsound::Normal));
+        let kit = auto_detect_drum_map(&lanes, |id| clips.get(id).cloned());
+        let hat_rows: Vec<&DrumRow> = kit
+            .rows
+            .iter()
+            .filter(|r| r.name.starts_with("Closed Hat"))
+            .collect();
+        assert_eq!(hat_rows.len(), 1);
+        assert_eq!(hat_rows[0].lane.as_deref(), Some("Skin|soft-hitnormal"));
+    }
+
+    #[test]
+    fn primary_selection_prefers_file_over_skin_then_lowest_index_then_highest_hit_count() {
+        let lanes = vec![
+            std_lane(SampleSet::Drum, Hitsound::Normal),
+            Lane {
+                identity: SampleIdentity::File("b-kick.wav".into()),
+                source: LaneSource::File("b-kick.wav".into()),
+            },
+            Lane {
+                identity: SampleIdentity::File("a-kick.wav".into()),
+                source: LaneSource::File("a-kick.wav".into()),
+            },
+            Lane {
+                identity: SampleIdentity::Standard {
+                    set: SampleSet::Drum,
+                    sound: Sound::Hit(Hitsound::Normal),
+                    index: CustomIndex::new(3),
+                },
+                source: LaneSource::File("drum-hitnormal3.wav".into()),
+            },
+        ];
+        let mut clips: HashMap<SampleIdentity, Arc<AudioClip>> = HashMap::new();
+        for lane in &lanes {
+            clips.insert(lane.identity.clone(), kick_clip());
+        }
+        let mut counts = HashMap::new();
+        counts.insert(lanes[0].identity.clone(), 999);
+        counts.insert(lanes[1].identity.clone(), 50);
+        counts.insert(lanes[2].identity.clone(), 10);
+
+        let lane_refs: Vec<&Lane> = lanes.iter().collect();
+        let (groups, _) = crate::sound_groups::group_lanes_by_sound(
+            &lane_refs,
+            &|id| clips.get(id).cloned(),
+            &counts,
+            false,
+        );
+        assert_eq!(groups.len(), 1);
+        // Standard File at index 3 beats generic File(_), and File(_) beats Skin (even with 999 hits).
+        assert_eq!(groups[0].member_indices, vec![3, 1, 2, 0]);
+        assert_eq!(groups[0].primary_index, 3);
     }
 }
