@@ -792,7 +792,10 @@ try {
         null,
         "Export preview did not reach Read-back check passed",
         15000,
-      );
+      ).catch(async error => {
+        console.log(`stall-probe: ${JSON.stringify((await dialog.innerText()).slice(-700))}`);
+        throw error;
+      });
       expect((await dialog.locator(".verify-badge.ok").count()) >= 2, "expected at least two Verified badges");
       expect((await dialog.locator(".listen-btn").count()) >= 2, "expected at least two Listen buttons");
       expect((await dialog.locator(".diff-btn").count()) >= 1, "expected at least one Diff button");
