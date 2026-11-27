@@ -38,7 +38,7 @@ test("before app.js hands over its lanes the column is empty", () => {
 test("a lane header is spine, number, icon tile, M, S, name and set tag, in Tab order", () => {
   const [row] = rowsOf(shown([lane()]));
   assert.match(row, /^<div class="lane\b[^"]*"[^>]*data-lane-row="0"/);
-  assert.match(row, /<span class="spine[^>]*><\/span>\s*<span class="num[^>]*>5<\/span>/);
+  assert.match(row, /<span class="spine[^>]*><\/span>\s*<span class="num[^>]*title="Ctrl\+scroll to cycle lane colour"[^>]*>5<\/span>/);
   assert.match(row, /<span class="tile[^>]*aria-hidden="true"[^>]*><svg viewBox="0 0 16 16"/);
   assert.ok(row.includes(laneIcons.clap));
   assert.deepEqual(buttons(row).map(button => button.text), ["M", "S", "Clap"]);

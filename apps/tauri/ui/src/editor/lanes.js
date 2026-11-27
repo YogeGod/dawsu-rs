@@ -1,6 +1,7 @@
 import { modals, openModal, registerModal } from "../lib/registry.js";
 // Lane ordering, folders, numbered families, drum view, lane headers, and Mixer strip models.
 import { laneSounds, sampleFolderNames } from "./helpers.js";
+import { cycleLaneColour } from "../lib/colour.js";
 import {
   drumRowToMidiNote, previewDrumVst3Hit, readDrumVst3, sceneDrumHitsToNotes, syncDrumVst3Track,
   vst3InstrumentOptions, writeDrumVst3,
@@ -514,6 +515,39 @@ export function attachLanes(ctx) {
       case "togglePlainList": {
         state.groupBySampleSet = state.groupBySampleSet === false;
         ctx.ui()?.laneOptions?.(state.usedLaneKeys !== null, state.laneFilterText, state.groupBySampleSet);
+        ctx.renderLanes();
+        ctx.paintSoon();
+        saveLaneLayout(true);
+        break;
+      }
+      case "cycleColour": {
+        const [row, direction] = args;
+        const lane = state.scene.lanes[row];
+        if (!lane?.colourKey || !direction) return;
+        const before = state.laneColours.get(lane.colourKey) ?? null;
+        const after = cycleLaneColour(before, direction);
+        if (before === after) return;
+        const historyPos = state.scene?.history?.position ?? 0;
+        const now = env.Date?.now?.() ?? Date.now();
+        const top = state.laneColourUndo[state.laneColourUndo.length - 1];
+        if (top && top.fromWheel && top.key === lane.colourKey && top.historyPos === historyPos && now - top.at <= 600) {
+          top.after = after;
+          top.at = now;
+          if (top.before === top.after) state.laneColourUndo.pop();
+        } else {
+          state.laneColourUndo.push({
+            key: lane.colourKey,
+            before,
+            after,
+            historyPos,
+            fromWheel: true,
+            at: now,
+          });
+        }
+        state.laneColourRedo = [];
+        if (after) state.laneColours.set(lane.colourKey, after);
+        else state.laneColours.delete(lane.colourKey);
+        ctx.renderActiveLane();
         ctx.renderLanes();
         ctx.paintSoon();
         saveLaneLayout(true);

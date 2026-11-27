@@ -44,5 +44,20 @@ export function laneHandlers(send, tick) {
       const box = event.currentTarget.getBoundingClientRect();
       send("folderMove", from, set, event.clientY > box.y + box.height / 2);
     },
+    stripWheel(event, row) {
+      if (!(event?.ctrlKey || event?.metaKey) || event.shiftKey || event.altKey || !event.deltaY) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      send("cycleColour", row, event.deltaY > 0 ? 1 : -1);
+    },
+  };
+}
+
+export function attachStripWheel(handler, getRow) {
+  return (node) => {
+    if (!node?.addEventListener) return () => {};
+    const onWheel = (event) => handler(event, getRow());
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
   };
 }

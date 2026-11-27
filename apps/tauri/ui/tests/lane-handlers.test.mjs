@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { Bridge } from "../src/lib/bridge.svelte.js";
-import { laneHandlers } from "../src/lib/laneHandlers.js";
+import { attachStripWheel, laneHandlers } from "../src/lib/laneHandlers.js";
 import { folderDragType } from "../src/lib/lanes.js";
 
 // The lane headers' event handlers, driven with fake events; each must send the action app.js expects.
@@ -90,10 +90,73 @@ test("a folder dropped on the lower half of another goes after it; other drags a
   assert.equal(folderDragType, "application/x-dawsu-sample-set");
 });
 
+test("Ctrl+scroll on the lane strip cycles colour and leaves plain, Shift, and Alt wheel untouched", () => {
+  const { on, sent } = setup();
+  const makeWheel = (more = {}) => ({
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    deltaY: 0,
+    prevented: false,
+    stopped: false,
+    preventDefault() { this.prevented = true; },
+    stopPropagation() { this.stopped = true; },
+    ...more,
+  });
+
+  const down = makeWheel({ ctrlKey: true, deltaY: 100 });
+  on.stripWheel(down, 2);
+  assert.ok(down.prevented && down.stopped);
+
+  const up = makeWheel({ ctrlKey: true, deltaY: -100 });
+  on.stripWheel(up, 2);
+  assert.ok(up.prevented && up.stopped);
+
+  const metaDown = makeWheel({ metaKey: true, deltaY: 50 });
+  on.stripWheel(metaDown, 2);
+  assert.ok(metaDown.prevented && metaDown.stopped);
+
+  const ignored = [
+    makeWheel({ deltaY: 100 }),
+    makeWheel({ ctrlKey: true, shiftKey: true, deltaY: 100 }),
+    makeWheel({ ctrlKey: true, altKey: true, deltaY: 100 }),
+    makeWheel({ ctrlKey: true, deltaY: 0 }),
+  ];
+  for (const ev of ignored) {
+    on.stripWheel(ev, 2);
+    assert.equal(ev.prevented, false);
+    assert.equal(ev.stopped, false);
+  }
+  assert.deepEqual(sent, [["cycleColour", 2, 1], ["cycleColour", 2, -1], ["cycleColour", 2, 1]]);
+
+  const listeners = [];
+  const node = {
+    addEventListener(type, fn, opts) { listeners.push({ type, fn, opts }); },
+    removeEventListener(type, fn) {
+      const idx = listeners.findIndex(item => item.type === type && item.fn === fn);
+      if (idx >= 0) listeners.splice(idx, 1);
+    },
+  };
+  let row = 4;
+  const calls = [];
+  const detach = attachStripWheel((event, r) => calls.push([event, r]), () => row);
+  const cleanup = detach(node);
+  assert.equal(listeners.length, 1);
+  assert.equal(listeners[0].type, "wheel");
+  assert.deepEqual(listeners[0].opts, { passive: false });
+  listeners[0].fn(down);
+  row = 7;
+  listeners[0].fn(up);
+  assert.deepEqual(calls, [[down, 4], [up, 7]]);
+  cleanup();
+  assert.equal(listeners.length, 0);
+});
+
 test("LaneHeaders wires every handler from laneHandlers", () => {
   const part = readFileSync(new URL("../src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
   for (const name of ["rowClick", "select", "mix", "family", "addLayer", "remove", "fold", "foldName", "folderMix", "folderKey",
-    "dragStart", "dragOver", "drop"]) {
+    "dragStart", "dragOver", "drop", "stripWheel"]) {
     assert.match(part, new RegExp("on\\." + name + "\\b"), name);
   }
   assert.doesNotMatch(part, /send\(/, "no click sends past the handlers");

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { folderGrey, folderShades, laneGrey, laneShades, mixIntoCanvas, oklchToHex } from "../src/lib/colour.js";
+import {
+  LANE_COLOUR_PALETTE, cycleLaneColour, folderGrey, folderShades, laneGrey, laneShades, mixIntoCanvas, oklchToHex,
+} from "../src/lib/colour.js";
 
 // Checked in the editor's WebView2 (2026-11-20): getComputedStyle of color-mix(in oklch, <colour> p%, #151515)
 // and of oklch(), turned into hexes. Within 1 per channel.
@@ -37,4 +39,23 @@ test("lane and folder shades: strip, tile, header, hover and selected", () => {
   assert.equal(laneShades(null).strip, laneGrey);
   assert.equal(laneShades("not a colour").strip, laneGrey);
   assert.deepEqual(folderShades(), { strip: folderGrey, header: mixIntoCanvas(folderGrey, 34) });
+});
+
+test("LANE_COLOUR_PALETTE matches the 72-swatch palette and cycleLaneColour wraps through null", () => {
+  assert.equal(LANE_COLOUR_PALETTE.length, 72);
+  assert.equal(LANE_COLOUR_PALETTE[0], "#d04932");
+  assert.equal(LANE_COLOUR_PALETTE.at(-1), "#72385e");
+  for (const hex of LANE_COLOUR_PALETTE) {
+    assert.match(hex, /^#[\da-f]{6}$/);
+  }
+  assert.equal(cycleLaneColour(null, 1), "#d04932");
+  assert.equal(cycleLaneColour(null, -1), "#72385e");
+  assert.equal(cycleLaneColour("#d04932", 1), "#db642b");
+  assert.equal(cycleLaneColour("#d04932", -1), null);
+  assert.equal(cycleLaneColour("#72385e", 1), null);
+  assert.equal(cycleLaneColour("#D04932", 1), "#db642b");
+  assert.equal(cycleLaneColour("#123456", 1), "#d04932");
+  assert.equal(cycleLaneColour("#123456", -1), "#72385e");
+  assert.equal(cycleLaneColour(null, 0), null);
+  assert.equal(cycleLaneColour("#D04932", 0), "#d04932");
 });

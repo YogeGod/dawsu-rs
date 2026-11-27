@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
   import { folderShades, laneShades } from "../lib/colour.js";
-  import { laneHandlers } from "../lib/laneHandlers.js";
+  import { attachStripWheel, laneHandlers } from "../lib/laneHandlers.js";
   import { folderChip, laneIcons } from "../lib/lanes.js";
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
@@ -61,7 +61,8 @@
       onclick={event => on.rowClick(event, row.row)}
       ondblclick={() => { if (headers?.drum) bridge.callAction("openDrumMapSetup", row.drumRowIndex); }}>
       <span class="spine"></span>
-      <span class="num">{row.number}</span>
+      <span class="num" title="Ctrl+scroll to cycle lane colour"
+        {@attach attachStripWheel(on.stripWheel, () => row.row)}>{row.number}</span>
       <!-- A numbered layer hangs under its main lane, which folds it like a folder. -->
       {#if row.layer}<span class="layer-guide" aria-hidden="true"></span>{/if}
       {#if names}<span class="tile" aria-hidden="true"><svg viewBox="0 0 16 16">{@html laneIcons[row.icon] ?? laneIcons.file}</svg></span>{/if}

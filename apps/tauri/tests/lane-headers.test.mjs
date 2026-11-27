@@ -364,3 +364,48 @@ test("Drum Map Setup shows a merged badge without disturbing children[0..5]", as
   assert.equal(firstRow.children[6].textContent, "+2 merged");
   assert.equal(firstRow.children[6].title, "BeatmapFile|a.wav\nBeatmapFile|b.wav\nBeatmapFile|c.wav");
 });
+
+test("Ctrl+scroll cycling on a lane strip updates colour, coalesces undo, and persists layout", async () => {
+  const { calls, evaluate } = await frontend();
+  evaluate(fixture + `let now = 1000; Date.now = () => now;`);
+
+  evaluate("laneHeaderAction('cycleColour', 1, 1)");
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.get("Skin|soft-hitclap2")'), "#d04932");
+  assert.equal(lanes(evaluate)[2].colour, "#d04932");
+
+  evaluate("laneHeaderAction('cycleColour', 1, 1)");
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.get("Skin|soft-hitclap2")'), "#db642b");
+
+  // One Undo restores null, confirming both rapid wheel steps coalesced into one entry; Redo restores #db642b.
+  evaluate('act({ kind: "command", id: "undo" })');
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.has("Skin|soft-hitclap2")'), false);
+  evaluate('act({ kind: "command", id: "redo" })');
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.get("Skin|soft-hitclap2")'), "#db642b");
+
+  // Cycling forward then back to the starting colour within 600 ms pops the no-op undo entry.
+  evaluate("now = 2000; laneHeaderAction('cycleColour', 1, 1)");
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.get("Skin|soft-hitclap2")'), "#d78628");
+  evaluate("now = 2100; laneHeaderAction('cycleColour', 1, -1)");
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.get("Skin|soft-hitclap2")'), "#db642b");
+  evaluate('act({ kind: "command", id: "undo" })');
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.has("Skin|soft-hitclap2")'), false);
+  evaluate('act({ kind: "command", id: "redo" })');
+  await evaluate("pending");
+  assert.equal(evaluate('laneColours.get("Skin|soft-hitclap2")'), "#db642b");
+
+  // Ignored while busy.
+  evaluate("view.busy = true; laneHeaderAction('cycleColour', 1, 1)");
+  assert.equal(evaluate('laneColours.get("Skin|soft-hitclap2")'), "#db642b");
+
+  const layoutSaves = calls.filter(a => a?.kind === "lane_layout");
+  assert.ok(layoutSaves.length >= 2);
+  assert.equal(layoutSaves.at(-1).persist, true);
+  assert.equal(layoutSaves.at(-1).value.lane_colours["Skin|soft-hitclap2"], "#db642b");
+});

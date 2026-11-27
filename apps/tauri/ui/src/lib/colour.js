@@ -71,3 +71,26 @@ export function tintName(colour) {
   const degrees = (hue + 360) % 360;
   return tintBands.find(([limit]) => degrees < limit)[1];
 }
+
+const LANE_PALETTE_ROWS = [
+  "d04932 db642b d78628 deab27 c9bc30 a6be32 70be3d 44ba4b 23b76c 21af91 24abb2 289dc9 388ada 5776d4 7464ce 945ac5 b751bb cc50a2",
+  "b0412e b95728 b57326 bb9125 aa9f2c 8da12e 61a137 3d9e43 229b5e 20957c 239197 2686aa 3376b8 4c66b3 6457ae 7e4fa7 9b479e ac478a",
+  "91392b 984b26 966124 9a7923 8d8429 76862b 538632 36833b 218150 1f7c68 21797e 24708d 2e6498 435794 554b90 6a458a 813f84 8f3e73",
+  "74342a 794126 775125 7a6224 706a29 606b2a 476b2f 326935 226845 226456 236266 255c70 2c5378 3b4976 494173 583c6f 68386a 72385e",
+];
+
+export const LANE_COLOUR_PALETTE = Object.freeze(
+  LANE_PALETTE_ROWS.flatMap(row => row.split(" ").map(hex => "#" + hex)),
+);
+const LANE_COLOUR_CYCLE = Object.freeze([null, ...LANE_COLOUR_PALETTE]);
+
+export function cycleLaneColour(current, delta) {
+  const normalized = isHex(current) ? current.toLowerCase() : null;
+  const step = delta > 0 ? 1 : delta < 0 ? -1 : 0;
+  if (!step) return normalized;
+  const idx = LANE_COLOUR_CYCLE.indexOf(normalized);
+  if (idx < 0) {
+    return step > 0 ? LANE_COLOUR_PALETTE[0] : LANE_COLOUR_PALETTE[LANE_COLOUR_PALETTE.length - 1];
+  }
+  return LANE_COLOUR_CYCLE[(idx + step + LANE_COLOUR_CYCLE.length) % LANE_COLOUR_CYCLE.length];
+}
