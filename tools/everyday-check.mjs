@@ -1157,6 +1157,19 @@ try {
       `the plain wheel over the roll also moved the editor: ${JSON.stringify([before, after])}`);
     await until(noteIsDrawn, null, "the note is not drawn at its row after the pitch scroll");
 
+    // Ctrl+wheel over the roll is still the editor's time zoom, and leaves the roll's rows alone.
+    const rows = await read(() => ({ zoom: window.dawsuUi.bridge.scene.zoom, rowHeight: window.dawsuUi.bridge.keysoundRoll.rowHeight }));
+    for (let turn = 0; turn < 4; turn++) {
+      await page().keyboard.down("Control");
+      await page().mouse.wheel(0, -240);
+      await page().keyboard.up("Control");
+      if (await until(zoom => window.dawsuUi.bridge.scene.zoom > zoom, rows.zoom, "", 1500).then(() => true, () => false)) break;
+    }
+    const zoomed = await read(() => ({ zoom: window.dawsuUi.bridge.scene.zoom, rowHeight: window.dawsuUi.bridge.keysoundRoll.rowHeight }));
+    expect(zoomed.zoom > rows.zoom, "Ctrl+wheel over the roll did not zoom the time axis");
+    expect(zoomed.rowHeight === rows.rowHeight, "Ctrl+wheel over the roll changed the roll's row height");
+    await until(noteIsDrawn, null, "the note is not drawn at its time after Ctrl+wheel");
+
     // Zooming the time axis from the ruler moves the note with the ruler.
     await page().click("#ruler-zoom-in");
     await until(zoom => window.dawsuUi.bridge.scene.zoom > zoom, await read(() => window.dawsuUi.bridge.scene.zoom) - 1e-9,

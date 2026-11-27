@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  hitTest, longestNoteMs, maxScrollY, noteRect, paintRoll, paintVelocity, pointAt, rollWheelAction, visibleNotes,
+  hitTest, maxScrollY, noteIndex, noteRect, paintRoll, paintVelocity, pointAt, rollWheelAction, visibleNotes,
   visibleRows,
 } from "../src/lib/rollPaint.js";
 
@@ -42,15 +42,33 @@ test("only the notes inside the visible time window are painted", () => {
   assert.deepEqual(seen.map(n => n.index), [100, 101, 102, 103, 104]);
 
   const context2d = fakeContext();
-  paintRoll(context2d, 800, { start: 100000, zoom: 0.2 }, roll, { notes, longest: longestNoteMs(notes), selected: null });
+  paintRoll(context2d, 800, { start: 100000, zoom: 0.2 }, roll, { notes, index: noteIndex(notes), selected: null });
   assert.equal(noteFills(context2d).length, 5);
+});
+
+test("a paint reads only the notes near the window, not the whole track", () => {
+  // Every read of a note's start is counted; the index is found once, before the paints.
+  let reads = 0;
+  const notes = Array.from({ length: 10000 }, (_, i) => {
+    const plain = note(i, i * 1000, i * 1000 + 200);
+    return { get startMs() { reads++; return plain.startMs; }, endMs: plain.endMs, pitch: 72, velocity: 100, index: i, muted: false };
+  });
+  const index = noteIndex(notes);
+  assert.deepEqual(index, { longest: 200, sorted: true });
+  reads = 0;
+  const view = { start: 100000, zoom: 0.2 };
+  paintRoll(fakeContext(), 800, view, roll, { notes, index, selected: null });
+  paintVelocity(fakeContext(), 800, 66, view, { notes, index, selected: null });
+  hitTest(notes, 100, 170, view, roll, index);
+  // A binary search over 10,000 notes plus the five in view, three times over: far below 10,000.
+  assert.ok(reads < 200, `${reads} reads of a note's start`);
 });
 
 test("a long note whose head is off-screen is still painted", () => {
   const notes = [note(0, 0, 10000), note(1, 20000, 20100)];
   assert.deepEqual(visibleNotes(notes, 4000, 8000).map(n => n.index), [0]);
   const context2d = fakeContext();
-  paintRoll(context2d, 800, { start: 4000, zoom: 0.2 }, roll, { notes, longest: longestNoteMs(notes), selected: null });
+  paintRoll(context2d, 800, { start: 4000, zoom: 0.2 }, roll, { notes, index: noteIndex(notes), selected: null });
   const [fill] = noteFills(context2d);
   assert.equal(noteFills(context2d).length, 1);
   assert.equal(fill.x, -800, "it starts 4 s left of the window");
@@ -87,7 +105,7 @@ test("the dragged note is drawn where it would land, and the selected one last",
   const notes = [note(0, 1000, 1200, 72), note(1, 1100, 1300, 72)];
   const context2d = fakeContext();
   paintRoll(context2d, 800, { start: 0, zoom: 0.1 }, roll, {
-    notes, longest: 200, selected: 0, drag: { index: 0, startMs: 2000, endMs: 2200, pitch: 70 },
+    notes, index: noteIndex(notes), selected: 0, drag: { index: 0, startMs: 2000, endMs: 2200, pitch: 70 },
   });
   const fills = noteFills(context2d);
   assert.equal(fills.at(-1).style, "#efc16a");
@@ -98,12 +116,12 @@ test("the dragged note is drawn where it would land, and the selected one last",
 test("the velocity lane draws one bar per visible note at the note's start", () => {
   const notes = [note(0, 1000, 1200, 72, 127), note(1, 2000, 2200, 72, 64), note(2, 90000, 90100, 72, 10)];
   const context2d = fakeContext();
-  paintVelocity(context2d, 800, 66, { start: 0, zoom: 0.1 }, { notes, longest: 200, selected: 1 });
+  paintVelocity(context2d, 800, 66, { start: 0, zoom: 0.1 }, { notes, index: noteIndex(notes), selected: 1 });
   const bars = noteFills(context2d);
   assert.deepEqual(bars.map(bar => [bar.x, bar.h, bar.style]), [[100, 64, "#0a84ff"], [200, 32, "#efc16a"]]);
 
   // A bar being dragged shows the dragged value.
   const dragged = fakeContext();
-  paintVelocity(dragged, 800, 66, { start: 0, zoom: 0.1 }, { notes, longest: 200, selected: null, velocityDrag: { index: 1, velocity: 127 } });
+  paintVelocity(dragged, 800, 66, { start: 0, zoom: 0.1 }, { notes, index: noteIndex(notes), selected: null, velocityDrag: { index: 1, velocity: 127 } });
   assert.equal(noteFills(dragged)[1].h, 64);
 });

@@ -291,6 +291,8 @@
 #editor-arrange.keysounds-active #lanes {
   grid-column: 1;
   grid-row: 1;
+  /* Covered by the roll: out of the tab order too, with its column width kept. */
+  visibility: hidden;
 }
 #editor-arrange.keysounds-active #grid {
   grid-column: 2;

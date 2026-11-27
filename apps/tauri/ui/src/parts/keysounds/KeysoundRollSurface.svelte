@@ -3,7 +3,7 @@
   import { bridge } from "../../lib/bridge.svelte.js";
   import { QUANTIZE_MS, isBlackKey, noteDragPayload, pitchName } from "../../lib/midi.js";
   import {
-    ROLL_ROW_MAX, ROLL_ROW_MIN, hitTest, longestNoteMs, maxScrollY, pointAt, rollWheelAction, visibleRows,
+    ROLL_ROW_MAX, ROLL_ROW_MIN, hitTest, maxScrollY, noteIndex, pointAt, rollWheelAction, visibleRows,
   } from "../../lib/rollPaint.js";
 
   // The piano roll's key column and its pointer surface. The roll itself is painted by the editor's
@@ -36,7 +36,8 @@
   let drag = $state(null);
   let cursor = $state("crosshair");
 
-  const longest = $derived(longestNoteMs(notes));
+  // Once per summary, so no paint or pointer move has to read every note.
+  const index = $derived(noteIndex(notes));
   const roll = $derived({ top: box.top, height: box.height, rowHeight, scrollY: scrollY ?? 0, pitches });
   const rows = $derived.by(() => {
     if (!box.height || !pitches.length) return [];
@@ -89,7 +90,7 @@
   $effect(() => {
     bridge.keysoundRoll = {
       ...roll,
-      notes, longest, ghosts: ghostNotes, objectTimes, sustainSpans, selected, scaleMask, foldToScale,
+      notes, index, ghosts: ghostNotes, objectTimes, sustainSpans, selected, scaleMask, foldToScale,
       drag: drag?.payload ? { index: drag.note.index, ...drag.payload } : null,
     };
     bridge.callAction("paintSoon");
@@ -124,7 +125,7 @@
   async function onDown(event) {
     if (event.button !== 0 || loading || trackId == null) return;
     const { x, y } = local(event);
-    const hit = hitTest(notes, x, y, view(), roll, longest);
+    const hit = hitTest(notes, x, y, view(), roll, index);
     if (hit) {
       selected = hit.note.index;
       drag = { note: hit.note, mode: hit.edge ? "resize" : "move", x0: x, y0: y, payload: null };
@@ -139,7 +140,7 @@
   function onMove(event) {
     const { x, y } = local(event);
     if (!drag) {
-      const hit = hitTest(notes, x, y, view(), roll, longest);
+      const hit = hitTest(notes, x, y, view(), roll, index);
       cursor = hit ? (hit.edge ? "ew-resize" : "grab") : "crosshair";
       return;
     }
@@ -159,7 +160,7 @@
     event.preventDefault();
     if (loading) return;
     const { x, y } = local(event);
-    const hit = hitTest(notes, x, y, view(), roll, longest);
+    const hit = hitTest(notes, x, y, view(), roll, index);
     if (hit) deleteNote(hit.note.index);
   }
 
