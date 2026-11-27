@@ -92,6 +92,12 @@ test("startScreenAction opens recent maps, imports .osz archives, opens Folders/
   evaluate('startScreenAction("tryPractice")');
   await settle();
   assert.deepEqual(calls.at(-1), { name: "editor_view", args: { scene: true, action: { kind: "open_practice_mapset" } } });
+  evaluate('startScreenAction("restoreRecovery", "rec-1")');
+  await settle();
+  assert.deepEqual(calls.at(-1), { name: "editor_view", args: { scene: true, action: { kind: "restore_recovery", id: "rec-1" } } });
+  evaluate('startScreenAction("discardRecovery", "rec-1")');
+  await settle();
+  assert.deepEqual(calls.at(-1), { name: "editor_view", args: { scene: true, action: { kind: "discard_recovery", id: "rec-1" } } });
 
   // Opening a practice mapset announces once per session folder and records dawsu.practiceTried before ui.update.
   evaluate('renderScene = () => {}; renderSelection = () => {};');
@@ -107,4 +113,15 @@ test("startScreenAction opens recent maps, imports .osz archives, opens Folders/
   // Launching a fresh practice session folder announces once more.
   evaluate('show({ hasDocument: true, showHome: false, isPracticeMapset: true, scene: { path: "C:/Temp/dawsu-practice/session-2/[Hard].osu", lanes: [], difficulties: [], moments: [], sections: [] } })');
   assert.equal(toasts.length, 2);
+});
+
+test("show keeps start-screen recovery offers across scene:false preference updates and replaces them on scene:true refresh", async () => {
+  const { evaluate } = await frontend();
+  evaluate('renderScene = () => {}; renderSelection = () => {};');
+  evaluate('show({ busy: false, hasDocument: false, showHome: false, autosaveIntervalSecs: 30, recovery: { offers: [{ id: "rec-1", mapset: "Map", difficulty: "Hard", created_ms: 1 }] } })');
+  evaluate('show({ busy: false, hasDocument: false, showHome: false, autosaveIntervalSecs: 15 })');
+  assert.equal(evaluate("view.autosaveIntervalSecs"), 15);
+  assert.deepEqual(Array.from(evaluate("view.recovery.offers.map(o => o.id)")), ["rec-1"]);
+  evaluate('show({ busy: false, hasDocument: false, showHome: false, autosaveIntervalSecs: 15, recovery: { offers: [] } })');
+  assert.deepEqual(Array.from(evaluate("view.recovery.offers")), []);
 });

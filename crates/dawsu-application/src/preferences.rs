@@ -198,4 +198,20 @@ mod tests {
         detect_songs_folder_with(&mut pref, vec![existing]);
         assert_eq!(pref.songs_folder, custom);
     }
+
+    #[test]
+    fn autosave_interval_preferences_normalize_when_the_app_loads_them() {
+        let fixture = Scratch::new("autosave-interval-preferences");
+        for (stored, expected) in [(Some(5), 15), (Some(999), 120), (Some(0), 0), (Some(60), 60), (None, 30)] {
+            let root = fixture.path(&format!("data-{stored:?}"));
+            std::fs::create_dir_all(&root).unwrap();
+            let json = match stored {
+                Some(secs) => format!("{{\"autosave_interval_secs\": {secs}}}"),
+                None => "{}".into(),
+            };
+            std::fs::write(root.join("preferences.json"), json).unwrap();
+            let app = crate::Application::with_data_root(root);
+            assert_eq!(app.preferences().autosave_interval_secs, expected, "{stored:?}");
+        }
+    }
 }

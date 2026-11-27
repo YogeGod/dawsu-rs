@@ -243,3 +243,222 @@ fn archive_failure_keeps_the_copy_and_reports_the_successful_save_separately() {
     assert!(restarted.recovery_offers().unwrap().is_empty());
     assert!(archive.join(copy.id).is_file());
 }
+
+fn pending_files(map: &TestMap) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(map.data.join("recovery")) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Polls as the editor's idle loop does until the timed recovery copy is on disk and its
+/// writer has finished.
+fn poll_until_autosaved(app: &mut Application, map: &TestMap, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.poll();
+        if pending_files(map).len() == count && !app.has_active_background_jobs() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "no autosave: {:?}", pending_files(map));
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn poll_a_while(app: &mut Application) {
+    for _ in 0..20 {
+        app.poll();
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn autosave_writes_one_copy_of_a_dirty_map_that_a_restart_restores() {
+    let map = TestMap::new();
+    let mut editor = map.app();
+    open(&mut editor, &map.path);
+    poll_a_while(&mut editor);
+    assert!(pending_files(&map).is_empty(), "a clean map gets no copy");
+
+    change_volume(&mut editor, 63);
+    poll_until_autosaved(&mut editor, &map, 1);
+    let first = pending_files(&map);
+
+    change_volume(&mut editor, 71);
+    editor.autosave_recovery_now();
+    let second = pending_files(&map);
+    assert_eq!(second.len(), 1, "turnover keeps exactly one copy");
+    assert_ne!(second, first, "the newer edit is a new copy");
+    editor.autosave_recovery_now();
+    assert_eq!(pending_files(&map), second, "an unchanged edit writes nothing");
+    drop(editor);
+
+    let mut restarted = map.app();
+    let offers = restarted.recovery_offers().unwrap();
+    assert_eq!(offers.iter().map(|o| o.id.clone()).collect::<Vec<_>>(), second);
+    restore(&mut restarted, &offers[0].id);
+    assert_eq!(volume(&restarted), 71);
+    assert!(restarted.is_dirty());
+    assert_eq!(fs::read(&map.path).unwrap(), FIXTURE);
+    // The restored copy already holds this state: no second card until the next edit.
+    poll_a_while(&mut restarted);
+    assert_eq!(pending_files(&map), second);
+
+    change_volume(&mut restarted, 80);
+    poll_until_autosaved(&mut restarted, &map, 2);
+    assert!(pending_files(&map).contains(&second[0]), "turnover never removes a restored copy");
+}
+
+fn autosaved_edit(map: &TestMap) -> Application {
+    let mut editor = map.app();
+    open(&mut editor, &map.path);
+    change_volume(&mut editor, 63);
+    poll_until_autosaved(&mut editor, map, 1);
+    editor
+}
+
+#[test]
+fn autosave_copy_is_removed_by_save_discard_close_switching_and_undo_to_clean() {
+    let map = TestMap::new();
+
+    let mut editor = autosaved_edit(&map);
+    editor.save();
+    finish_job(&mut editor);
+    assert!(!editor.is_dirty(), "{:?}", editor.error());
+    assert_eq!(pending_files(&map), Vec::<String>::new(), "after Save");
+    poll_a_while(&mut editor);
+    assert_eq!(pending_files(&map), Vec::<String>::new(), "a saved map gets no new copy");
+    drop(editor);
+
+    let map = TestMap::new();
+    let mut editor = autosaved_edit(&map);
+    editor.close_document();
+    assert_eq!(pending_files(&map), Vec::<String>::new(), "after close_document");
+    drop(editor);
+
+    let map = TestMap::new();
+    let mut editor = autosaved_edit(&map);
+    editor.close_document_nonblocking();
+    assert_eq!(pending_files(&map), Vec::<String>::new(), "after close_document_nonblocking");
+    drop(editor);
+
+    let map = TestMap::new();
+    let other = map.path.with_file_name("other.osu");
+    fs::write(&other, FIXTURE).unwrap();
+    let mut editor = autosaved_edit(&map);
+    editor.request_open(other.clone());
+    editor.discard_and_open();
+    finish_job(&mut editor);
+    assert!(editor.document().unwrap().path.ends_with("other.osu"));
+    assert_eq!(pending_files(&map), Vec::<String>::new(), "after switching difficulty");
+    drop(editor);
+
+    let map = TestMap::new();
+    let mut editor = autosaved_edit(&map);
+    editor.command("undo");
+    assert!(!editor.is_dirty());
+    editor.poll();
+    assert_eq!(pending_files(&map), Vec::<String>::new(), "after Undo to the saved state");
+    editor.command("redo");
+    poll_until_autosaved(&mut editor, &map, 1);
+}
+
+#[test]
+fn autosave_copy_answered_after_a_close_starts_is_removed_too() {
+    let map = TestMap::new();
+    let mut editor = map.app();
+    open(&mut editor, &map.path);
+    change_volume(&mut editor, 63);
+    editor.poll();
+    // The writer finishes on its own; its answer is still unread when the map closes.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pending_files(&map).is_empty() {
+        assert!(Instant::now() < deadline, "the writer never wrote");
+        thread::sleep(Duration::from_millis(2));
+    }
+    editor.close_document();
+    assert_eq!(pending_files(&map), Vec::<String>::new());
+    assert!(!editor.has_active_background_jobs());
+}
+
+#[test]
+fn a_crash_copy_replaces_the_timed_copy_and_a_restored_copy_survives_a_discard_close() {
+    let map = TestMap::new();
+    let mut editor = autosaved_edit(&map);
+    change_volume(&mut editor, 71);
+    let crash = editor.write_recovery_copy().unwrap().unwrap();
+    assert_eq!(pending_files(&map), std::slice::from_ref(&crash.id), "one card after a crash");
+    drop(editor);
+
+    let mut restarted = map.app();
+    restore(&mut restarted, &crash.id);
+    change_volume(&mut restarted, 80);
+    poll_until_autosaved(&mut restarted, &map, 2);
+    restarted.close_document();
+    assert_eq!(pending_files(&map), [crash.id], "the restored copy stays until a Save");
+}
+
+#[test]
+fn discard_moves_a_copy_to_the_archive_and_refuses_what_restore_refuses() {
+    let map = TestMap::new();
+    let mut editor = map.app();
+    open(&mut editor, &map.path);
+    change_volume(&mut editor, 63);
+    let copy = editor.write_recovery_copy().unwrap().unwrap();
+    assert!(editor.discard_recovery(&copy.id).is_err(), "only from the start screen");
+    drop(editor);
+
+    let mut restarted = map.app();
+    assert!(restarted.discard_recovery("../copy.json").is_err());
+    let before = restarted.view_state_token();
+    restarted.discard_recovery(&copy.id).unwrap();
+    assert_ne!(restarted.view_state_token(), before, "the next view drops the card");
+    assert!(restarted.recovery_offers().unwrap().is_empty());
+    assert!(map.data.join("recovery/archive").join(&copy.id).is_file());
+    assert_eq!(fs::read(&map.path).unwrap(), FIXTURE, "the map is untouched");
+}
+
+#[test]
+fn a_copy_that_cannot_be_restored_says_to_discard_it() {
+    let map = TestMap::new();
+    let mut editor = map.app();
+    open(&mut editor, &map.path);
+    change_volume(&mut editor, 63);
+    let copy = editor.write_recovery_copy().unwrap().unwrap();
+    drop(editor);
+    let mut changed = FIXTURE.to_vec();
+    changed.extend_from_slice(b"\n// external edit\n");
+    fs::write(&map.path, &changed).unwrap();
+    let mut restarted = map.app();
+    restore(&mut restarted, &copy.id);
+    let error = restarted.take_error().unwrap();
+    assert!(error.contains("changed on disk. The recovery copy was kept. Use Discard to remove this card."), "{error}");
+
+    fs::remove_file(&map.path).unwrap();
+    restore(&mut restarted, &copy.id);
+    let missing = restarted.take_error().unwrap();
+    assert!(missing.contains("missing or moved") && missing.contains("Use Discard to remove this card."), "{missing}");
+}
+
+#[test]
+fn autosave_off_removes_the_live_copy_but_never_a_restored_one() {
+    let map = TestMap::new();
+    let mut editor = autosaved_edit(&map);
+    let crash = editor.write_recovery_copy().unwrap().unwrap();
+    drop(editor);
+
+    let mut restarted = map.app();
+    restore(&mut restarted, &crash.id);
+    change_volume(&mut restarted, 80);
+    poll_until_autosaved(&mut restarted, &map, 2);
+    restarted.set_autosave_interval_secs(0);
+    assert_eq!(pending_files(&map), std::slice::from_ref(&crash.id));
+    change_volume(&mut restarted, 81);
+    poll_a_while(&mut restarted);
+    assert_eq!(pending_files(&map), [crash.id], "Off writes no timed copy");
+}

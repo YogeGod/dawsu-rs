@@ -255,9 +255,16 @@
         <p>{recovery.error}</p>
       {/if}
       {#each recovery.offers as offer (offer.id)}
-        <p>{offer.name}<br><time>{offer.createdText}</time></p>
-        <button type="button" aria-label={"Restore " + offer.name} disabled={busy}
-          onclick={() => send("restoreRecovery", offer.id)}>Restore</button>
+        <div class="recovery-entry">
+          <p>{offer.name}<br><time>{offer.createdText}</time></p>
+          <div class="recovery-actions">
+            <button type="button" aria-label={"Restore " + offer.name} disabled={busy}
+              onclick={() => send("restoreRecovery", offer.id)}>Restore</button>
+            <button type="button" aria-label={"Discard " + offer.name} disabled={busy}
+              title="Moves this copy to the recovery archive folder"
+              onclick={() => send("discardRecovery", offer.id)}>Discard</button>
+          </div>
+        </div>
       {/each}
     </div>
   </section>

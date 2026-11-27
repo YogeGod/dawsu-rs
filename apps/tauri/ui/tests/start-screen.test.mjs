@@ -311,3 +311,34 @@ test("StartScreen renders compact Ready checklist when incomplete and hides when
     else globalThis.localStorage = previousStorage;
   }
 });
+
+test("StartScreen recovery cards group Restore and Discard for each copy", () => {
+  bridge.set({
+    busy: false,
+    hasDocument: false,
+    showHome: true,
+    recent: [],
+    recovery: {
+      error: "",
+      offers: [
+        { id: "rec-1", mapset: "Mapset", difficulty: "Insane", created_ms: 1700000000000 },
+        { id: "rec-2", mapset: "Other", difficulty: "Hard", created_ms: 1700000001000 },
+      ],
+    },
+  }, null);
+  const html = render(StartScreen).body;
+  const entries = [...html.matchAll(/<div class="recovery-entry">([\s\S]*?)<\/div><\/div>/g)].map(match => match[1]);
+  assert.equal(entries.length, 2);
+  assert.match(entries[0], /aria-label="Restore Mapset \[Insane\]"/);
+  assert.match(entries[0], /aria-label="Discard Mapset \[Insane\]"/);
+  assert.match(entries[1], /aria-label="Discard Other \[Hard\]"/);
+  assert.match(entries[0], /title="Moves this copy to the recovery archive folder"[^>]*>Discard</);
+  assert.doesNotMatch(html, /\sstyle=/);
+});
+
+test("sameUiView detects an autosave interval change and treats a missing one as 30 s", () => {
+  const base = { busy: false, songsFolder: "", hitsoundLibrary: "", outputDevice: "", recent: [], warnings: [], outputProblems: [] };
+  assert.equal(sameUiView({ ...base, autosaveIntervalSecs: 30 }, base), true);
+  assert.equal(sameUiView({ ...base, autosaveIntervalSecs: 30 }, { ...base, autosaveIntervalSecs: 15 }), false);
+  assert.equal(sameUiView({ ...base, autosaveIntervalSecs: 0 }, base), false);
+});

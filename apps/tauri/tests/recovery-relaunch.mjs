@@ -87,6 +87,9 @@ async function launch(args) {
   const page = context.pages()[0] ?? await context.waitForEvent("page", { timeout: 8_000 });
   page.setDefaultTimeout(8_000);
   await page.waitForFunction(() => window.__TAURI__?.webviewWindow.getCurrentWebviewWindow().label === "main");
+  // A fresh profile asks for a key preset once, and opens the map passed to it after the answer.
+  const preset = page.getByRole("button", { name: "DAW-like", exact: true });
+  if (await preset.waitFor({ timeout: 3_000 }).then(() => true, () => false)) await preset.click();
   return { run, page };
 }
 
@@ -114,6 +117,24 @@ const pendingIds = async () => (await readdir(recoveryDir, { withFileTypes: true
 const title = "Project persistence test [Hard]";
 const editedVolume = 63;
 
+// The status bar hides the file name, so the map counts as open once the editor reports it.
+async function openedMap(page) {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const current = await state(page);
+    if (current.hasDocument && !current.busy && current.scene) return current;
+    assert.ok(Date.now() < deadline, "The map did not open: " + current.status);
+    await delay(100);
+  }
+}
+
+// Select all and set one volume, as Ctrl+A and the Set volume field do.
+async function setAllVolumes(page, value) {
+  await state(page, { kind: "command", id: "selectAll" });
+  await state(page, { kind: "volume", value, relative: false });
+  await page.locator('#save[data-dirty="true"]').waitFor();
+}
+
 async function dismissAudioError(page, current) {
   if (!current.error) return;
   assert.match(current.error, /audio|device|output/i);
@@ -129,26 +150,25 @@ try {
   console.log("Using a disposable Windows app data and WebView2 profile at " + profile);
 
   const first = await launch([map]);
-  // The open file shows in the status bar; unsaved edits show on Save (data-dirty).
-  await first.page.locator("#file-name").filter({ hasText: title }).waitFor();
-  const before = await state(first.page);
+  // Unsaved edits show on Save (data-dirty).
+  const before = await openedMap(first.page);
   await dismissAudioError(first.page, before);
   assert.equal(before.scene.moments[0][1], 100);
   assert.equal(before.dirty, false);
-  await first.page.locator("#file-name").click();
-  await first.page.keyboard.press("Control+a");
-  await first.page.locator("#selected").filter({ hasText: /\(\d+\)/ }).waitFor();
-  await first.page.getByLabel("Set volume", { exact: true }).fill(String(editedVolume));
-  await first.page.locator("#set-volume").click();
-  await first.page.locator('#save[data-dirty="true"]').waitFor();
+  await setAllVolumes(first.page, editedVolume);
   const edited = await state(first.page);
   assert.equal(edited.scene.moments[0][1], editedVolume);
   assert.equal(edited.dirty, true);
   assert.equal(await mapHash(), sourceHash);
   console.log(`Process ${first.run.child.pid} changed volume from 100 to ${editedVolume} with unsaved edits.`);
 
-  const fault = await state(first.page, { kind: "recovery_smoke_panic" });
+  // Sent through the page, as an editor action is, so the page sees the fault it answers with.
+  await within("Sending the smoke panic", () => first.page.evaluate(() => (
+    window.dawsuUi.bridge.callAction("act", { kind: "recovery_smoke_panic" })
+  )));
+  const fault = await state(first.page);
   assert.match(fault.fault, /Saved a recovery copy/);
+  assert.match(fault.fault, /Crash report: .*crash\.log/);
   const message = first.page.locator("#dialog");
   await message.getByRole("heading", { name: "Editor stopped" }).waitFor();
   assert.match(await message.textContent(), /Project persistence test \[Hard\]/);
@@ -179,7 +199,7 @@ try {
   assert.deepEqual(await pendingIds(), [id]);
   console.log(`Process ${second.run.child.pid} restored volume ${editedVolume} as unsaved without changing the map SHA-256 ${sourceHash}.`);
 
-  await second.page.getByRole("button", { name: "Save", exact: true }).click();
+  await second.page.locator("#save").click();
   await second.page.locator("#status").filter({ hasText: "Saved with backup" }).waitFor();
   const saved = await state(second.page);
   assert.equal(saved.dirty, false);
@@ -190,6 +210,42 @@ try {
     window.__TAURI__.core.invoke("close_editor", { discard: false })
   )));
   console.log("Explicit Save archived the offer and the second process exited with code 0.");
+
+  // A timed recovery copy survives a process that is ended without a panic.
+  const autosavedVolume = 71;
+  const third = await launch([map]);
+  const opened = await openedMap(third.page);
+  await dismissAudioError(third.page, opened);
+  assert.equal(opened.scene.moments[0][1], editedVolume);
+  await setAllVolumes(third.page, autosavedVolume);
+  const autosaved = await state(third.page, { kind: "recovery_smoke_autosave" });
+  assert.equal(autosaved.dirty, true);
+  assert.equal(autosaved.scene.moments[0][1], autosavedVolume);
+  const timedIds = await pendingIds();
+  assert.equal(timedIds.length, 1, "one timed recovery copy");
+  const savedHash = await mapHash();
+  assert.ok(third.run.child.kill(), "ending the editor process");
+  await within("Waiting for the ended process", () => third.run.exited);
+  await third.run.browser?.close().catch(() => {});
+  assert.deepEqual(await pendingIds(), timedIds);
+  console.log(`Process ${third.run.child.pid} wrote ${timedIds[0]} on its own and was ended without a panic.`);
+
+  const fourth = await launch([]);
+  const cards = fourth.page.getByRole("region", { name: "Recovery copies" });
+  await cards.waitFor();
+  const home4 = await state(fourth.page);
+  await dismissAudioError(fourth.page, home4);
+  assert.equal(await cards.getByRole("button", { name: /^Restore / }).count(), 1);
+  await cards.getByRole("button", { name: "Restore " + title, exact: true }).click();
+  await fourth.page.locator('#save[data-dirty="true"]').waitFor();
+  const recovered = await state(fourth.page);
+  assert.equal(recovered.scene.moments[0][1], autosavedVolume);
+  assert.equal(await mapHash(), savedHash);
+  assert.deepEqual(await pendingIds(), timedIds, "restoring adds no second card");
+  await finishClose(fourth.run, () => fourth.page.evaluate(() => (
+    window.__TAURI__.core.invoke("close_editor", { discard: true })
+  )));
+  console.log(`Process ${fourth.run.child.pid} restored volume ${autosavedVolume} from the timed copy.`);
 } finally {
   try {
     for (const run of launches.reverse()) {

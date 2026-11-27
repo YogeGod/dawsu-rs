@@ -374,6 +374,7 @@ pub(crate) struct ViewSnapshot {
     pub(crate) active_lane: usize,
     pub(crate) audition: bool,
     pub(crate) auto_check_updates: bool,
+    pub(crate) autosave_interval_secs: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) bookmark_step: Option<Option<f64>>,
     pub(crate) busy: bool,
@@ -826,6 +827,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         clean_redundant_greenlines: prefs.clean_redundant_greenlines,
         keep_pitch: prefs.keep_pitch,
         auto_check_updates: prefs.auto_check_updates,
+        autosave_interval_secs: prefs.autosave_interval_secs,
         step_pads_mode: prefs.step_pads_mode,
         tap_recorded_count: app.tap_recorded_count(),
         tap_recording_armed: app.tap_recording_armed(),

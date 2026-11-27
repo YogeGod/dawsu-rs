@@ -16,6 +16,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::{keyboard, library};
+#[cfg(feature = "recovery-smoke")]
+use crate::RECOVERY_SMOKE_DATA;
 
 pub(crate) use dawsu_application::presentation::{
     PlaybackStart, RulerGesture, group_mix, lane_by_key, lane_header_rows, map_path, mix_lanes,
@@ -248,8 +250,13 @@ pub(crate) enum Action {
     RestoreRecovery {
         id: String,
     },
+    DiscardRecovery {
+        id: String,
+    },
     #[cfg(feature = "recovery-smoke")]
     RecoverySmokePanic,
+    #[cfg(feature = "recovery-smoke")]
+    RecoverySmokeAutosave,
     Pending {
         choice: String,
     },
@@ -296,6 +303,7 @@ pub(crate) enum Action {
     AutoCheckUpdates { on: bool },
     StepPadsMode { on: bool },
     ReloadOsuAfterSave { on: bool },
+    AutosaveInterval { secs: u32 },
     TapLane { row: usize },
     TapRecordToggle,
     Stop,
@@ -543,12 +551,25 @@ impl Action {
                     app.set_error(Some(error));
                 }
             }
+            Self::DiscardRecovery { id } => {
+                if let Err(error) = app.discard_recovery(&id) {
+                    app.set_error(Some(error));
+                }
+            }
             #[cfg(feature = "recovery-smoke")]
             Self::RecoverySmokePanic => {
                 if std::env::var_os(RECOVERY_SMOKE_DATA).is_some_and(|path| !path.is_empty()) {
                     panic!("Controlled crash recovery smoke test");
                 }
                 app.set_error(Some("The smoke test needs an isolated app data folder.".into()));
+            }
+            #[cfg(feature = "recovery-smoke")]
+            Self::RecoverySmokeAutosave => {
+                if std::env::var_os(RECOVERY_SMOKE_DATA).is_some_and(|path| !path.is_empty()) {
+                    app.autosave_recovery_now();
+                } else {
+                    app.set_error(Some("The smoke test needs an isolated app data folder.".into()));
+                }
             }
             Self::BrowserStyle { classic } => {
                 app.update_preferences(|p| {
@@ -726,6 +747,7 @@ impl Action {
             Self::AutoCheckUpdates { on } => app.set_auto_check_updates(on),
             Self::StepPadsMode { on } => app.set_step_pads_mode(on),
             Self::ReloadOsuAfterSave { on } => app.set_reload_osu_after_save(on),
+            Self::AutosaveInterval { secs } => app.set_autosave_interval_secs(secs),
             Self::TapLane { row } => {
                 app.tap_lane(row);
             }

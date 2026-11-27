@@ -11,6 +11,8 @@
     onpicklibrary,
     onsendaction,
   } = $props();
+
+  const autosaveChoices = [[0, "Off"], [15, "15s"], [30, "30s (default)"], [60, "60s"], [120, "120s"]];
 </script>
 
 <div class="pref-group">
@@ -75,4 +77,14 @@
     <span>Reload osu! editor after Save</span>
   </label>
   <p class="pref-caption">On Windows, brings osu!stable forward and sends Ctrl+L when the open difficulty matches. For osu!lazer external edits, reminds you to click Finish.</p>
+  <label class="pref-field">
+    <span>Recovery copy interval</span>
+    <select aria-label="Recovery copy interval" value={view.autosaveIntervalSecs ?? 30}
+      onchange={(e) => onsendaction({ kind: "autosave_interval", secs: Number(e.currentTarget.value) })}>
+      {#each autosaveChoices as [secs, label] (secs)}
+        <option value={secs}>{label}</option>
+      {/each}
+    </select>
+  </label>
+  <p class="pref-caption">While a difficulty has unsaved edits, dawsu! keeps a recovery copy this often. After a crash, the start screen offers it.</p>
 </div>

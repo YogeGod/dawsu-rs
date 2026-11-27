@@ -576,6 +576,9 @@ export function attachIpc(ctx) {
       (Boolean(before.stemActive) !== Boolean(next.stemActive)) ||
       ((before.waveformRevision ?? 0) !== (next.waveformRevision ?? 0));
     if (waveformChanged) waveformFetchKey = null;
+    if (next.recovery === undefined && !next.hasDocument && before.recovery) {
+      next = { ...next, recovery: before.recovery };
+    }
     state.view = next;
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();

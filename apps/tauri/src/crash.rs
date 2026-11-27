@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     backtrace::Backtrace,
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::OsString,
     fs::{self, OpenOptions},
     io::Write,
@@ -23,6 +23,41 @@ static DIALOG_SHOWN: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static IN_PANIC_HOOK: Cell<bool> = const { Cell::new(false) };
+    /// Above zero while `guarded` runs on this thread: `guard` reports the panic itself.
+    static GUARDED_DEPTH: Cell<u32> = const { Cell::new(0) };
+    /// The crash report the last panic on this thread saved.
+    static LAST_SAVED_LOG_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+struct GuardedScope;
+
+impl Drop for GuardedScope {
+    fn drop(&mut self) {
+        GUARDED_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// Runs `f` as an operation whose panic the caller catches and shows: the panic hook still
+/// writes `crash.log` and stderr, but shows no native dialog.
+pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> T {
+    GUARDED_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let _scope = GuardedScope;
+    f()
+}
+
+fn is_guarded() -> bool {
+    GUARDED_DEPTH.with(|depth| depth.get() > 0)
+}
+
+fn remember_saved_log_path(path: Option<PathBuf>) {
+    LAST_SAVED_LOG_PATH.with(|last| *last.borrow_mut() = path);
+}
+
+/// The crash report of the last panic on this thread, else where reports are written.
+pub(crate) fn crash_log_path() -> PathBuf {
+    LAST_SAVED_LOG_PATH
+        .with(|last| last.borrow().clone())
+        .unwrap_or_else(default_crash_log_path)
 }
 
 struct ReentrancyGuard;
@@ -57,10 +92,12 @@ pub(crate) fn install() {
 
         let message = payload_message(info.payload());
         let saved_path = record_panic(info, message);
+        remember_saved_log_path(saved_path.clone());
 
         // Preserve default stderr panic output for terminal runs and test harnesses.
         previous(info);
 
+        // A guarded panic is shown by the editor page; the one-shot dialog stays for others.
         if should_show_dialog() && !DIALOG_SHOWN.swap(true, Ordering::SeqCst) {
             let _ = panic::catch_unwind(|| {
                 show_crash_dialog(saved_path.as_deref(), message);
@@ -90,7 +127,7 @@ fn record_panic(info: &PanicHookInfo<'_>, message: &str) -> Option<PathBuf> {
         &backtrace,
     );
 
-    let log_path = crash_log_path();
+    let log_path = default_crash_log_path();
     let _lock = LOG_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     match write_crash_log_with_limit(&log_path, &entry, MAX_CRASH_LOG_BYTES) {
         Ok(()) => Some(log_path),
@@ -105,7 +142,7 @@ fn record_panic(info: &PanicHookInfo<'_>, message: &str) -> Option<PathBuf> {
     }
 }
 
-fn crash_log_path() -> PathBuf {
+fn default_crash_log_path() -> PathBuf {
     dawsu_application::data_folder().join("crash.log")
 }
 
@@ -230,7 +267,15 @@ fn should_show_dialog() -> bool {
     if cfg!(test) {
         return false;
     }
-    should_show_dialog_from_env(|key| std::env::var_os(key))
+    should_show_dialog_for(is_guarded(), |key| std::env::var_os(key))
+}
+
+/// Whether a panic shows the native dialog: never inside `guarded`, else as the environment says.
+fn should_show_dialog_for<F>(guarded: bool, get_env: F) -> bool
+where
+    F: Fn(&str) -> Option<OsString>,
+{
+    !guarded && should_show_dialog_from_env(get_env)
 }
 
 fn should_show_dialog_from_env<F>(get_env: F) -> bool
@@ -404,6 +449,41 @@ mod tests {
         assert!(rotated_backup.contains("second panic"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn guarded_marks_the_thread_until_it_returns_or_unwinds() {
+        assert!(!is_guarded());
+        let inside = guarded(|| {
+            assert!(guarded(is_guarded), "nested calls stay guarded");
+            is_guarded()
+        });
+        assert!(inside);
+        assert!(!is_guarded(), "cleared after a normal return");
+        let unwound = std::panic::catch_unwind(|| guarded(|| panic!("guarded test panic")));
+        assert!(unwound.is_err());
+        assert!(!is_guarded(), "cleared after an unwind");
+    }
+
+    #[test]
+    fn a_guarded_panic_shows_no_native_dialog() {
+        let interactive = |key: &str| (key == "DISPLAY").then(|| OsString::from(":0"));
+        assert!(should_show_dialog_for(false, interactive));
+        assert!(!should_show_dialog_for(true, interactive));
+        assert!(!should_show_dialog_for(false, |key: &str| (key == "CI").then(|| OsString::from("1"))));
+    }
+
+    #[test]
+    fn crash_log_path_names_the_report_a_panic_on_this_thread_saved() {
+        let saved = std::thread::spawn(|| {
+            assert_eq!(crash_log_path(), default_crash_log_path());
+            remember_saved_log_path(Some(PathBuf::from("E:/elsewhere/crash.log")));
+            crash_log_path()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(saved, PathBuf::from("E:/elsewhere/crash.log"));
+        assert!(crash_log_path().ends_with("crash.log"));
     }
 
     #[test]

@@ -18,12 +18,163 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 impl Application {
-    /// Writes the last completed state, even if the live editor was interrupted mid-edit.
-    pub fn write_recovery_copy(&self) -> Result<Option<RecoveryOffer>, String> {
-        self.checkpoint
+    /// Writes the last completed state, even if the live editor was interrupted mid-edit. Once
+    /// it is on disk, this session's timed copy is removed, so one card is left.
+    pub fn write_recovery_copy(&mut self) -> Result<Option<RecoveryOffer>, String> {
+        let result = self
+            .checkpoint
             .as_ref()
             .map(|copy| copy.write(&self.data_root))
-            .transpose()
+            .transpose();
+        if let Ok(Some(_)) = &result {
+            self.drop_autosave();
+        }
+        result
+    }
+
+    /// The timed recovery copy, from every poll: takes a finished write, drops the copy once Undo
+    /// returns to the saved state, and starts a write of a changed dirty difficulty when due.
+    #[doc(hidden)]
+    pub fn autosave_recovery(&mut self, now: std::time::Instant) {
+        self.finish_autosave(false);
+        if !self.has_dirty_beatmap() {
+            if self.autosave_id.is_some() || self.autosave_job.is_some() {
+                self.drop_autosave();
+            }
+            return;
+        }
+        if self.autosave_job.is_none()
+            && !self.busy
+            && !self.is_stroke_open()
+            && recovery::autosave_due(self.autosave_last, now, self.preferences.autosave_interval_secs)
+        {
+            self.start_autosave(now);
+        }
+    }
+
+    /// Writes the timed recovery copy now, whatever the interval, and waits for it. For tests and
+    /// the relaunch smoke check.
+    #[doc(hidden)]
+    pub fn autosave_recovery_now(&mut self) {
+        self.finish_autosave(true);
+        if !self.is_stroke_open() {
+            self.refresh_recovery_edit();
+        }
+        if self.has_dirty_beatmap() && !self.busy && !self.is_stroke_open() {
+            self.start_autosave(std::time::Instant::now());
+            self.finish_autosave(true);
+        }
+    }
+
+    fn start_autosave(&mut self, now: std::time::Instant) {
+        let Some(checkpoint) = &self.checkpoint else { return };
+        let key = checkpoint.autosave_key();
+        if self.autosaved_key == Some(key) {
+            return;
+        }
+        // A failed write is tried again at the next interval, not on the next poll.
+        self.autosave_last = Some(now);
+        let snapshot = checkpoint.clone();
+        let root = self.data_root.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        #[cfg(test)]
+        let hold = self.autosave_write_hold.clone();
+        let (send, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let result = snapshot.write_with(&root, || {
+                if worker_cancel.load(Ordering::Relaxed) {
+                    return Err("The recovery copy was cancelled.".into());
+                }
+                // Tests hold the writer here, past the cancel check, to race it against a drop.
+                #[cfg(test)]
+                while hold.as_ref().is_some_and(|hold| hold.load(Ordering::Relaxed))
+                    && !worker_cancel.load(Ordering::Relaxed)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Ok(())
+            });
+            let _ = send.send(result);
+        });
+        self.autosave_job = Some(recovery::AutosaveJob {
+            cancel,
+            rx,
+            handle: Some(handle),
+            generation: self.autosave_generation,
+            key,
+        });
+    }
+
+    /// Takes the writer's answer: a new copy replaces the one before it, which is removed only
+    /// now, so a valid copy is on disk at every moment.
+    pub(crate) fn finish_autosave(&mut self, wait: bool) {
+        let Some(job) = &self.autosave_job else { return };
+        let result = if wait {
+            job.rx.recv().ok()
+        } else {
+            match job.rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        let Some(mut job) = self.autosave_job.take() else { return };
+        if let Some(handle) = job.handle.take() {
+            let _ = handle.join();
+        }
+        if job.generation != self.autosave_generation {
+            if let Some(Ok(offer)) = result {
+                recovery::remove_copy(&self.data_root, &offer.id);
+            }
+            return;
+        }
+        match result {
+            Some(Ok(offer)) => {
+                if let Some(previous) = self.autosave_id.replace(offer.id)
+                    && self.restored_recovery.as_ref() != Some(&previous)
+                {
+                    recovery::remove_copy(&self.data_root, &previous);
+                }
+                self.autosaved_key = Some(job.key);
+                self.autosave_error_logged = false;
+            }
+            failed => {
+                if !std::mem::replace(&mut self.autosave_error_logged, true) {
+                    let error = match failed {
+                        Some(Err(error)) => error,
+                        _ => "the writer stopped.".into(),
+                    };
+                    self.status = format!("Could not write the recovery copy: {error}");
+                    self.bump_view_revision();
+                }
+            }
+        }
+    }
+
+    /// Cancels and waits for the timed writer, then removes this session's timed copy, also one
+    /// the writer just made. A copy the mapper restored stays. Runs before sample cleanup, which
+    /// keeps what a recovery copy names.
+    pub(crate) fn drop_autosave(&mut self) {
+        if let Some(mut job) = self.autosave_job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+            if let Some(handle) = job.handle.take() {
+                let _ = handle.join();
+            }
+            while let Ok(result) = job.rx.try_recv() {
+                if let Ok(offer) = result {
+                    recovery::remove_copy(&self.data_root, &offer.id);
+                }
+            }
+        }
+        if let Some(id) = self.autosave_id.take()
+            && self.restored_recovery.as_ref() != Some(&id)
+        {
+            recovery::remove_copy(&self.data_root, &id);
+        }
+        self.autosaved_key = None;
+        self.autosave_last = None;
+        self.autosave_generation += 1;
     }
     pub fn recovery_offers(&self) -> Result<Vec<RecoveryOffer>, String> {
         recovery::offers(&self.data_root)
@@ -34,6 +185,15 @@ impl Application {
         }
         let path = recovery::pending_path(&self.data_root, id)?;
         self.open_now(OpenSource::Recovery(path));
+        Ok(())
+    }
+    /// Moves a stopped session's copy to `recovery/archive/`, so its card leaves the start screen.
+    pub fn discard_recovery(&mut self, id: &str) -> Result<(), String> {
+        if self.busy || self.document.is_some() {
+            return Err("Discard a recovery copy from the start screen.".into());
+        }
+        recovery::archive(&self.data_root, id)?;
+        self.bump_view_revision();
         Ok(())
     }
     pub(crate) fn refresh_recovery_edit(&mut self) {
@@ -71,6 +231,8 @@ impl Application {
         self.unload_all_mixer_fx();
         self.waveform.clear();
         self.waveform_revision += 1;
+        // The timed copy goes before cleanup reads the recovery copies: what it names is kept.
+        self.drop_autosave();
         // A cleanup still running after a Save finishes first. One still running past the wait
         // finishes in the background, and this close cleans up nothing: the next one does.
         self.poll_sweep(true);
@@ -120,6 +282,7 @@ impl Application {
         self.unload_all_mixer_fx();
         self.waveform.clear();
         self.waveform_revision += 1;
+        self.drop_autosave();
         self.poll_sweep(false);
         if self.sweep.is_none() {
             self.start_sweep(true);
@@ -1029,6 +1192,7 @@ impl Application {
         self.busy = true;
         let outgoing = self.document.as_ref().map(|d| d.composer.history.version());
         let outgoing_mapset = self.document.as_ref().and_then(|d| d.path.parent().map(Path::to_path_buf));
+        let outgoing_had_autosave = self.autosave_id.is_some() || self.autosave_job.is_some();
         self.status = "Opening map and decoding audio…".into();
         if self.sweep_detached {
             self.status = sweep::with_note(&self.status, sweep::STILL_RUNNING);
@@ -1099,7 +1263,7 @@ impl Application {
                     effective_legacy_root,
                     recovery,
                 )?;
-                loaded.outgoing_keep = outgoing_mapset.and_then(|mapset| {
+                loaded.outgoing_keep = outgoing_mapset.filter(|_| !outgoing_had_autosave).and_then(|mapset| {
                     let outgoing_practice_root = crate::practice::is_practice_mapset_path(&mapset)
                         .then(|| crate::practice::practice_project_root_for(&mapset))
                         .flatten();
@@ -1154,6 +1318,7 @@ impl Application {
             // Edits made outside the refreshing entry points still reach the recovery checkpoint.
             self.refresh_recovery_edit();
         }
+        self.autosave_recovery(std::time::Instant::now());
         self.poll_sweep(false);
         self.check_set_versions_when_read();
         self.poll_drum_detection();
@@ -1308,8 +1473,11 @@ impl Application {
                             }
                         });
                     }
-                    // The outgoing difficulty closes here.
-                    let keep = loaded.outgoing_keep;
+                    // The outgoing difficulty closes here. Its timed copy goes first: the names
+                    // read on the open thread may include what that copy listed.
+                    let had_autosave = self.autosave_id.is_some() || self.autosave_job.is_some();
+                    self.drop_autosave();
+                    let keep = if had_autosave { None } else { loaded.outgoing_keep };
                     self.forget_unneeded_pending(keep);
                     let mut checkpoint = (!is_practice || loaded.recovery.is_some())
                         .then(|| recovery::Checkpoint::new(&loaded.document));
@@ -1494,6 +1662,10 @@ impl Application {
                     }
                     self.checkpoint = checkpoint;
                     self.restored_recovery = restored_id;
+                    // The restored copy already holds this state: no timed copy until an edit.
+                    if self.restored_recovery.is_some() {
+                        self.autosaved_key = self.checkpoint.as_ref().map(recovery::Checkpoint::autosave_key);
+                    }
                     self.ask_about_set_versions();
                     if std::mem::take(&mut self.sweep_after_open) {
                         self.start_sweep(false);
@@ -1619,6 +1791,8 @@ impl Application {
                             let drawn = report.drawn;
                             if self.document.as_ref().is_some_and(|d| d.path == path) {
                                 self.pending_published(&report.published_pending, &report.pending_kept);
+                                // The written difficulty replaces the timed copy, before the sweep.
+                                self.drop_autosave();
                             }
                             if let Some(d) = self.document.as_mut().filter(|d| d.path == path) {
                                 d.file = report.file;
