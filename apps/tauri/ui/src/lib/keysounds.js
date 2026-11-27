@@ -47,3 +47,10 @@ export function emptyRollHint(trackName, drawKey) {
   const draw = /^[1-4]$/.test(drawKey ?? "") ? `Draw (${drawKey})` : "Draw";
   return `No notes on ${trackName || "this track"} yet. Double-click in the roll, or pick ${draw}, to place one.`;
 }
+
+// The velocity ramp keys in one line, for the Velocity tab's tooltip in Keysounds mode.
+export const RAMP_KEYS_TIP = "Shift+drag: ramp · +Alt ease in · +Ctrl ease out · wheel while dragging bends";
+
+// The next smaller form of the ramp key legend when the current one overflows the bottom panel:
+// all three lines, then one line, then none (the tab's tooltip still names the keys).
+export const shrinkLegend = fit => (fit === "full" ? "line" : "none");

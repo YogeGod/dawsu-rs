@@ -1,5 +1,7 @@
 <script>
+  import { tick } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
+  import { RAMP_KEYS_TIP, shrinkLegend } from "../lib/keysounds.js";
   import ChevronRight from "../icons/ChevronRight.svg?raw";
 
   // The bottom panel's side column (v3 F1-F3): the Volume and Mixer tabs, or the folded strip.
@@ -11,6 +13,36 @@
   // Keysounds mode hides the ramp shape menu (#ramp-shape): its ramps take their shape from the keys
   // held while drawing, listed here in the menu's place (plan revision 4, Q2 C and Q6 A).
   const rampKeys = $derived(bridge.mode === "keysounds" && tab === "volume");
+  // A short panel shows one line of the legend, or none, instead of clipping it. The title column
+  // centres its content, so each size is laid out and kept only if it stays inside the column.
+  let seg = $state(null);
+  let fit = $state("full");
+  $effect(() => {
+    const column = seg?.closest(".volume-title");
+    if (!rampKeys || !column || typeof ResizeObserver === "undefined") return;
+    const overflows = () => {
+      const legend = column.querySelector(".ramp-keys");
+      if (!legend) return false;
+      const box = column.getBoundingClientRect();
+      return legend.getBoundingClientRect().bottom > box.bottom + 0.5 || seg.getBoundingClientRect().top < box.top - 0.5;
+    };
+    let run = 0;
+    const refit = async () => {
+      const mine = ++run;
+      fit = "full";
+      await tick();
+      while (mine === run && fit !== "none" && overflows()) {
+        fit = shrinkLegend(fit);
+        await tick();
+      }
+    };
+    const observer = new ResizeObserver(refit);
+    observer.observe(column);
+    return () => {
+      run++;
+      observer.disconnect();
+    };
+  });
   const disabled = $derived(bridge.disabled);
 
   function choose(name) {
@@ -56,24 +88,34 @@
     <span class="hint">Drag up to open</span>
   </button>
 {:else}
-  <div class="seg" role="group" aria-label="Bottom panel">
-    <button type="button" aria-pressed={tab === "volume"} onclick={() => choose("volume")}>{valueLane}</button>
+  <div class="seg" role="group" aria-label="Bottom panel" bind:this={seg}>
+    <button type="button" aria-pressed={tab === "volume"} onclick={() => choose("volume")}
+      title={bridge.mode === "keysounds" ? RAMP_KEYS_TIP : undefined}>{valueLane}</button>
     <button type="button" aria-pressed={tab === "mixer"} onclick={() => choose("mixer")}>Mixer</button>
   </div>
-  {#if rampKeys}
+  {#if rampKeys && fit === "full"}
     <p class="ramp-keys" aria-label="Velocity ramp keys">
       <kbd>Shift</kbd>+drag ramp<br>
       +<kbd>Alt</kbd> ease in · +<kbd>Ctrl</kbd> ease out<br>
       wheel while dragging bends
     </p>
+  {:else if rampKeys && fit === "line"}
+    <p class="ramp-keys one-line" aria-label="Velocity ramp keys"><kbd>Shift</kbd>+drag ramp · Alt/Ctrl shape · wheel bends</p>
   {/if}
 {/if}
 
 <style>
+  /* Never squeezed by the title column: the one-line form's overflow would let it shrink to 0. */
   .ramp-keys {
+    flex: none;
     margin: 6px 2px 0;
     color: var(--editor-secondary);
     font: 11px/1.6 var(--font-ui);
+  }
+  .ramp-keys.one-line {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .ramp-keys kbd {
     padding: 0 3px;

@@ -238,3 +238,24 @@ test("Keysounds mode names the value lane Velocity and lists the ramp keys where
   }
   assert.doesNotMatch(panel(view()), /ramp-keys/, "Hitsounds mode keeps its shape menu and no legend");
 });
+
+test("the ramp key legend fits the room under the tabs: three lines, one line, or none with the keys in the tab's tooltip", async () => {
+  const { shrinkLegend, RAMP_KEYS_TIP } = await import("../src/lib/keysounds.js");
+  assert.equal(shrinkLegend("full"), "line");
+  assert.equal(shrinkLegend("line"), "none");
+  assert.equal(shrinkLegend("none"), "none");
+  const source = readFileSync(new URL("../src/parts/BottomPanel.svelte", import.meta.url), "utf8");
+  // Each size is tried in turn and kept only if it stays inside the title column.
+  assert.match(source, /fit = "full";\s*await tick\(\);\s*while \(mine === run && fit !== "none" && overflows\(\)\) \{\s*fit = shrinkLegend\(fit\);/);
+  assert.match(source, /\{#if rampKeys && fit === "full"\}[^]*?\{:else if rampKeys && fit === "line"\}/);
+  try {
+    bridge.mode = "keysounds";
+    const html = panel(view());
+    const velocity = tags(html, "button").find(tag => /aria-pressed="true"/.test(tag));
+    assert.ok(velocity.includes(`title="${RAMP_KEYS_TIP}"`), "the Velocity tab names the keys");
+    assert.equal(RAMP_KEYS_TIP, "Shift+drag: ramp · +Alt ease in · +Ctrl ease out · wheel while dragging bends");
+  } finally {
+    bridge.mode = "hitsounds";
+  }
+  assert.doesNotMatch(panel(view()), /title="Shift\+drag/, "Hitsounds mode's Volume tab has no ramp keys tooltip");
+});
