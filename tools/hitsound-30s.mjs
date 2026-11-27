@@ -36,7 +36,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkFreshness, createRobot, diffSnapshots, parseArgs, sleep, snapshot } from "./robot/harness.mjs";
+import { checkFreshness, createRobot, diffSnapshots, parseArgs, samePath, sleep, snapshot } from "./robot/harness.mjs";
 import { planHitsounds } from "./robot/hitsound-plan.mjs";
 import { pickAndCopy } from "./robot/maps.mjs";
 import { describe, playedFile, readOsu, soundMoments } from "./robot/osu-sounds.mjs";
@@ -84,7 +84,7 @@ try {
     await robot.launch(reference);
     await until(() => window.scene?.lanes?.length > 0 && !window.view?.songLoading, null, "the map did not open", 60000);
     const path = await read(() => window.scene.path);
-    expect(resolve(path).toLowerCase() === resolve(reference).toLowerCase(), `the editor opened ${path}, not the copy`);
+    expect(samePath(path, reference), `the editor opened ${path}, not the copy`);
     const points = await read(() => window.scene.gameplay?.points?.length ?? 0);
     return `${await hitCount()} hits, ${points} object points`;
   }, { stops: true });
@@ -97,10 +97,15 @@ try {
   await step("Create an empty [Hitsounds] difficulty from it (Ctrl+K)", async () => {
     const before = new Set(readdirSync(mapFolder));
     await palette("Create [Hitsounds] difficulty");
-    await until(ref => window.scene?.path && window.scene.path.toLowerCase() !== ref.toLowerCase() && !window.view.busy,
-      reference, "the editor did not open a new difficulty", 30000);
-    hsPath = await read(() => window.scene.path);
-    expect(resolve(dirname(hsPath)).toLowerCase() === resolve(mapFolder).toLowerCase(), `the new difficulty is not in the mapset copy: ${hsPath}`);
+    // The editor reports canonical paths, so compare on this side, not in the page.
+    const end = Date.now() + 30000;
+    while (Date.now() < end) {
+      const now = await read(() => !window.view.busy && window.scene?.path).catch(() => null);
+      if (now && !samePath(now, reference)) { hsPath = now.replace(/^\\\\\?\\/, ""); break; }
+      await sleep(200);
+    }
+    expect(hsPath, "the editor did not open a new difficulty");
+    expect(samePath(dirname(hsPath), mapFolder), `the new difficulty is not in the mapset copy: ${hsPath}`);
     const added = readdirSync(mapFolder).filter(name => !before.has(name));
     expect(added.length === 1 && added[0] === basename(hsPath), `the mapset gained ${JSON.stringify(added)}`);
     expect(await read(() => window.scene.hs === true), "the new difficulty is not in Hitsounding mode");
@@ -168,7 +173,7 @@ try {
           await field.press("Tab");
           await until(v => window.scene.insertVolume === v, moment.volume, `Insert volume did not become ${moment.volume}%`, 4000);
           insert = moment.volume;
-          await page().mouse.move(5, 5);
+          await robot.focusEditor();
         }
         await setDivisor(moment.divisor);
         await showTime(moment.exact, { zoom });
@@ -209,7 +214,7 @@ try {
 
   await step("Save, through the save review", async () => {
     const seen = await save();
-    savedHits = await robot.namedHits();
+    savedHits = await hits();
     return seen.join("; ") || "no review shown";
   }, { stops: true, covers: ["F048", "F050"] });
 
@@ -220,14 +225,11 @@ try {
     for (const moment of plan.moments) {
       const found = saved.filter(s => Math.abs(s.time - moment.exact) <= 1);
       if (found.length !== 1) { problems.push(`${moment.time} ms: ${found.length} sound moments in the file`); continue; }
-      const got = found[0].samples.map(describe).sort();
-      const want = moment.layers.map(l => `${l.bank}-${l.sound}:${l.index}@${moment.volume}`).sort();
+      // Judged by the sound osu! looks up (the map's file, or the skin's) with its volume, so an
+      // index 1 with no file counts the same as index 0, as it sounds in osu!.
+      const got = found[0].samples.map(s => `${playedFile(s, files)}@${s.volume}`).sort();
+      const want = moment.layers.map(l => `${playedFile({ name: l.sound, bank: l.bank, index: l.index }, files)}@${moment.volume}`).sort();
       if (JSON.stringify(got) !== JSON.stringify(want)) problems.push(`${moment.time} ms (${moment.why}): plays ${got.join(" ")}, planned ${want.join(" ")}`);
-      // The sound osu! looks up first: the map's own file for index 1, the skin for index 0.
-      for (const sample of found[0].samples) {
-        const source = playedFile(sample, files);
-        if (sample.index >= 1 && !source.startsWith("map:")) problems.push(`${moment.time} ms: ${describe(sample)} has no file in the mapset`);
-      }
     }
     const extra = saved.filter(s => !plan.moments.some(m => Math.abs(s.time - m.exact) <= 1));
     if (extra.length) problems.push(`${extra.length} unplanned sound moments, first at ${extra[0].time} ms`);
@@ -238,7 +240,9 @@ try {
   await step("Every saved volume is 5% or more", async () => {
     const bytes = readFileSync(hsPath);
     const low = soundMoments(bytes).flatMap(m => m.samples.filter(s => s.volume < 5).map(s => `${m.time} ms ${describe(s)}`));
-    const lines = (readOsu(bytes).sections.TimingPoints ?? []).filter(line => Number(line.split(",")[5]) < 5);
+    // Lines the ranked map already had are the mapper's, not the editor's; only new ones count.
+    const old = new Set(readOsu(referenceBytes).sections.TimingPoints ?? []);
+    const lines = (readOsu(bytes).sections.TimingPoints ?? []).filter(line => !old.has(line) && Number(line.split(",")[5]) < 5);
     expect(!low.length && !lines.length, `under 5%: ${[...low, ...lines].slice(0, 6).join("; ")}`);
   }, { covers: ["F049"] });
 
@@ -252,9 +256,10 @@ try {
         { cwd: repo, encoding: "utf8", shell: process.platform === "win32" });
       if (run.status !== 0) return { skip: `the oracle did not run: ${(run.stderr || run.stdout || "").trim().split("\n").at(-1)}` };
       const result = JSON.parse(readFileSync(join(output, basename(input), `${basename(hsPath)}.json`), "utf8"));
+      const files = new Set(readdirSync(mapFolder).map(name => name.toLowerCase()));
       const theirs = result.hit_objects.map(o => ({ time: o.start_time, samples: o.samples.map(s => s.kind === "file"
-        ? `file:${s.filename}@${s.volume}` : `${s.bank}-${s.name}:${s.custom_sample_bank}@${s.volume}`).sort() }));
-      const mine = soundMoments(readFileSync(hsPath)).map(m => ({ time: m.time, samples: m.samples.map(describe).sort() }));
+        ? `map:${s.filename}@${s.volume}` : `${playedFile({ name: s.name, bank: s.bank, index: s.custom_sample_bank }, files)}@${s.volume}`).sort() }));
+      const mine = soundMoments(readFileSync(hsPath)).map(m => ({ time: m.time, samples: m.samples.map(s => `${playedFile(s, files)}@${s.volume}`).sort() }));
       expect(theirs.length === mine.length, `lazer has ${theirs.length} objects, the robot ${mine.length}`);
       const differ = mine.filter((m, i) => Math.abs(m.time - theirs[i].time) > 0.5 || JSON.stringify(m.samples) !== JSON.stringify(theirs[i].samples));
       expect(!differ.length, `${differ.length} moments differ, first at ${differ[0]?.time} ms`);
@@ -286,9 +291,11 @@ try {
     await robot.launch(hsPath);
     await until(() => window.scene?.lanes?.length > 0, null, "the saved difficulty did not open", 60000);
     await sleep(500);
-    const now = await robot.namedHits();
-    const missing = savedHits.filter(hit => !now.includes(hit));
-    const extra = now.filter(hit => !savedHits.includes(hit));
+    // Save writes each circle at whole milliseconds, so a hit matches within 1 ms on the same lane.
+    const now = await robot.hits();
+    const same = (a, b) => a.lane === b.lane && a.index === b.index && Math.abs(a.time - b.time) <= 1;
+    const missing = savedHits.filter(hit => !now.some(h => same(h, hit))).map(h => `${h.lane}@${h.time}`);
+    const extra = now.filter(hit => !savedHits.some(h => same(h, hit))).map(h => `${h.lane}@${h.time}`);
     expect(!missing.length && !extra.length, `missing ${missing.slice(0, 5).join(", ") || "none"}; extra ${extra.slice(0, 5).join(", ") || "none"}`);
     return `${now.length} hits`;
   }, { covers: ["F050", "F085"] });

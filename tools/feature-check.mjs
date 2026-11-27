@@ -132,7 +132,7 @@ function defineSteps(robot, picked) {
   }
   async function selectOnly(time, row) {
     await pickTool("Select");
-    await page().mouse.move(5, 5);
+    await r.focusEditor();
     await page().keyboard.press("Escape");
     await clickHit(time, row);
     await until(([time, row]) => window.scene.selection?.count === 1 && window.scene.moments.some(([t, , , list]) =>
@@ -171,7 +171,7 @@ function defineSteps(robot, picked) {
     for (const hit of shown) {
       const key = Math.round(hit.time);
       if (!byTime.has(key)) byTime.set(key, new Set());
-      if (/^(normal|soft|drum)-(hit|slider)/.test(hit.lane ?? "")) byTime.get(key).add(hit.lane);
+      if (hit.family) byTime.get(key).add(hit.family);
     }
     const problems = [];
     for (const moment of expected) {
@@ -196,8 +196,12 @@ function defineSteps(robot, picked) {
         if (!rows.some(row => row.startsWith(label))) empty.push(`Help lacks ${label}`);
       }
       if (menu === "Edit") {
-        await sleep(400);
-        const keys = (await menuRow("Undo").locator(".menu-keys, kbd, [class*=key]").allTextContents().catch(() => [])).join("").trim();
+        // The keys arrive a moment after the menu opens (editor_shortcuts), as in the gate.
+        let keys = "";
+        for (let i = 0; i < 50 && !keys; i++) {
+          keys = (await menuRow("Undo").locator(".menu-keys, kbd, [class*=key]").allTextContents().catch(() => [])).join("").trim();
+          if (!keys) await sleep(100);
+        }
         if (!/Ctrl\+Z|Control\+Z/i.test(keys)) empty.push(`Edit › Undo shows "${keys}", not Ctrl+Z (DAW-like)`);
       }
       await page().keyboard.press("Escape");
@@ -224,7 +228,15 @@ function defineSteps(robot, picked) {
     const fallback = row >= 0 ? row : await read(() => window.scene.lanes.findIndex(lane => lane.hitCount === 0 && lane.canDelete !== undefined));
     expect(fallback >= 0, "no empty lane for throwaway hits");
     const objects = soundMoments(osuBefore);
-    const mid = objects[Math.floor(objects.length / 2)].time;
+    // A spot away from every object (the widest gap in the middle half of the map), so a drawn hit
+    // makes a moment of its own and takes the Insert volume (Composer::add joins a nearby moment).
+    let mid = objects[Math.floor(objects.length / 2)].time;
+    let widest = 0;
+    for (let i = Math.floor(objects.length / 4); i < Math.floor(objects.length * 3 / 4); i++) {
+      const gap = objects[i + 1].time - objects[i].time;
+      if (gap > widest) { widest = gap; mid = closestGrid(lines, (objects[i].time + objects[i + 1].time) / 2, 4); }
+    }
+    expect(widest >= lines.timingAt(mid).beatLength, `no gap of a beat between objects (widest ${Math.round(widest)} ms)`);
     scratch = { row: fallback, time: mid };
     const results = [];
     for (const divisor of [4, 3]) {
@@ -253,7 +265,7 @@ function defineSteps(robot, picked) {
     await field.fill("37");
     await field.press("Tab");
     await until(() => window.scene.insertVolume === 37, null, "Insert volume did not become 37%");
-    await page().mouse.move(5, 5);
+    await r.focusEditor();
     const before = await hitCount();
     await draw(scratch.time, scratch.row);
     const hit = (await hits()).find(h => h.row === scratch.row && Math.abs(h.time - closestGrid(lines, scratch.time, 4)) <= 1);
@@ -265,7 +277,7 @@ function defineSteps(robot, picked) {
     expect(insert >= 5, `typing 2% set Insert volume to ${insert}%`);
     await field.fill("100");
     await field.press("Tab");
-    await page().mouse.move(5, 5);
+    await r.focusEditor();
     await page().keyboard.press("Control+Z");
     await until(count => window.scene.moments.reduce((s, m) => s + m[3].length, 0) === count, before, "Undo did not remove the test hit");
     return `new hit 37%; typing 2% gives ${insert}%`;
@@ -274,12 +286,13 @@ function defineSteps(robot, picked) {
   define("Undo and Redo restore the exact hits, and History lists each edit", ["F026"], async () => {
     if (!scratch) return { skip: "no scratch lane" };
     const start = await namedHits();
-    const history = await read(() => window.scene.history.length);
+    // scene.history holds the done steps then the undone ones; historyPosition counts the done ones.
+    const position = await read(() => window.scene.historyPosition);
     await draw(scratch.time, scratch.row);
     const placed = await namedHits();
-    const grew = await read(() => window.scene.history.length);
-    expect(grew === history + 1, `History went from ${history} to ${grew} entries after one edit`);
-    await page().mouse.move(5, 5);
+    const after = await read(() => ({ position: window.scene.historyPosition, length: window.scene.history.length }));
+    expect(after.position === position + 1 && after.length === after.position, `History went from step ${position} to ${after.position} (${after.length} listed) after one edit`);
+    await r.focusEditor();
     await page().keyboard.press("Control+Z");
     await until(n => window.scene.moments.reduce((s, m) => s + m[3].length, 0) === n, start.length, "Undo did not remove the hit");
     expect(JSON.stringify(await namedHits()) === JSON.stringify(start), "Undo did not give back the exact hits");
@@ -365,7 +378,7 @@ function defineSteps(robot, picked) {
     await selectOnly(off, scratch.row);
     await fromMenu("Edit", "Quantize…");
     await dialogShown("Quantize");
-    await dialogButton("Apply").click();
+    await dialogButton("Quantize").click();
     const want = closestGrid(lines, off, 4);
     await until(([row, want]) => window.scene.moments.some(([t, , , list]) => Math.abs(t - want) <= 1 && list.some(([r]) => r === row)),
       [scratch.row, want], `the hit at ${off} ms was not quantized to ${want.toFixed(1)} ms`);
@@ -376,13 +389,13 @@ function defineSteps(robot, picked) {
   });
 
   define("Protect hitnormals: Delete leaves a hitnormal on an object", ["F024"], async () => {
-    const target = (await hits()).find(h => /-hitnormal$/.test(h.lane ?? ""));
+    const target = (await hits()).find(h => /-hitnormal$/.test(h.family ?? ""));
     expect(target, "the map shows no hitnormal");
     await fromMenu("Edit", "Protect hitnormals from deletion");
     await until(() => window.scene.protect === true, null, "Protect did not turn on");
     await selectOnly(target.time, target.row);
     const count = await hitCount();
-    await page().mouse.move(5, 5);
+    await r.focusEditor();
     await page().keyboard.press("Delete");
     await sleep(600);
     expect(await hitCount() === count, "Delete removed a protected hitnormal");
@@ -415,7 +428,7 @@ function defineSteps(robot, picked) {
   });
 
   define("Locators to selection: L and R take the selection's first and last time", ["F035"], async () => {
-    const all = (await hits()).filter(h => /-hitnormal$/.test(h.lane ?? ""));
+    const all = (await hits()).filter(h => /-hitnormal$/.test(h.family ?? ""));
     const a = all[5], b = all[12];
     expect(a && b, "too few hits");
     await selectOnly(a.time, a.row);
@@ -483,7 +496,11 @@ function defineSteps(robot, picked) {
     expect(circle && head, "the map has no plain circle or slider head");
     for (const moment of [circle, head]) {
       const bank = moment.samples.find(s => s.name === "hitnormal")?.bank ?? "normal";
-      const row = await laneRow(`${bank}-hitwhistle`, moment.samples[0].index >= 1 && existsSample(`${bank}-hitwhistle`) ? 1 : 0);
+      // The object's own custom index when the mapset has that whistle file, else the skin's (index 0).
+      const index = moment.samples[0].index ?? 0;
+      const file = `${bank}-hitwhistle${index >= 2 ? index : ""}`;
+      const useIndex = index >= 1 && existsSample(file) ? index : 0;
+      const row = await laneRow(useIndex >= 2 ? file : `${bank}-hitwhistle`, useIndex);
       expect(row >= 0, `no ${bank}-hitwhistle lane`);
       await read(() => window.act({ kind: "snap", on: true, mode: "objects", beats: window.scene.beats, divisor: window.scene.divisor }));
       await draw(moment.time, row);
@@ -522,7 +539,7 @@ function defineSteps(robot, picked) {
     const low = saved.flatMap(m => m.samples.filter(s => s.volume < 5).map(() => Math.round(m.time)));
     // Every moment the editor showed on an object still plays its families.
     for (const moment of saved) {
-      const lanes = new Set(shown.filter(h => Math.abs(h.time - moment.time) <= 1).map(h => h.lane));
+      const lanes = new Set(shown.filter(h => Math.abs(h.time - moment.time) <= 1).map(h => h.family));
       const missing = families(moment.samples).filter(name => !lanes.has(name));
       if (missing.length && lanes.size) problems.push(`${Math.round(moment.time)} ms plays ${missing.join("+")} the editor did not show`);
     }
@@ -567,7 +584,7 @@ function defineSteps(robot, picked) {
     await fromMenu("Map", "Copy hitsounds…");
     await dialogShown("Copy hitsounds");
     const name = readOsu(before).metadata.Version;
-    const box = page().locator("#dialog-body label").filter({ hasText: name }).locator('input[type="checkbox"]').first();
+    const box = page().locator("#dialog-body label").filter({ hasText: `[${name}]` }).locator('input[type="checkbox"]').first();
     expect(await box.count(), `the Copy dialog does not list ${name}`);
     await box.check();
     await dialogButton("Review output").click();
@@ -658,8 +675,8 @@ function defineSteps(robot, picked) {
     const indexes = new Set();
     for (const text of osuTexts) for (const m of soundMoments(Buffer.from(text, "latin1"))) for (const s of m.samples) indexes.add(s.index);
     const plays = name => /\.osu$/i.test(name) || osuTexts.some(t => t.includes(basename(name))) || (() => {
-      const match = /^(normal|soft|drum)-(hit(normal|whistle|finish|clap)|slider(slide|whistle|tick))(\d+)\.(wav|ogg|mp3)$/i.exec(basename(name));
-      return !!match && indexes.has(Number(match[5]));
+      const match = /^(normal|soft|drum)-(hit(normal|whistle|finish|clap)|slider(slide|whistle|tick))(\d*)\.(wav|ogg|mp3)$/i.exec(basename(name));
+      return !!match && indexes.has(match[5] ? Number(match[5]) : 1);
     })();
     const stray = added.filter(name => !plays(name));
     expect(!stray.length, `files no difficulty plays: ${stray.join(", ")}`);

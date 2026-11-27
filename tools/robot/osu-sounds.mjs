@@ -30,8 +30,10 @@ export function readOsu(input) {
   const lines = text.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/);
   const formatVersion = Number(/osu file format v(\d+)/.exec(lines[0] ?? "")?.[1] ?? 14);
   for (const raw of lines) {
-    const line = raw.trim();
+    let line = raw.trim();
     if (!line || line.startsWith("//")) continue;
+    // LegacyDecoder.cs:52-56, 101-107: a "//" after the first character starts a comment, except in [Metadata].
+    if (section !== "Metadata" && line.indexOf("//") > 0) line = line.slice(0, line.indexOf("//")).trimEnd();
     const header = /^\[(.+)\]$/.exec(line);
     if (header) { section = header[1]; sections[section] ??= []; continue; }
     if (section) (sections[section] ??= []).push(line);
@@ -70,14 +72,17 @@ export function controlPoints(osu) {
     // LegacyBeatmapDecoder.cs addControlPoint/flushPendingPoints: at one time, a green line's
     // sample, difficulty and effect state override the red line's; the last of each kind wins.
     if (timingChange) {
-      // TimingControlPoint.cs:65-68 a red line's beat length is held between 6 and 60000 ms.
-      // LegacyBeatmapDecoder.cs:496-498 the meter (beats per bar) is the third field; missing or 0 is 4.
-      const meter = split.length >= 3 && Number(split[2]) > 0 ? Number(split[2]) : 4;
-      entry.timing = { time, beatLength: Math.min(60000, Math.max(6, beatLength)), meter };
-      entry.sample ??= { bank, index, volume, fromRed: true };
-      if (entry.sample.fromRed) entry.sample = { bank, index, volume, fromRed: true };
-      if (entry.sv === null || entry.svFromRed) { entry.sv = sv; entry.svFromRed = true; }
-      if (entry.kiai === null || entry.kiaiFromRed) { entry.kiai = kiai; entry.kiaiFromRed = true; }
+      // LegacyBeatmapDecoder.cs:576-603: red lines go to the front of the pending list and the list is
+      // read from the back, so of two red lines at one time the first one's state is kept.
+      if (!entry.timing) {
+        // TimingControlPoint.cs:65-68 a red line's beat length is held between 6 and 60000 ms.
+        // LegacyBeatmapDecoder.cs:496-498 the meter (beats per bar) is the third field; missing or 0 is 4.
+        const meter = split.length >= 3 && Number(split[2]) > 0 ? Number(split[2]) : 4;
+        entry.timing = { time, beatLength: Math.min(60000, Math.max(6, beatLength)), meter };
+        entry.sample ??= { bank, index, volume, fromRed: true };
+        if (entry.sv === null) { entry.sv = sv; entry.svFromRed = true; }
+        if (entry.kiai === null) { entry.kiai = kiai; entry.kiaiFromRed = true; }
+      }
     } else {
       entry.sample = { bank, index, volume, fromRed: false };
       entry.sv = sv; entry.svFromRed = false;

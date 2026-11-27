@@ -8,12 +8,26 @@
 // Windows only in practice (WebView2 remote debugging), written to stay portable.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 export const sleep = ms => new Promise(done => setTimeout(done, ms));
+
+/**
+ * A path as one comparable string: the editor canonicalises paths (Windows gives \\?\E:\... and
+ * follows the target/ junction), so both sides go through the real path, without the \\?\ prefix.
+ */
+export function samePath(a, b) {
+  const norm = path => {
+    const plain = String(path).replace(/^\\\\\?\\/, "");
+    let real = resolve(plain);
+    try { real = realpathSync.native(real); } catch {}
+    return real.replace(/^\\\\\?\\/, "").toLowerCase();
+  };
+  return norm(a) === norm(b);
+}
 
 /** argv as { flag: value | true }. */
 export function parseArgs(argv = process.argv.slice(2)) {
@@ -224,7 +238,10 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
   // The scene, read through the page's read-only globals.
   const hits = () => read(() => window.scene.moments.flatMap(([time, volume, , list]) =>
     list.map(([row, selected, muted, hitVolume]) => ({ time, row, selected: !!selected, muted: !!muted, volume: hitVolume ?? volume,
-      lane: window.scene.lanes[row]?.name, index: window.scene.lanes[row]?.index ?? null }))));
+      lane: window.scene.lanes[row]?.name, family: window.scene.lanes[row]?.family ?? null, index: window.scene.lanes[row]?.index ?? null }))));
+  // Click an empty spot of the menu bar row, so keys go to the editor and not to a focused field
+  // (the editor ignores shortcuts typed into inputs); the gate does the same.
+  const focusEditor = async () => { await page().mouse.click(400, 10); await sleep(100); };
   const hitCount = () => read(() => window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0));
   const namedHits = () => read(() => window.scene.moments.flatMap(([time, , , list]) =>
     list.map(([row]) => `${time} ms ${window.scene.lanes[row]?.name ?? "row " + row}#${window.scene.lanes[row]?.index ?? "f"}`)).sort());
@@ -353,7 +370,7 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
 
   return {
     launch, quit, step, expect, until, read, page: () => page(), app: () => app, results, errors, tidy,
-    hits, hitCount, namedHits, laneRow, showTime, showRow, at, openMenu, fromMenu, menuRow, palette, pickTool,
+    hits, hitCount, namedHits, focusEditor, laneRow, showTime, showRow, at, openMenu, fromMenu, menuRow, palette, pickTool,
     setDivisor, dialogTitle, dialogShown, dialogButton, answerDialogs, save, finish,
   };
 }
