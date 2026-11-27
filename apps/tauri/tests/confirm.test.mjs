@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { bootEditor } from "./editor-runtime.mjs";
+import { initMenus } from "../ui/src/editor/menus.js";
+import * as commandList from "../ui/src/lib/commands.js";
 import { hasOpenModal, onlyModalOpen } from "../ui/src/lib/registry.js";
 
 // The dialog box sits at (100,100)-(500,400); its padding is inside that box.
@@ -11,14 +13,19 @@ const DIALOG_BOX = { left: 100, top: 100, right: 500, bottom: 400, width: 400, h
 function element(tag = "div") {
   const el = {
     tagName: tag.toUpperCase(), events: new Map(), dataset: {}, children: [], open: false,
-    className: "", textContent: "",
+    className: "", textContent: "", style: {}, attributes: {},
     classList: {
       add(name) { if (!el.classList.contains(name)) el.className = (el.className + " " + name).trim(); },
       remove(name) { el.className = el.className.split(/\s+/).filter(one => one !== name).join(" "); },
       contains(name) { return el.className.split(/\s+/).includes(name); },
       toggle() {},
     },
-    append() {}, prepend() {}, setAttribute(name, value) { el[name] = value; },
+    append() {}, prepend() {},
+    setAttribute(name, value) { el[name] = value; el.attributes[name] = value; },
+    removeAttribute(name) { delete el.attributes[name]; },
+    getAttribute(name) { return el.attributes[name] ?? null; },
+    contains() { return false; },
+    focus() {},
     replaceChildren(...children) { el.children = children; },
     addEventListener(name, handler) {
       if (!el.events.has(name)) el.events.set(name, []);
@@ -34,7 +41,7 @@ function element(tag = "div") {
   return el;
 }
 
-async function launch() {
+async function launch(invoke = async () => ({ busy: false, hasDocument: false })) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -48,7 +55,7 @@ async function launch() {
   const context = createContext({
     document,
     window: { __TAURI__: {
-      core: { invoke: async () => ({ busy: false, hasDocument: false }) },
+      core: { invoke },
       event: { listen() {} },
     } },
     ResizeObserver: class { observe() {} },
@@ -58,6 +65,8 @@ async function launch() {
   await bootEditor(context);
   const dialog = document.getElementById("dialog");
   return {
+    context,
+    element: id => document.getElementById(id),
     dialog,
     run: source => runInContext(source, context),
     title: () => document.getElementById("dialog-title").textContent,
@@ -199,4 +208,107 @@ test("delayed close event from a prior dialog does not cancel a newly opened con
   app.button("Yes").dispatch("click");
   assert.equal(await second, true);
   assert.equal(hasOpenModal(), false);
+});
+
+test("the difficulty list's Capture asks before replacing a Shared Base, and not before the first one", async () => {
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(done => setTimeout(done, 0)); };
+  for (const hasBase of [true, false]) {
+    const kinds = [];
+    const app = await launch(async (name, args) => {
+      if (name !== "shared_base_action") return { busy: false, hasDocument: false };
+      kinds.push(args.action.kind);
+      return { hasBase, enabled: hasBase, sourceDifficulty: "Insane", baseMomentCount: 9 };
+    });
+    let bumps = 0;
+    app.context.bumpSharedBaseRev = () => { bumps += 1; };
+    app.run('scene = { path: "Test.osu" }');
+    const select = app.element("difficulty");
+    select.value = "__capture_shared_base__";
+    select.dispatch("change");
+    await settle();
+    if (hasBase) {
+      assert.equal(app.dialog.open, true, "a Base exists: Capture asks first");
+      assert.equal(app.title(), "Replace the Shared Base?");
+      app.button("Cancel").dispatch("click");
+      await settle();
+      assert.deepEqual(kinds, ["status"], "Cancel sends no capture");
+      assert.equal(bumps, 0);
+    } else {
+      assert.equal(app.dialog.open, false, "a first Capture asks nothing");
+      assert.deepEqual(kinds, ["status", "capture"]);
+      assert.equal(bumps, 1, "the strip reloads");
+    }
+  }
+});
+
+test("palette Shared Base commands settle the real editor run() queue without deadlocking", async () => {
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(done => setTimeout(done, 0)); };
+  const within = (promise, label) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out (run queue deadlocked)`)), 500)),
+  ]);
+  const editorViews = [];
+  const sharedBaseKinds = [];
+  const toasts = [];
+  let bumps = 0;
+
+  const app = await launch(async (name, args) => {
+    if (name === "editor_view") {
+      editorViews.push({ scene: args?.scene, action: args?.action });
+      return { busy: false, hasDocument: true, sharedBaseEnabled: true };
+    }
+    if (name === "shared_base_action") {
+      sharedBaseKinds.push(args.action.kind);
+      if (args.action.kind === "status") return { hasBase: false, enabled: false, baseMomentCount: 0 };
+      if (args.action.kind === "apply_all") {
+        return { updatedDiffs: 1, totalAppliedMoments: 4, totalSkippedOverrides: 0, failedDiffs: ["Hard: could not read"] };
+      }
+      return { hasBase: true, enabled: true, baseMomentCount: 4 };
+    }
+    return { busy: false, hasDocument: false };
+  });
+
+  app.context.window.addEventListener = () => {};
+  app.context.window.showToast = toast => toasts.push(toast);
+  app.context.window.dawsuUi = { commands: commandList };
+  app.context.bumpSharedBaseRev = () => { bumps += 1; };
+  app.context.openSharedBase = () => {};
+  app.run('view = { busy: false, hasDocument: true, sharedBaseEnabled: true }; scene = { path: "Test.osu", difficulties: ["Test.osu", "Test [Hard].osu"], lanes: [], moments: [] };');
+  editorViews.length = 0;
+
+  const { paletteMenu } = initMenus(app.context, { ui: app.context.window.dawsuUi });
+  const runItem = id => paletteMenu.runItem(commandList.paletteOnly.find(item => item.id === id));
+  const waitUntilDone = async (check, label) => {
+    const deadline = Date.now() + 500;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error(`${label} timed out (run queue deadlocked)`);
+      await new Promise(done => setTimeout(done, 5));
+    }
+    await within(app.run("pending"), `${label} pending`);
+  };
+
+  runItem("paletteApplySharedBaseAll");
+  await settle();
+  assert.equal(app.dialog.open, true);
+  app.button("Apply to all").dispatch("click");
+  await waitUntilDone(() => bumps === 1 && app.run("requests") === 0, "paletteApplySharedBaseAll");
+  assert.equal(toasts.at(-1).tone, "error");
+  assert.match(toasts.at(-1).body, /Hard: could not read/);
+
+  runItem("paletteToggleSharedBase");
+  await waitUntilDone(() => bumps === 2 && app.run("requests") === 0, "paletteToggleSharedBase");
+
+  runItem("paletteCaptureSharedBase");
+  await waitUntilDone(() => bumps === 3 && app.run("requests") === 0, "paletteCaptureSharedBase");
+  assert.equal(toasts.at(-1).tone, "success");
+
+  assert.deepEqual(sharedBaseKinds, ["apply_all", "set_enabled", "status", "capture"]);
+  assert.deepEqual(editorViews, [
+    { scene: true, action: null },
+    { scene: false, action: null },
+    { scene: false, action: null },
+  ]);
+
+  await within(app.run("act(null, false)"), "follow-up act");
+  assert.equal(app.run("requests"), 0);
 });

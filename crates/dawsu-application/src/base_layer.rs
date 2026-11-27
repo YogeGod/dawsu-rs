@@ -1542,6 +1542,57 @@ mod tests {
         assert!(app.error.is_none(), "{:?}", app.error);
     }
 
+    // The Shared Base UI (ui/lib/sharedBase.js, BaseDiffStrip, SharedBaseModal) reads these names.
+    #[test]
+    fn shared_base_json_field_names_stay_camel_case_for_the_ui() {
+        let status = SharedBaseStatus {
+            base_moment_count: 7,
+            ..SharedBaseStatus::default()
+        };
+        let status_json = serde_json::to_value(&status).unwrap();
+        assert_eq!(status_json["baseMomentCount"], 7);
+        for key in [
+            "enabled",
+            "hasBase",
+            "sourceDifficulty",
+            "currentDiffOverrides",
+            "currentDiffInherited",
+        ] {
+            assert!(
+                status_json.get(key).is_some(),
+                "status lacks {key}: {status_json}"
+            );
+        }
+
+        let apply = SharedBaseApplyResult {
+            applied_moments: 3,
+            skipped_overrides: 1,
+            unmatched_base_moments: 2,
+            status: status.clone(),
+        };
+        let apply_json = serde_json::to_value(&apply).unwrap();
+        assert_eq!(apply_json["appliedMoments"], 3);
+        assert_eq!(apply_json["skippedOverrides"], 1);
+        assert_eq!(apply_json["unmatchedBaseMoments"], 2);
+        assert_eq!(apply_json["status"]["baseMomentCount"], 7);
+
+        let apply_all = SharedBaseApplyAllResult {
+            updated_diffs: 2,
+            skipped_diffs: 1,
+            total_applied_moments: 9,
+            total_skipped_overrides: 4,
+            failed_diffs: vec!["Hard: could not read".into()],
+            status,
+        };
+        let all_json = serde_json::to_value(&apply_all).unwrap();
+        assert_eq!(all_json["updatedDiffs"], 2);
+        assert_eq!(all_json["skippedDiffs"], 1);
+        assert_eq!(all_json["totalAppliedMoments"], 9);
+        assert_eq!(all_json["totalSkippedOverrides"], 4);
+        assert_eq!(all_json["failedDiffs"][0], "Hard: could not read");
+        assert_eq!(all_json["status"]["baseMomentCount"], 7);
+    }
+
     #[test]
     fn shared_base_persists_in_appdata_and_never_touches_mapset_folder() {
         let scratch = Scratch::new("shared-base-persist");

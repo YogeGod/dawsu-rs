@@ -50,3 +50,67 @@ export function formatApplyAllSummary(result) {
 export function uniqueLaneOptions(lanes) {
   return [...new Set((lanes ?? []).map((l) => l?.name).filter(Boolean))];
 }
+
+export function baseCountLabel(status) {
+  return String(status?.baseMomentCount ?? 0);
+}
+
+// Apply results as a toast: any difficulty Apply all could not write makes it a sticky error naming each one.
+export function applyToast(all, result) {
+  const body = all ? formatApplyAllSummary(result) : formatApplySummary(result);
+  const failed = Array.isArray(result?.failedDiffs) ? result.failedDiffs : [];
+  if (failed.length > 0) {
+    return { tone: "error", title: "Some difficulties were not updated", body: `${body} Not updated: ${failed.join("; ")}` };
+  }
+  return { tone: "success", title: all ? "Applied Base to all difficulties" : "Applied Base to this difficulty", body };
+}
+
+// Where the backups are; File holds Revert mapset to original… (lib/commands.js).
+export const BACKUP_HINT = "dawsu! keeps backups: File \u203a Revert mapset to original\u2026";
+
+export function applyAllConfirm(otherDiffs) {
+  const count = Math.max(0, Number(otherDiffs) || 0);
+  return {
+    title: "Apply Shared Base to all difficulties?",
+    body: `Writes the Shared Base into ${count} other difficulty ${count === 1 ? "file" : "files"} on disk within ${DEFAULT_LENIENCY_MS} ms. Ctrl+Z does not undo this. ${BACKUP_HINT}`,
+    confirmLabel: "Apply to all",
+    danger: true,
+  };
+}
+
+export const RESET_OVERRIDES_CONFIRM = {
+  title: "Reset overrides for this difficulty?",
+  body: "This difficulty's own changes to the Shared Base are forgotten, so the next Apply writes the Base over them.",
+  confirmLabel: "Reset overrides",
+  danger: true,
+};
+
+export const CLEAR_BASE_CONFIRM = {
+  title: "Clear Shared Base for this mapset?",
+  body: "The captured Base, its overrides, lane rules and volume curve are removed. The .osu files are not changed.",
+  confirmLabel: "Clear Shared Base",
+  danger: true,
+};
+
+// Capturing over an existing Base replaces it (decision A6); a first Capture asks nothing.
+export function captureConfirm(status) {
+  if (!status?.hasBase) return null;
+  const source = status.sourceDifficulty || "another difficulty";
+  return {
+    title: "Replace the Shared Base?",
+    body: `The current Base (${plural(status.baseMomentCount ?? 0, "moment")} from ${source}) is replaced by this difficulty's hitsounds.`,
+    confirmLabel: "Capture",
+    danger: true,
+  };
+}
+
+// True when there is nothing to ask or the mapper said yes; a missing confirm answers no.
+export async function askFirst(confirm, request) {
+  if (!request) return true;
+  return (await confirm?.(request)) === true;
+}
+
+export async function confirmCaptureFirst({ invoke, confirm, status = null }) {
+  const current = status ?? (await invoke("shared_base_action", { action: { kind: "status" } }));
+  return askFirst(confirm, captureConfirm(current));
+}

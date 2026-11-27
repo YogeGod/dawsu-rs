@@ -1125,6 +1125,32 @@ try {
     expect(written.length && !other.length, `at 3500 ms: ${now.join(", ")}; Save wrote: ${mixFiles.join(", ") || "nothing"}`);
     return now.join(", ");
   });
+  // The Base lives in this run's own data folder (LOCALAPPDATA is the profile), never in the map copy.
+  await step("Shared Base: capture shows the moment count, Apply all asks first", async () => {
+    const siblings = readdirSync(mapFolder).filter(name => /\.osu$/i.test(name) && name !== basename(mapCopy));
+    expect(siblings.length, "the map copy's folder has no other .osu, so Apply all would have nothing to write");
+    const strip = page().locator(".base-diff-strip");
+    await strip.waitFor({ state: "visible", timeout: 6000 });
+    await strip.getByRole("button", { name: "Capture", exact: true }).click();
+    const count = await until(() => Number(document.querySelector(".base-diff-strip .bds-count")?.textContent) || null,
+      null, "the Base tab shows no moment count after Capture", 8000);
+    const before = new Map(siblings.map(name => [name, readFileSync(join(mapFolder, name))]));
+    await strip.getByRole("button", { name: "Apply all", exact: true }).click();
+    await dialogShown("Apply Shared Base to all difficulties?");
+    const body = await read(() => document.getElementById("dialog-body").innerText);
+    expect(body.includes("Ctrl+Z does not undo this"), `the question does not warn about undo: ${body}`);
+    await dialogButton("Cancel").click();
+    await dialogClosed();
+    await sleep(500);
+    const changed = siblings.filter(name => !readFileSync(join(mapFolder, name)).equals(before.get(name)));
+    expect(!changed.length, `Cancel still wrote: ${changed.join(", ")}`);
+    // Later steps start without a Shared Base.
+    await read(() => window.__TAURI__.core.invoke("shared_base_action", { action: { kind: "clear" } }));
+    await read(() => window.dawsuUi.bridge.bumpSharedBaseRev());
+    await until(() => !document.querySelector(".base-diff-strip .bds-count"),
+      null, "the Base tab did not clear after sharedBaseRev bump", 6000);
+    return `Base tab shows ${count} moments; ${siblings.length} other .osu files unchanged`;
+  });
   await step("Path 1: Custom samples only opens with 0 lanes, plain list, Browser open, and adds a custom lane safely", async () => {
     const extWav = join(profile, "path1-custom-kick.wav");
     const samples = 4410;

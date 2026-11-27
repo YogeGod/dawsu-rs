@@ -1,6 +1,7 @@
 import {
-  actions, hasOpenModal, modals, onlyModalOpen, openModal, registerAction, registerTimelineTheme, showToast,
+  actions, callAction, hasOpenModal, modals, onlyModalOpen, openModal, registerAction, registerTimelineTheme, showToast,
 } from "../lib/registry.js";
+import { confirmCaptureFirst } from "../lib/sharedBase.js";
 // Main editor runtime entry point: composes the modular editor subsystems, wires top-level
 // controls, keyboard and Tauri listeners, and registers runtime actions on the bridge registry.
 import { attachBrowser } from "./browser.js";
@@ -381,6 +382,9 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   Object.assign(ctx, { clampSnapInput, popoverAction, startScreenAction, statusBarAction });
 
   const notifyToast = toast => (env !== globalThis ? env.window?.showToast?.(toast) : showToast(toast));
+  // Tells BaseDiffStrip to reload its Shared Base status.
+  const bumpSharedBaseRev = () => (env !== globalThis ? env.bumpSharedBaseRev?.() : callAction("bumpSharedBaseRev"));
+  let capturingSharedBase = false;
   const otherModalOpen = () =>
     Boolean(env.window?.dawsuPreferencesOpen || env.window?.dawsuModalOpen || env.window?.dawsuCommandPaletteOpen);
   // Keysounds mode owns the keyboard like a modal, except for its plain tool keys (keysoundsToolKey).
@@ -423,13 +427,21 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       return;
     }
     if (value === "__capture_shared_base__") {
+      const map = state.scene.path;
+      if (!map || state.view?.busy || capturingSharedBase) return;
+      capturingSharedBase = true;
       try {
+        if (!(await confirmCaptureFirst({ invoke, confirm: ctx.confirm }))) return;
+        if (state.scene?.path !== map || state.view?.busy) return;
         await invoke("shared_base_action", { action: { kind: "capture" } });
+        bumpSharedBaseRev();
         notifyToast({ tone: "success", title: "Shared Base captured", body: "Captured hitsounds from this difficulty as the mapset's Shared Base." });
         if (env !== globalThis) env.window?.openSharedBaseModal?.();
         else openModal("openSharedBase");
       } catch (error) {
         notifyToast({ tone: "error", title: "Could not capture Shared Base", body: String(error) });
+      } finally {
+        capturingSharedBase = false;
       }
       return;
     }

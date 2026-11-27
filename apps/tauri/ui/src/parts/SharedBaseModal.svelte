@@ -3,9 +3,15 @@
   import { act, bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
   import {
+    CLEAR_BASE_CONFIRM,
     DEFAULT_LENIENCY_MS,
     MAX_LENIENCY_MS,
+    RESET_OVERRIDES_CONFIRM,
+    applyAllConfirm,
     applyArgs,
+    applyToast,
+    askFirst,
+    confirmCaptureFirst,
     formatApplyAllSummary,
     formatApplySummary,
     formatStatusLine,
@@ -63,6 +69,8 @@
       (bridge.scene?.path ? String(bridge.scene.path).split(/[\\/]/).pop() : null)
   );
 
+  const confirm = request => bridge.callAction("confirm", request);
+
   async function refreshAll() {
     const [nextStatus, nextTabs] = await Promise.all([
       invoke("shared_base_action", { action: { kind: "status" } }),
@@ -116,6 +124,7 @@
     try {
       const next = await invoke("shared_base_action", { action: { kind: "set_enabled", enabled } });
       if (next) status = next;
+      bridge.bumpSharedBaseRev();
       notice = enabled
         ? "Shared Base is on for this mapset. Edits on this difficulty are tracked as overrides."
         : "Shared Base is off for this mapset.";
@@ -132,8 +141,10 @@
     error = "";
     notice = "";
     try {
+      if (!(await confirmCaptureFirst({ invoke, confirm }))) return;
       const next = await invoke("shared_base_action", { action: { kind: "capture" } });
       if (next) status = next;
+      bridge.bumpSharedBaseRev();
       await refreshAll();
       notice = `Captured ${next?.baseMomentCount ?? 0} moments as the mapset Shared Base.`;
     } catch (err) {
@@ -155,6 +166,8 @@
       if (result?.status) status = result.status;
       notice = formatApplySummary(result);
       await act(null);
+      bridge.showToast(applyToast(false, result));
+      bridge.bumpSharedBaseRev();
       await refreshAll();
     } catch (err) {
       error = String(err);
@@ -169,6 +182,8 @@
     error = "";
     notice = "";
     try {
+      const others = (bridge.scene?.difficulties?.length ?? 1) - 1;
+      if (!(await askFirst(confirm, applyAllConfirm(others)))) return;
       const result = await invoke("shared_base_action", {
         action: { kind: "apply_all", ...applyArgs({ leniencyMs, overwriteOverrides }) },
       });
@@ -178,6 +193,8 @@
         error = result.failedDiffs.join(" | ");
       }
       await act(null);
+      bridge.showToast(applyToast(true, result));
+      bridge.bumpSharedBaseRev();
       await refreshAll();
     } catch (err) {
       error = String(err);
@@ -192,8 +209,10 @@
     error = "";
     notice = "";
     try {
+      if (!(await askFirst(confirm, RESET_OVERRIDES_CONFIRM))) return;
       const next = await invoke("shared_base_action", { action: { kind: "clear_overrides" } });
       if (next) status = next;
+      bridge.bumpSharedBaseRev();
       notice = "Cleared per-difficulty overrides for this difficulty.";
     } catch (err) {
       error = String(err);
@@ -208,8 +227,10 @@
     error = "";
     notice = "";
     try {
+      if (!(await askFirst(confirm, CLEAR_BASE_CONFIRM))) return;
       const next = await invoke("shared_base_action", { action: { kind: "clear" } });
       if (next) status = next;
+      bridge.bumpSharedBaseRev();
       await refreshAll();
       notice = "Cleared Shared Base for this mapset.";
     } catch (err) {
@@ -258,6 +279,7 @@
     error = "";
     try {
       rules = (await invoke("shared_base_action", { action: { kind: "add_rule", diffFile: activeDiffFile, rule } })) ?? [];
+      bridge.bumpSharedBaseRev();
       await refreshAll();
       notice = "Saved per-difficulty lane rule.";
     } catch (err) {
@@ -273,6 +295,7 @@
     error = "";
     try {
       rules = (await invoke("shared_base_action", { action: { kind: "remove_rule", diffFile: activeDiffFile, index } })) ?? [];
+      bridge.bumpSharedBaseRev();
       await refreshAll();
     } catch (err) {
       error = String(err);
@@ -310,6 +333,7 @@
         },
       });
       envelopePoints = saved?.points ?? [];
+      bridge.bumpSharedBaseRev();
       notice = envelopePoints.length
         ? `Saved volume curve (${envelopePoints.length} points, green-line only).`
         : "Cleared volume curve.";
@@ -389,6 +413,7 @@
   function closeModal() {
     if (busy) return;
     open = false;
+    bridge.bumpSharedBaseRev();
   }
 
   // A confirm opened above this modal takes the Escape for itself.
