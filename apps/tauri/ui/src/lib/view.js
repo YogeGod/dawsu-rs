@@ -61,6 +61,7 @@ export function sameUiView(a, b) {
     (a.autoCheckUpdates !== false) === (b.autoCheckUpdates !== false) &&
     !!a.stepPadsMode === !!b.stepPadsMode &&
     !!a.reloadOsuAfterSave === !!b.reloadOsuAfterSave &&
+    (a.autosaveIntervalSecs ?? 30) === (b.autosaveIntervalSecs ?? 30) &&
     !!a.isLazerExternalEdit === !!b.isLazerExternalEdit &&
     !!a.isPracticeMapset === !!b.isPracticeMapset &&
     (a.keyPreset || "") === (b.keyPreset || "") &&

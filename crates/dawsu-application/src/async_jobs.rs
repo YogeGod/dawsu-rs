@@ -883,6 +883,7 @@ Version: Normal
         assert!(!prefs.setup_checklist_dismissed);
         assert!(!prefs.practice_tried);
         assert_eq!(prefs.preview_skin, None);
+        assert_eq!(prefs.autosave_interval_secs, 30, "a missing field is the 30 s default, not Off");
 
         let mut app = Application::headless();
         let mut custom = BTreeMap::new();
@@ -900,6 +901,10 @@ Version: Normal
         app.set_setup_checklist_dismissed(true);
         app.set_practice_tried(true);
         app.set_preview_skin(Some("classic".into()));
+        app.set_autosave_interval_secs(999);
+        assert_eq!(app.preferences().autosave_interval_secs, 120);
+        app.set_autosave_interval_secs(5);
+        assert_eq!(app.preferences().autosave_interval_secs, 15);
 
         let roundtrip: Preferences =
             serde_json::from_str(&serde_json::to_string(app.preferences()).unwrap()).unwrap();
@@ -909,6 +914,7 @@ Version: Normal
         assert!(roundtrip.setup_checklist_dismissed);
         assert!(roundtrip.practice_tried);
         assert_eq!(roundtrip.preview_skin.as_deref(), Some("classic"));
+        assert_eq!(roundtrip.autosave_interval_secs, 15);
     }
 
     #[test]
@@ -944,6 +950,7 @@ Version: Normal
             app.set_setup_checklist_dismissed(true)
         );
         assert_token_bumps!("set_practice_tried", app.set_practice_tried(true));
+        assert_token_bumps!("set_autosave_interval_secs", app.set_autosave_interval_secs(15));
         assert_token_bumps!(
             "set_preview_skin",
             app.set_preview_skin(Some("default".into()))

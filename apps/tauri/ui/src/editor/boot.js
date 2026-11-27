@@ -341,6 +341,8 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
         return ctx.act({ kind: "open", path: arg });
       case "restoreRecovery":
         return ctx.act({ kind: "restore_recovery", id: arg });
+      case "discardRecovery":
+        return ctx.act({ kind: "discard_recovery", id: arg });
     }
   }
 

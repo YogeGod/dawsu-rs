@@ -3,6 +3,7 @@ use dawsu_test_support::Scratch;
 use std::time::{Duration, Instant};
 
 mod async_song_decode;
+mod autosave;
 mod drum_vst_routing;
 mod greenline_cleanup;
 mod live_reload_and_paint;

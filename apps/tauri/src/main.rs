@@ -30,7 +30,7 @@ use std::{
 use tauri::{Emitter, Manager};
 
 #[cfg(feature = "recovery-smoke")]
-const RECOVERY_SMOKE_DATA: &str = "DAWSU_RECOVERY_SMOKE_DATA";
+pub(crate) const RECOVERY_SMOKE_DATA: &str = "DAWSU_RECOVERY_SMOKE_DATA";
 
 pub(crate) enum Request {
     /// Scene wanted, the action, `fresh` (the screen lacks the static map data), and `tick_rev`
@@ -131,7 +131,8 @@ fn guard<T>(
     }
     // A faulted worker only answers status and close requests. Recovery reads its
     // owned checkpoint without using the editor state touched by the panic.
-    catch_unwind(AssertUnwindSafe(|| operation(app))).map_err(|_| {
+    // The page shows this fault, so the panic hook shows no native dialog of its own.
+    catch_unwind(AssertUnwindSafe(|| crash::guarded(|| operation(app)))).map_err(|_| {
         let message = match app.write_recovery_copy() {
             Ok(Some(copy)) => format!(
                 "Saved a recovery copy for {} [{}]. Reopen dawsu! to restore it.",
@@ -140,6 +141,7 @@ fn guard<T>(
             Ok(None) => "No difficulty was open when the editor stopped.".into(),
             Err(error) => format!("Could not save a recovery copy. {error}"),
         };
+        let message = format!("{message} Crash report: {}", crash::crash_log_path().display());
         *fault = Some(message.clone());
         message
     })

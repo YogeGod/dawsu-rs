@@ -12,12 +12,62 @@ use std::{
     fs::{self, File},
     io::{BufReader, ErrorKind},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc, mpsc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const VERSION: u32 = 1;
 static NEXT_COPY: AtomicU64 = AtomicU64::new(0);
+
+/// Seconds between timed recovery copies of a dirty difficulty, unless the mapper picks another.
+pub const DEFAULT_AUTOSAVE_INTERVAL_SECS: u32 = 30;
+/// The intervals Preferences offers; `0` is Off.
+pub const AUTOSAVE_INTERVAL_CHOICES: [u32; 5] = [0, 15, 30, 60, 120];
+
+/// Snaps a stored or sent interval to an offered choice: `0` stays Off, any other value never
+/// writes more often than every 15 s.
+pub fn normalize_autosave_interval_secs(secs: u32) -> u32 {
+    match secs {
+        0 => 0,
+        1..=22 => 15,
+        23..=45 => 30,
+        46..=90 => 60,
+        _ => 120,
+    }
+}
+
+/// Whether a timed recovery copy is due: never when Off, at once after a quiet period.
+pub fn autosave_due(last: Option<Instant>, now: Instant, interval_secs: u32) -> bool {
+    if interval_secs == 0 {
+        return false;
+    }
+    last.is_none_or(|last| {
+        now.saturating_duration_since(last) >= Duration::from_secs(u64::from(interval_secs))
+    })
+}
+
+/// What a recovery copy holds: the edit, the pending files and the HS mode it was taken at.
+pub(super) type AutosaveKey = (u64, u64, bool);
+
+/// A timed recovery copy being written on its own thread.
+pub(super) struct AutosaveJob {
+    pub(super) cancel: Arc<AtomicBool>,
+    pub(super) rx: mpsc::Receiver<Result<RecoveryOffer, String>>,
+    pub(super) handle: Option<std::thread::JoinHandle<()>>,
+    pub(super) generation: u64,
+    /// The checkpoint state the writer was handed.
+    pub(super) key: AutosaveKey,
+}
+
+/// Removes a pending recovery copy; one already gone is fine.
+pub(super) fn remove_copy(root: &Path, id: &str) {
+    if let Ok(path) = pending_path(root, id) {
+        let _ = fs::remove_file(path);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryOffer {
@@ -27,6 +77,7 @@ pub struct RecoveryOffer {
     pub created_ms: u64,
 }
 
+#[derive(Clone)]
 pub(super) struct Checkpoint {
     revision: u64,
     pending_revision: u64,
@@ -35,7 +86,8 @@ pub(super) struct Checkpoint {
     source: PathBuf,
     digest: String,
     files: Vec<String>,
-    last_save: Option<LastSave>,
+    // Shared, so the copy handed to the autosave writer never copies the original bytes.
+    last_save: Option<Arc<LastSave>>,
     working: WorkingSnapshot,
     pending: Vec<crate::pending::PendingSample>,
 }
@@ -73,6 +125,7 @@ struct CheckpointDataRef<'a> {
     pending: &'a [crate::pending::PendingSample],
 }
 
+#[derive(Clone)]
 struct WorkingSnapshot {
     hits: Hitsounds,
     row_order: Vec<SampleIdentity>,
@@ -235,12 +288,12 @@ impl Checkpoint {
     pub(super) fn after_save(document: &Document, hits: &Hitsounds, drawn: &Hitsounds, hs_mode: bool) -> Self {
         let mut checkpoint = Self::new(document);
         let original = document.compile_base.original_bytes();
-        checkpoint.last_save = Some(LastSave {
+        checkpoint.last_save = Some(Arc::new(LastSave {
             original: (original != document.file.original_bytes()).then(|| original.to_vec()),
             hits: WorkingHits::capture(hits),
             hs_mode,
             drawn: (drawn != hits).then(|| WorkingHits::capture(drawn)),
-        });
+        }));
         checkpoint
     }
 
@@ -261,7 +314,20 @@ impl Checkpoint {
         }
     }
 
+    pub(super) fn autosave_key(&self) -> AutosaveKey {
+        (self.revision, self.pending_revision, self.working.hs_mode)
+    }
+
     pub(super) fn write(&self, root: &Path) -> Result<RecoveryOffer, String> {
+        self.write_with(root, || Ok(()))
+    }
+
+    /// As [`Self::write`]; `before_create` runs right before the file is created and can stop it.
+    pub(super) fn write_with(
+        &self,
+        root: &Path,
+        before_create: impl FnOnce() -> Result<(), String>,
+    ) -> Result<RecoveryOffer, String> {
         let created_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?
@@ -277,7 +343,7 @@ impl Checkpoint {
             source: &self.source,
             digest: &self.digest,
             files: &self.files,
-            last_save: self.last_save.as_ref(),
+            last_save: self.last_save.as_deref(),
             working: self.working.to_working(),
             pending: &self.pending,
         };
@@ -294,6 +360,7 @@ impl Checkpoint {
         let directory = root.join("recovery");
         fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
         let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
+        before_create()?;
         safe_write::create(&directory.join(&record.offer.id), &bytes)
             .map_err(|error| error.to_string())?;
         Ok(record.offer)
@@ -451,11 +518,11 @@ impl RecoveryCopy {
     pub(super) fn verify_source(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
         if path != self.source() {
             return Err(
-                "The difficulty has moved. Put it back at its original path and retry.".into(),
+                "The difficulty has moved. Put it back at its original path and retry. Use Discard to remove this card.".into(),
             );
         }
         if sha256_hex(bytes) != self.checkpoint.digest {
-            return Err("The difficulty changed on disk. The recovery copy was kept.".into());
+            return Err("The difficulty changed on disk. The recovery copy was kept. Use Discard to remove this card.".into());
         }
         Ok(())
     }
@@ -508,7 +575,7 @@ impl RecoveryCopy {
     }
 
     pub(super) fn resume(self, checkpoint: &mut Checkpoint) -> String {
-        checkpoint.last_save = self.checkpoint.last_save;
+        checkpoint.last_save = self.checkpoint.last_save.map(Arc::new);
         self.offer.id
     }
 }
@@ -638,15 +705,28 @@ pub(super) fn mapset_copies(data_root: &Path, mapset: &Path) -> Result<Vec<Recov
     let Ok(entries) = fs::read_dir(data_root.join("recovery")) else { return Ok(Vec::new()) };
     let same = |folder: &Path| folder == mapset
         || folder.canonicalize().ok().zip(mapset.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+    let paths = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_str().is_some_and(valid_id))
+        .map(|entry| entry.path());
     let mut out = Vec::new();
-    for entry in entries.filter_map(Result::ok) {
-        if !entry.file_name().to_str().is_some_and(valid_id) {
-            continue;
-        }
-        let copy = read_copy(&entry.path())
-            .map_err(|_| format!("The recovery copy {} could not be read.", entry.path().display()))?;
+    for copy in read_listed_copies(paths)? {
         if copy.source().parent().is_some_and(same) {
             out.push(copy);
+        }
+    }
+    Ok(out)
+}
+
+/// Reads listed copies. One removed since the listing, as a timed copy is after its successor is
+/// written, is skipped; any other read failure is an error that names the copy.
+fn read_listed_copies(paths: impl Iterator<Item = PathBuf>) -> Result<Vec<RecoveryCopy>, String> {
+    let mut out = Vec::new();
+    for path in paths {
+        match read_copy(&path) {
+            Ok(copy) => out.push(copy),
+            Err(_) if fs::symlink_metadata(&path).is_err_and(|error| error.kind() == ErrorKind::NotFound) => {}
+            Err(_) => return Err(format!("The recovery copy {} could not be read.", path.display())),
         }
     }
     Ok(out)
@@ -788,6 +868,75 @@ mod tests {
         let offer = after_save.write(&data_root).unwrap();
         let written = fs::read(pending_path(&data_root, &offer.id).unwrap()).unwrap();
         assert_eq!(written, eager_record_bytes(&document, &after_save, &offer));
+    }
+
+    #[test]
+    fn autosave_is_due_only_after_the_configured_non_zero_interval() {
+        let start = std::time::Instant::now();
+        let after = |secs: u64| start + std::time::Duration::from_secs(secs);
+        assert!(autosave_due(None, start, 30), "the first write after a quiet period is due at once");
+        assert!(!autosave_due(None, start, 0), "Off never writes");
+        assert!(!autosave_due(Some(start), after(10_000), 0));
+        for interval in [15_u32, 30, 60, 120] {
+            assert!(!autosave_due(Some(start), after(u64::from(interval) - 1), interval), "{interval} s");
+            assert!(autosave_due(Some(start), after(u64::from(interval)), interval), "{interval} s");
+        }
+        // A clock that reads earlier than the last write is never due.
+        assert!(!autosave_due(Some(after(5)), start, 15));
+        assert_eq!(DEFAULT_AUTOSAVE_INTERVAL_SECS, 30);
+        assert_eq!(AUTOSAVE_INTERVAL_CHOICES, [0, 15, 30, 60, 120]);
+    }
+
+    #[test]
+    fn autosave_interval_normalizes_to_the_nearest_choice_and_keeps_off() {
+        let cases = [
+            (0, 0), (1, 15), (5, 15), (15, 15), (22, 15), (23, 30), (30, 30), (45, 30),
+            (46, 60), (60, 60), (90, 60), (91, 120), (120, 120), (999, 120), (u32::MAX, 120),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_autosave_interval_secs(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn autosave_key_changes_with_edits_pending_files_and_hs_mode_only() {
+        let scratch = Scratch::new("autosave-key");
+        let mapset = scratch.path("mapset");
+        let data_root = scratch.path("data");
+        fs::create_dir_all(&mapset).unwrap();
+        let osu_path = mapset.join("map.osu");
+        fs::write(&osu_path, TEST_OSU).unwrap();
+        let mut document = Document::read(&osu_path).unwrap();
+        document.pending = Pending::for_mapset(&data_root, &mapset);
+        let mut checkpoint = Checkpoint::new(&document);
+        let key = checkpoint.autosave_key();
+        checkpoint.refresh(&document);
+        assert_eq!(checkpoint.autosave_key(), key, "unchanged state keeps the key");
+
+        document.composer.apply("Volume", |hits| hits.set_volume(MomentId(0), 40));
+        checkpoint.refresh(&document);
+        let edited = checkpoint.autosave_key();
+        assert_ne!(edited, key);
+
+        document.pending.add("kick.wav", b"RIFFkick").unwrap();
+        checkpoint.refresh(&document);
+        let pending = checkpoint.autosave_key();
+        assert_ne!(pending, edited);
+
+        document.hs_mode = !document.hs_mode;
+        checkpoint.refresh(&document);
+        assert_ne!(checkpoint.autosave_key(), pending);
+    }
+
+    #[test]
+    fn listed_copies_skip_a_removed_file_but_not_an_unreadable_one() {
+        let scratch = Scratch::new("autosave-listed-copies");
+        let gone = scratch.path("gone.json");
+        assert!(read_listed_copies([gone.clone()].into_iter()).unwrap().is_empty());
+        let broken = scratch.path("broken.json");
+        fs::write(&broken, b"not json").unwrap();
+        let error = read_listed_copies([gone, broken].into_iter()).err().unwrap();
+        assert!(error.contains("broken.json"), "{error}");
     }
 
     #[test]

@@ -141,7 +141,10 @@ pub use export_settings::{ExportCombination, ExportSettings};
 pub use mixes::MixFormat;
 pub use original_snapshot::SnapshotPreview;
 pub use project::{HsStarterMode, LaneLayout};
-pub use recovery::RecoveryOffer;
+pub use recovery::{
+    AUTOSAVE_INTERVAL_CHOICES, DEFAULT_AUTOSAVE_INTERVAL_SECS, RecoveryOffer, autosave_due,
+    normalize_autosave_interval_secs,
+};
 pub use sample_checks::{FixedWav, SampleHealthIssue, SampleHealthReport};
 pub use sound_sets::{LibrarySet, PlacementView, SaveSetError, SetUpdatePrompt, SoundSetLibrary};
 pub use app_playback::{MusicalSample, MusicalTimingSnapshot};
@@ -248,6 +251,9 @@ pub struct Preferences {
     /// Optional osu! skin override id/path used by the native Map Preview.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_skin: Option<String>,
+    /// Seconds between timed recovery copies of a dirty difficulty; `0` is Off (default `30`).
+    #[serde(default = "default_autosave_interval_secs")]
+    pub autosave_interval_secs: u32,
 }
 
 /// Colour scheme preset and optional per-token HSB overrides stored in preferences.
@@ -277,6 +283,9 @@ fn default_true() -> bool {
 }
 fn default_ui_scale_pct() -> u16 {
     100
+}
+fn default_autosave_interval_secs() -> u32 {
+    DEFAULT_AUTOSAVE_INTERVAL_SECS
 }
 
 fn system_audio_backend(backend: &OutputBackend) -> bool {
@@ -341,6 +350,7 @@ impl Default for Preferences {
             setup_checklist_dismissed: false,
             practice_tried: false,
             preview_skin: None,
+            autosave_interval_secs: DEFAULT_AUTOSAVE_INTERVAL_SECS,
         }
     }
 }
@@ -580,6 +590,16 @@ pub struct Application {
     data_root: PathBuf,
     checkpoint: Option<recovery::Checkpoint>,
     restored_recovery: Option<String>,
+    /// The timed recovery copy being written, at most one at a time.
+    autosave_job: Option<recovery::AutosaveJob>,
+    /// This session's timed recovery copy on disk.
+    autosave_id: Option<String>,
+    autosaved_key: Option<recovery::AutosaveKey>,
+    autosave_last: Option<std::time::Instant>,
+    autosave_generation: u64,
+    autosave_error_logged: bool,
+    #[cfg(test)]
+    autosave_write_hold: Option<Arc<AtomicBool>>,
     /// Open-time questions about placements on an older version of a library set (M9).
     sound_set_prompts: Vec<sound_sets::SetUpdatePrompt>,
     /// The open-time check waits for the library index's background read.
@@ -637,6 +657,8 @@ impl Application {
         let (mut preferences, first_launch) = preferences::load(&file, legacy.as_deref());
         preferences::detect_songs_folder_if_empty(&mut preferences);
         preferences.master_gain = preferences.master_gain.clamp(0.2, 1.0);
+        preferences.autosave_interval_secs =
+            normalize_autosave_interval_secs(preferences.autosave_interval_secs);
         let output = open_preferred_audio(&preferences, preferences.audio_buffer_ms);
         let (audio, error) = match output {
             Ok(engine) => (Some(engine), None),
@@ -798,6 +820,14 @@ impl Application {
             base_layer_track: None,
             checkpoint: None,
             restored_recovery: None,
+            autosave_job: None,
+            autosave_id: None,
+            autosaved_key: None,
+            autosave_last: None,
+            autosave_generation: 0,
+            autosave_error_logged: false,
+            #[cfg(test)]
+            autosave_write_hold: None,
             sound_set_prompts: Vec::new(),
             sound_set_check_pending: false,
             opens: 0,
@@ -916,6 +946,7 @@ impl Application {
             || self.node_graph.is_running()
             || self.stem_separation.is_running()
             || self.async_jobs.is_active()
+            || self.autosave_job.is_some()
     }
 
     pub fn keymap(&self) -> &KeyMap {
@@ -1060,6 +1091,19 @@ impl Application {
         }
         self.preferences.ui_scale_pct = clamped;
         self.save_preferences();
+    }
+    /// Sets how often a dirty difficulty gets a timed recovery copy, snapped to an offered
+    /// choice. The next poll uses it; Off also removes this session's timed copy.
+    pub fn set_autosave_interval_secs(&mut self, secs: u32) {
+        let secs = normalize_autosave_interval_secs(secs);
+        if self.preferences.autosave_interval_secs == secs {
+            return;
+        }
+        self.preferences.autosave_interval_secs = secs;
+        self.save_preferences();
+        if secs == 0 {
+            self.drop_autosave();
+        }
     }
     pub fn set_color_scheme(&mut self, scheme: Option<ColorSchemePreference>) {
         if self.preferences.color_scheme == scheme {

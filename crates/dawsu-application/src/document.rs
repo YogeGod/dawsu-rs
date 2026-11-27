@@ -83,7 +83,7 @@ impl Document {
         let canonical = path.canonicalize().map_err(|e| {
             if recovery.is_some() && e.kind() == std::io::ErrorKind::NotFound {
                 format!(
-                    "The difficulty is missing or moved. Put it back at {} and retry.",
+                    "The difficulty is missing or moved. Put it back at {} and retry. Use Discard to remove this card.",
                     path.display()
                 )
             } else {

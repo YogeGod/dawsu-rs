@@ -644,3 +644,49 @@ fn open_practice_mapset_respects_first_launch_and_works_from_cold_start_and_park
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn autosave_interval_action_snaps_the_value_and_the_view_shows_it() {
+    let mut app = Application::headless();
+    assert_eq!(snapshot(&app, false)["autosaveIntervalSecs"], 30);
+    let set = |app: &mut Application, secs: u32| {
+        serde_json::from_value::<Action>(serde_json::json!({ "kind": "autosave_interval", "secs": secs }))
+            .unwrap()
+            .run(app);
+    };
+    set(&mut app, 999);
+    assert_eq!(app.preferences().autosave_interval_secs, 120);
+    assert_eq!(snapshot(&app, false)["autosaveIntervalSecs"], 120);
+    set(&mut app, 0);
+    assert_eq!(snapshot(&app, false)["autosaveIntervalSecs"], 0);
+}
+
+#[test]
+fn discard_recovery_action_removes_the_start_screen_card() {
+    let fixture = Fixture::new("discard-recovery");
+    let map = fixture.0.join("copy.osu");
+    fs::write(&map, include_bytes!("../../../../crates/dawsu-application/tests/project-fixture.osu")).unwrap();
+    let data = fixture.0.join("app-data");
+    let mut editor = Application::with_data_root(data.clone());
+    editor.clear_error();
+    open(&mut editor, &map);
+    editor.command("selectAll");
+    editor.selection_volume(63, false);
+    let copy = editor.write_recovery_copy().unwrap().unwrap();
+    drop(editor);
+
+    let mut app = Application::with_data_root(data.clone());
+    app.clear_error();
+    let offers = |app: &Application| snapshot(app, true)["recovery"]["offers"].as_array().map_or(0, Vec::len);
+    assert_eq!(offers(&app), 1);
+    serde_json::from_value::<Action>(serde_json::json!({ "kind": "discard_recovery", "id": "../x.json" }))
+        .unwrap()
+        .run(&mut app);
+    assert!(app.take_error().is_some(), "a bad id is refused");
+    serde_json::from_value::<Action>(serde_json::json!({ "kind": "discard_recovery", "id": copy.id }))
+        .unwrap()
+        .run(&mut app);
+    assert_eq!(app.error(), None);
+    assert_eq!(offers(&app), 0);
+    assert!(data.join("recovery/archive").join(&copy.id).is_file());
+}

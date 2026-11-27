@@ -348,6 +348,8 @@ aside section > :last-child { margin-bottom:0; }
 .home-action svg{color:var(--hi)}
 .home-drop{display:grid;justify-items:center;gap:8px;width:100%;padding:28px 16px;border:1.5px dashed #454545;border-radius:8px;color:#c4c4c4}
 #home #recovery{width:100%;text-align:left}
+.recovery-entry{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.recovery-actions{display:flex;gap:6px;flex:none}
 .home-recent{width:100%;text-align:left}
 .home-recent h2{margin:8px 0 0;padding:0 12px 8px;border-bottom:1px solid #383838;font-size:13px;font-weight:600}
 #home #recent{display:grid;gap:0;margin-top:4px}
