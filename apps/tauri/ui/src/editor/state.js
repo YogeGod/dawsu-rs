@@ -20,6 +20,7 @@ export function createState() {
     markedRange: null,
     drawStrokePreview: null,
     pendingDrawHits: [],
+    drawHitSeq: 0,
 
     browserMap: "",
     browserFolder: "",
