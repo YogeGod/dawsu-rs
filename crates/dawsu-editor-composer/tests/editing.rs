@@ -868,4 +868,10 @@ fn volume_for_selected_hits_edits_only_selected_hits_with_floor_and_bounds_safet
     assert!(single.volume_for_selected_hits(55, false));
     assert_eq!(single.hitsounds().moments()[0].volume(), 55);
     assert!(!single.hitsounds().moments()[0].has_hit_volume_overrides());
+
+    // Extreme relative volume deltas saturate instead of overflowing.
+    assert!(single.volume_for_selected_hits(i32::MAX, true));
+    assert_eq!(single.hitsounds().moments()[0].volume(), 100);
+    assert!(single.volume_for_selected_hits(i32::MIN, true));
+    assert_eq!(single.hitsounds().moments()[0].volume(), 5);
 }

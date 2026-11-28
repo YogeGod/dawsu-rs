@@ -380,6 +380,7 @@ impl Composer {
                 for (lane, gain) in gains {
                     hits.set_hit_volume(id, &lane, gain);
                 }
+                crate::collapse_uniform_moment_volume(hits, id);
             }
         });
         true

@@ -140,6 +140,13 @@ impl Captured {
         Self::read_with_hs(hits, root, pending, defaults, mixed, None)
     }
 
+    /// Native `.osu` encodes any uniform-volume moment cleanly regardless of `moment.volume()`,
+    /// so gain recovery is only needed when hits in the same moment play at differing volumes.
+    fn has_differing_hit_volumes(moment: &dawsu_hitsounding::Moment) -> bool {
+        let mut vols = moment.hits().map(|lane| moment.hit_volume(lane));
+        vols.next().is_some_and(|first| vols.any(|v| v != first))
+    }
+
     pub(super) fn read_with_hs(
         hits: &Hitsounds,
         root: &Path,
@@ -159,7 +166,7 @@ impl Captured {
                     .map(|line| (*line, None))
             });
             let Some(location) = loc else { continue };
-            if moment.has_hit_volume_overrides() || placed.contains(&i) && mixed.contains(&location) {
+            if Self::has_differing_hit_volumes(moment) || placed.contains(&i) && mixed.contains(&location) {
                 voices.insert(location, (moment.volume(), assets.voices(hits, moment)?));
             }
         }
