@@ -249,7 +249,8 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     createHsDiffFromCurrent: () => run(async () => {
       try {
         const created = await invoke("create_hitsound_diff_from_current");
-        if (created) await act({ kind: "open", path: created });
+        // Inside run(): update, never act (act queues another run() behind this one and deadlocks).
+        if (created) await update({ kind: "open", path: created });
       } catch (error) {
         notifyToast({ tone: "error", title: "Could not create [Hitsounds] diff", body: String(error) });
       }

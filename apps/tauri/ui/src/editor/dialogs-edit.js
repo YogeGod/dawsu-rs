@@ -178,7 +178,8 @@ export function attachEditDialogs(ctx) {
     return ctx.run(async () => {
       try {
         const path = await invoke("open_from_osu");
-        if (path) await ctx.act({ kind: "open", path });
+        // Inside run(): update, never act (act queues another run() behind this one and deadlocks).
+        if (path) await ctx.update({ kind: "open", path });
       } catch (reason) {
         env.window?.showToast?.({
           tone: "warning",
