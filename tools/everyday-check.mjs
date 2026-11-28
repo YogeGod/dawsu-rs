@@ -841,6 +841,20 @@ try {
     });
   }
 
+  await step("The Mixer shows every strip whole, names included", async () => {
+    await page().locator("button", { hasText: /^Mixer$/ }).first().click();
+    const cut = await until(() => {
+      const strips = document.querySelector(".mixer .strips");
+      const labels = [...document.querySelectorAll(".mixer .strip .label")];
+      if (!strips || !labels.length) return null;
+      const box = strips.getBoundingClientRect();
+      return labels.filter(label => { const b = label.getBoundingClientRect(); return b.bottom > box.bottom + 0.5 || b.height < 18; })
+        .map(label => label.textContent.trim());
+    }, null, "the Mixer did not show its strips", 5000);
+    await page().locator("button", { hasText: /^Volume$/ }).first().click();
+    expect(cut.length === 0, `strip names cut off at the panel's edge: ${cut.join(", ")}`);
+  });
+
   await step("Open and close Preferences (View settings…)", async () => {
     await fromMenu("View", "View settings…");
     await dialogShown("View");
