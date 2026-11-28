@@ -51,6 +51,8 @@
     if (ms === null) return;
     typing = false;
     act({ kind: "seek", ms });
+    // The timeline pages to the new time, so the jump lands where you can see it.
+    bridge.callAction("revealTime", ms);
   }
   const toggle = name => toggles(bridge.latestView) && send(name);
 

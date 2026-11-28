@@ -343,3 +343,8 @@ test("the readout's time is a button that offers to type a time to go to", () =>
   assert.doesNotMatch(time, /\sdisabled/);
   assert.match(buttons(shown(null, null)).find(tag => /class="time\b/.test(tag)), /\sdisabled/, "no map, no seeking");
 });
+
+test("Go to time pages the timeline to the new time after seeking", () => {
+  const source = readFileSync(new URL("../src/parts/TransportBar.svelte", import.meta.url), "utf8");
+  assert.match(source, /act\(\{ kind: "seek", ms \}\);\s*(\/\/[^\n]*\n\s*)?bridge\.callAction\("revealTime", ms\);/);
+});
