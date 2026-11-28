@@ -225,9 +225,7 @@
     margin: 0;
     font: 12px var(--font-ui);
     color: var(--editor-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
   }
   .body {
     display: flex;

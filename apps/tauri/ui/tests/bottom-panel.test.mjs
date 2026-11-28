@@ -268,3 +268,12 @@ test("mixer strips fill the panel's height and their faders give way, so every s
   assert.match(strip, /\.strip :global\(\.fader\)\s*\{[^}]*flex:\s*1 1 150px;[^}]*min-height:\s*\d+px;/);
   assert.match(strip, /\.label\s*\{[^}]*flex:\s*none;/, "the name never shrinks");
 });
+
+test("the Mixer's Master output wraps the device name instead of cutting it off", async () => {
+  // "Speakers (Realtek(R) Audio)" showed as "Speakers (Realtek(R) Aud...".
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/Mixer.svelte", import.meta.url), "utf8").split("<style>")[1];
+  const rule = css.match(/\.device\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.doesNotMatch(rule, /nowrap|ellipsis/);
+  assert.match(rule, /overflow-wrap:\s*anywhere;/);
+});
