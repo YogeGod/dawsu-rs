@@ -540,9 +540,15 @@ fn resolve_instrument_zones(
     let mut out = Vec::new();
     let mut global = ZoneAccum::default();
     for bag_idx in bag_start..bag_end {
-        let g_start = ibags[bag_idx].min(igens.len());
+        let Some(&raw_start) = ibags.get(bag_idx) else {
+            break;
+        };
+        let g_start = raw_start.min(igens.len());
         let g_end = ibags.get(bag_idx + 1).copied().unwrap_or(igens.len()).min(igens.len());
-        let slice = &igens[g_start..g_end];
+        // Malformed banks can list a bag starting after it ends: skip it, never as a global zone.
+        let Some(slice) = igens.get(g_start..g_end) else {
+            continue;
+        };
         let sample_id = slice.iter().rev().find(|g| g.oper == GEN_SAMPLE_ID).map(|g| usize::from(g.amount));
         if sample_id.is_none() && bag_idx == bag_start {
             for &g in slice {
@@ -589,9 +595,15 @@ fn resolve_preset_zones(
     let mut out = Vec::new();
     let mut global = ZoneAccum::default();
     for bag_idx in bag_start..bag_end {
-        let g_start = pbags[bag_idx].min(pgens.len());
+        let Some(&raw_start) = pbags.get(bag_idx) else {
+            break;
+        };
+        let g_start = raw_start.min(pgens.len());
         let g_end = pbags.get(bag_idx + 1).copied().unwrap_or(pgens.len()).min(pgens.len());
-        let slice = &pgens[g_start..g_end];
+        // Malformed banks can list a bag starting after it ends: skip it, never as a global zone.
+        let Some(slice) = pgens.get(g_start..g_end) else {
+            continue;
+        };
         let inst_id = slice.iter().rev().find(|g| g.oper == GEN_INSTRUMENT).map(|g| usize::from(g.amount));
         if inst_id.is_none() && bag_idx == bag_start {
             for &g in slice {
@@ -661,6 +673,12 @@ mod tests {
     }
 
     fn build_minimal_sf2() -> Vec<u8> {
+        build_sf2(&[0, 1], &[0], &[0, 2], &[(GEN_KEY_RANGE, u16::from_le_bytes([36, 84])), (GEN_SAMPLE_ID, 0)])
+    }
+
+    /// One preset over one instrument over one sample. `pbag_gens` / `ibag_gens` list each bag's
+    /// first generator index, terminal bag included; `pgen_insts` / `igens` exclude the terminal generator.
+    fn build_sf2(pbag_gens: &[u16], pgen_insts: &[u16], ibag_gens: &[u16], igens: &[(u16, u16)]) -> Vec<u8> {
         // 4800 frames of 440 Hz 16-bit PCM sine at 48 kHz.
         let mut smpl = Vec::with_capacity(4800 * 2);
         for i in 0..4800 {
@@ -680,18 +698,20 @@ mod tests {
         phdr.extend_from_slice(&fixed_str("EOP", 20));
         phdr.extend_from_slice(&0u16.to_le_bytes());
         phdr.extend_from_slice(&0u16.to_le_bytes());
-        phdr.extend_from_slice(&1u16.to_le_bytes());
+        phdr.extend_from_slice(&(pbag_gens.len() as u16 - 1).to_le_bytes());
         phdr.extend_from_slice(&[0u8; 12]);
 
         let mut pbag = Vec::new();
-        pbag.extend_from_slice(&0u16.to_le_bytes());
-        pbag.extend_from_slice(&0u16.to_le_bytes());
-        pbag.extend_from_slice(&1u16.to_le_bytes());
-        pbag.extend_from_slice(&0u16.to_le_bytes());
+        for &g in pbag_gens {
+            pbag.extend_from_slice(&g.to_le_bytes());
+            pbag.extend_from_slice(&0u16.to_le_bytes());
+        }
 
         let mut pgen = Vec::new();
-        pgen.extend_from_slice(&GEN_INSTRUMENT.to_le_bytes());
-        pgen.extend_from_slice(&0u16.to_le_bytes());
+        for &inst_id in pgen_insts {
+            pgen.extend_from_slice(&GEN_INSTRUMENT.to_le_bytes());
+            pgen.extend_from_slice(&inst_id.to_le_bytes());
+        }
         pgen.extend_from_slice(&0u16.to_le_bytes());
         pgen.extend_from_slice(&0u16.to_le_bytes());
 
@@ -700,21 +720,19 @@ mod tests {
         inst.extend_from_slice(&fixed_str("PianoInst", 20));
         inst.extend_from_slice(&0u16.to_le_bytes());
         inst.extend_from_slice(&fixed_str("EOI", 20));
-        inst.extend_from_slice(&1u16.to_le_bytes());
+        inst.extend_from_slice(&(ibag_gens.len() as u16 - 1).to_le_bytes());
 
         let mut ibag = Vec::new();
-        ibag.extend_from_slice(&0u16.to_le_bytes());
-        ibag.extend_from_slice(&0u16.to_le_bytes());
-        ibag.extend_from_slice(&2u16.to_le_bytes());
-        ibag.extend_from_slice(&0u16.to_le_bytes());
+        for &g in ibag_gens {
+            ibag.extend_from_slice(&g.to_le_bytes());
+            ibag.extend_from_slice(&0u16.to_le_bytes());
+        }
 
         let mut igen = Vec::new();
-        // keyRange 36..84
-        igen.extend_from_slice(&GEN_KEY_RANGE.to_le_bytes());
-        igen.extend_from_slice(&u16::from_le_bytes([36, 84]).to_le_bytes());
-        // sampleID 0
-        igen.extend_from_slice(&GEN_SAMPLE_ID.to_le_bytes());
-        igen.extend_from_slice(&0u16.to_le_bytes());
+        for &(oper, amount) in igens {
+            igen.extend_from_slice(&oper.to_le_bytes());
+            igen.extend_from_slice(&amount.to_le_bytes());
+        }
         igen.extend_from_slice(&0u16.to_le_bytes());
         igen.extend_from_slice(&0u16.to_le_bytes());
 
@@ -781,5 +799,43 @@ mod tests {
         let peak = audio.samples.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
         assert!(peak > 0.1 && peak <= 1.0, "unexpected peak {peak}");
         assert!(audio.samples.iter().all(|s| s.is_finite()));
+    }
+
+    const KEYS_36_84: (u16, u16) = (GEN_KEY_RANGE, u16::from_le_bytes([36, 84]));
+    const KEYS_85_96: (u16, u16) = (GEN_KEY_RANGE, u16::from_le_bytes([85, 96]));
+    const SAMPLE_0: (u16, u16) = (GEN_SAMPLE_ID, 0);
+
+    #[test]
+    fn reversed_or_out_of_range_bags_fail_cleanly_instead_of_panicking() {
+        let igens = [KEYS_36_84, SAMPLE_0];
+        // Instrument bag starts after it ends (2 > 0), or past the generator list.
+        for ibag_gens in [[2u16, 0], [99, 1]] {
+            let err = Sf2Instrument::from_bytes(&build_sf2(&[0, 1], &[0], &ibag_gens, &igens), "x").unwrap_err();
+            assert!(err.contains("no playable presets"), "ibag {ibag_gens:?}: {err}");
+        }
+        // Preset bag starts after it ends (1 > 0), or past the generator list.
+        for pbag_gens in [[1u16, 0], [99, 0]] {
+            let err = Sf2Instrument::from_bytes(&build_sf2(&pbag_gens, &[0], &[0, 2], &igens), "x").unwrap_err();
+            assert!(err.contains("no playable presets"), "pbag {pbag_gens:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn reversed_instrument_bag_is_skipped_and_valid_zone_survives() {
+        // Bag 0 is reversed (4 > 2) and must not become a global zone; bag 1 covers generators 2..4.
+        let igens = [KEYS_36_84, SAMPLE_0, KEYS_85_96, SAMPLE_0];
+        let sf2 = Sf2Instrument::from_bytes(&build_sf2(&[0, 1], &[0], &[4, 2, 4], &igens), "x").unwrap();
+        assert_eq!(sf2.presets.len(), 1);
+        assert_eq!(sf2.presets[0].zones.len(), 1);
+        assert_eq!((sf2.presets[0].zones[0].lokey, sf2.presets[0].zones[0].hikey), (85, 96));
+    }
+
+    #[test]
+    fn reversed_preset_bag_is_skipped_and_valid_zone_survives() {
+        // Bag 0 is reversed (2 > 1); bag 1 covers generator 1 (instrument 0).
+        let sf2 = Sf2Instrument::from_bytes(&build_sf2(&[2, 1, 2], &[0, 0], &[0, 2], &[KEYS_36_84, SAMPLE_0]), "x").unwrap();
+        assert_eq!(sf2.presets.len(), 1);
+        assert_eq!(sf2.presets[0].zones.len(), 1);
+        assert_eq!((sf2.presets[0].zones[0].lokey, sf2.presets[0].zones[0].hikey), (36, 84));
     }
 }
