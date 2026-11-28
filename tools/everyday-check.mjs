@@ -1254,16 +1254,38 @@ try {
     expect(objects.some(line => line.split(",")[2] === String(drawn)), `the saved .osu has no hit object at ${drawn} ms`);
 
     // Reopened from disk (another difficulty first, so it really loads again), the hit sits on a
-    // lane named after the file Save wrote.
-    await read(async ([other, path]) => {
-      await window.__TAURI__.core.invoke("editor_view", { scene: true, action: { kind: "open", path: other } });
+    // lane named after the file Save wrote. Wait for each open to finish: request_open drops
+    // calls while busy, and window.scene still holds the pre-reopen hit until the UI syncs.
+    const beforeReopenKey = await read(() => window.scene.previewKey);
+    await read(async path => {
       await window.__TAURI__.core.invoke("editor_view", { scene: true, action: { kind: "open", path } });
-    }, [mapCopy, path1.created]);
+    }, mapCopy);
+    await until(
+      ([path, key]) => Boolean(window.scene?.path) && window.scene.path.toLowerCase() !== path.toLowerCase() &&
+        window.scene.previewKey !== key && !window.view.busy,
+      [path1.created, beforeReopenKey],
+      "switching away from Path 1 diff before reopening did not finish",
+      15000,
+    );
+    const otherKey = await read(() => window.scene.previewKey);
+    await read(async path => {
+      await window.__TAURI__.core.invoke("editor_view", { scene: true, action: { kind: "open", path } });
+    }, path1.created);
+    await until(
+      ([path, key]) => window.scene?.path?.toLowerCase() === path.toLowerCase() &&
+        window.scene.previewKey !== key && !window.view.busy,
+      [path1.created, otherKey],
+      "Path 1 diff did not reopen from disk",
+      15000,
+    );
     // A file lane keeps the extension in its name (a set-sound-index lane does not).
     const expected = `${drawn} ms ${copies[0]}`;
-    await until(hit => window.scene.moments.flatMap(([time, , , list]) =>
-      list.map(([row]) => `${time} ms ${window.scene.lanes[row]?.name}`)).includes(hit), expected,
-      `reopened, no "${expected}" hit`, 15000);
+    const visibleHits = await read(() => {
+      const visible = new Set(window.scene.laneOrder ?? []);
+      return window.scene.moments.flatMap(([time, , , list]) =>
+        list.filter(([row]) => visible.has(row)).map(([row]) => `${time} ms ${window.scene.lanes[row]?.name}`));
+    });
+    expect(visibleHits.includes(expected), `reopened, no "${expected}" hit (visible: ${visibleHits.join(", ") || "none"})`);
     return `hit at ${drawn} ms → ${copies[0]} written and played by the .osu`;
   });
 
