@@ -120,8 +120,9 @@
   gap: 4px;
   font-size: 11px;
 }
+/* Wide enough for "Selected lanes" and its arrow beside a label. */
 .insp-row select {
-  max-width: 92px;
+  max-width: 122px;
   min-height: 24px;
   padding: 0 4px;
 }
@@ -303,15 +304,20 @@
 }
 /* Bookmarks: + beside the fold header, then v3's rows (dot, label, time). History uses the same rows. */
 .insp-titled {
-  position: relative;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid rgba(200, 220, 255, 0.08);
+}
+.insp-titled .insp-title {
+  flex: 1;
+  min-width: 0;
 }
 .insp-titled .insp-head {
-  padding-right: 32px;
+  border-bottom: 0;
 }
 .insp-add {
-  position: absolute;
-  right: 4px;
-  bottom: 3px;
+  flex: none;
+  margin-right: 4px;
   display: grid;
   place-items: center;
   width: 24px;
@@ -477,9 +483,6 @@
   flex: 1;
   min-width: 0;
   width: auto;
-}
-.insp-titled .insp-title-floating {
-  padding-right: 28px;
 }
 .insp-titled .insp-title-floating .insp-head {
   padding-right: 6px;

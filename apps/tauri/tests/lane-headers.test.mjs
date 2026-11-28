@@ -409,3 +409,34 @@ test("Ctrl+scroll cycling on a lane strip updates colour, coalesces undo, and pe
   assert.equal(layoutSaves.at(-1).persist, true);
   assert.equal(layoutSaves.at(-1).value.lane_colours["Skin|soft-hitclap2"], "#db642b");
 });
+
+test("dawsu!'s own mix samples read as Mix and a short id, not a 64-character hash", async () => {
+  const { evaluate } = await frontend();
+  const hash = "77ca292da2e6545c9adb9540ffd3137bca129272aaaaaaaaaaaaaaaaaaaaaaaa";
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0 };
+    scene = { path: "a.osu", rowHeight: 30, moments: [], lanes: [
+      { key: "m1", name: "dawsu-mix-${hash}.wav", sample: "dawsu-mix-${hash}.wav", colourKey: "File|m1" },
+      { key: "m2", name: "dawsu-mix-a1d4f23b75ecfa80f98e2b96c1f6ef2d5f3a7a71bbbbbbbbbbbbbbbbbbbbbbbb-2.wav", sample: "x.wav", colourKey: "File|m2" },
+      { key: "k", name: "Kick", sample: "kick.wav", colourKey: "File|kick.wav" },
+    ] };
+    renderLanes();
+  `);
+  // Two mixes used to show as the same "dawsu-mix-..." in a lane header.
+  assert.deepEqual(lanes(evaluate).map(row => [row.name, row.tag]), [["Mix 77ca29", "Mix"], ["Mix a1d4f2 · 2", "Mix"], ["Kick", "File"]]);
+  assert.match(lanes(evaluate)[0].title, new RegExp(`dawsu-mix-${hash}\\.wav`), "the full file name stays in the tooltip");
+});
+
+test("a numbered layer row leaves out the icon its main lane already shows, so 'Whistle 2' fits whole", async () => {
+  // In the 250px column a layer row gave its name 61 px and showed "Whis... 2" / "Nor... 2".
+  const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
+  assert.match(part, /\{#if names && !row\.layer\}<span class="tile"/);
+});
+
+test("a lane row's sample-set tag shows whole or not at all, never sliced to 'So|'", async () => {
+  // The slot shrank first and clipped the tag mid-word when the row was hovered in the 250px column.
+  const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
+  const slot = part.match(/\.tag-slot\s*\{([^}]*)\}/)[1];
+  assert.match(slot, /container-type:\s*inline-size;/);
+  assert.match(part, /@container \(width < \d+px\)\s*\{\s*\.lane:is\(:hover, :focus-within\) \.tag\s*\{\s*display:\s*none;/);
+});

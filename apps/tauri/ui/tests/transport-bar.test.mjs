@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import { Bridge, bridge } from "../src/lib/bridge.svelte.js";
 import {
-  clickGate, copyText, osuTimestamp, readout, segmentsDisabled, selectionValue, transportActions,
+  clickGate, copyText, osuTimestamp, parseTime, readout, segmentsDisabled, selectionValue, transportActions,
 } from "../src/lib/transport.js";
 import { samePlayhead, sameUiView } from "../src/lib/view.js";
 import TransportBar from "../src/parts/TransportBar.svelte";
@@ -323,4 +323,28 @@ test("MIDI Record's pressed state is view.tapRecordingArmed, also right after a 
   assert.doesNotMatch(source, /let armed\b|\barmed = /);
   assert.match(source, /const recordArmed = \$derived\(!!view\?\.tapRecordingArmed\);/);
   assert.match(source, /await act\(null, !status\?\.armed && !!status\?\.committedNotes\);/);
+});
+
+test("a typed time goes to that moment: the readout's own form, osu!'s timestamp, or minutes and seconds", () => {
+  assert.equal(parseTime("01:54.385"), 114385);
+  assert.equal(parseTime("01:54:385 (1,2,3) - "), 114385, "a pasted osu! timestamp, combo numbers and all");
+  assert.equal(parseTime(" 1:54 "), 114000);
+  assert.equal(parseTime("114.5"), 114500, "seconds");
+  assert.equal(parseTime("62:05.004"), 3725004);
+  for (const bad of ["", "abc", "1:75", "-3", "01:54:38x", null]) assert.equal(parseTime(bad), null, String(bad));
+});
+
+test("the readout's time is a button that offers to type a time to go to", () => {
+  const html = shown({ busy: false, position: 106052, musicalPosition: "38.2.240 · 190.0 BPM · 7/8 · 1/4" }, map);
+  const time = buttons(html).find(tag => /class="time\b/.test(tag));
+  assert.ok(time, "the time is a button");
+  assert.match(time, /aria-label="Go to time"/);
+  assert.match(time, /title="Click and type a time, such as 01:54:385, to go there"/);
+  assert.doesNotMatch(time, /\sdisabled/);
+  assert.match(buttons(shown(null, null)).find(tag => /class="time\b/.test(tag)), /\sdisabled/, "no map, no seeking");
+});
+
+test("Go to time pages the timeline to the new time after seeking", () => {
+  const source = readFileSync(new URL("../src/parts/TransportBar.svelte", import.meta.url), "utf8");
+  assert.match(source, /act\(\{ kind: "seek", ms \}\);\s*(\/\/[^\n]*\n\s*)?bridge\.callAction\("revealTime", ms\);/);
 });

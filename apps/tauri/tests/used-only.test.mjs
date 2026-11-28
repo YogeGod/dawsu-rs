@@ -12,7 +12,7 @@ async function frontend() {
     return {
       events: new Map(), children: [], dataset: {}, style: { setProperty(key, value) { this[key] = value; } }, classList: { add() {}, toggle() {} },
       addEventListener(name, listener) { this.events.set(name, listener); },
-      setAttribute() {}, focus() {},
+      setAttribute() {}, focus() {}, select() { this.selected = true; },
       append(...children) { this.children.push(...children); },
       prepend() {},
       replaceChildren(...children) { this.children = children; },
@@ -482,4 +482,21 @@ test("Drums view merges entry.rows across headers, mixer strips, lane selection,
   assert.equal(ptr.ms, 1000);
   assert.deepEqual([...ptr.visible_rows], [0, 1]);
   evaluate("drag = null;");
+});
+test("renaming a lane again selects its current name, so typing replaces it instead of appending", async () => {
+  // The field opened with "Snare" and the caret at the end: typing "Accents" gave "SnareAccents".
+  const { evaluate } = await frontend();
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0 };
+    scene = { path: "Layout.osu", rowHeight: 30, moments: [],
+      lanes: [{colourKey:"Skin|normal-hitclap", key:"clap", name:"Clap", group:"normal"}] };
+    modal = (_kind, title, content, buttons) => { globalThis.renameDialog = { title, content, buttons }; };
+    closeModal = () => {};
+    renderLanes();
+    renamedLanes.set("Skin|normal-hitclap", "Snare");
+    renameLane(0);
+  `);
+  const field = evaluate("renameDialog").content[0].children[1];
+  assert.equal(field.value, "Snare");
+  assert.equal(field.selected, true);
 });

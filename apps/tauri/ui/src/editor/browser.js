@@ -1,5 +1,5 @@
 // Sample browser tree, library folder loading, preview requests, and Browser actions.
-import { browserRowLimit, byFolderThenName, nameOf } from "./helpers.js";
+import { browserRowLimit, byFolderThenName, mixSampleName, nameOf } from "./helpers.js";
 import { sampleDragType, sampleDropAction } from "../lib/browser.js";
 
 // How many library folders a search may list on its own before it stops opening new ones.
@@ -26,6 +26,8 @@ export function attachBrowser(ctx) {
     }
     return samples;
   }
+  // Without a laneOrder every lane is shown.
+  const laneHidden = row => row != null && Array.isArray(state.scene.laneOrder) && !state.scene.laneOrder.includes(row);
 
   function requestLibraryFolder(folder) {
     if (!state.browserLibrary || state.browserLibraryFolders.has(folder)) return;
@@ -198,8 +200,9 @@ export function attachBrowser(ctx) {
           return;
         }
         const directory = row === null;
-        const label = nameOf(path);
-        if (!directory && !label.toLowerCase().includes(filter)) continue;
+        const fileName = nameOf(path);
+        const label = directory ? fileName : mixSampleName(fileName) ?? fileName;
+        if (!directory && !fileName.toLowerCase().includes(filter)) continue;
         // Classic's library folders open one at a time, so its search keeps to the folder shown.
         if (directory && filter && !(library && classic) && !hasMatch(path)) continue;
         if (!directory) visibleSamples.add(path);
@@ -224,8 +227,9 @@ export function attachBrowser(ctx) {
           }
           const relPath = item.relPath;
           if (!library && !mapset.has(relPath)) continue;
-          const label = nameOf(relPath);
-          if (filter && !label.toLowerCase().includes(filter)) continue;
+          const fileName = nameOf(relPath);
+          const label = mixSampleName(fileName) ?? fileName;
+          if (filter && !fileName.toLowerCase().includes(filter)) continue;
           visibleSamples.add(relPath);
           rows.push({
             kind: "sample",
@@ -275,7 +279,10 @@ export function attachBrowser(ctx) {
       preview,
       canAssign: !!sampleTarget() && visibleSamples.has(state.browserSample),
       canPick: !!sampleTarget(),
-      canAddAsLane: !state.drag && !state.view.busy && Boolean(state.scene?.path) && visibleSamples.has(state.browserSample),
+      // A mapset sample already has a lane: Add only shows it, so it is offered only while that lane is hidden.
+      canAddAsLane: !state.drag && !state.view.busy && Boolean(state.scene?.path) && visibleSamples.has(state.browserSample)
+        && (library || laneHidden(mapsetSamples().get(state.browserSample))),
+      laneShown: !library && mapsetSamples().has(state.browserSample) && !laneHidden(mapsetSamples().get(state.browserSample)),
       canBrowseAdd: !state.drag && !state.view.busy && Boolean(state.scene?.path),
       // The lane Use replaces, by the name its header shows.
       target: sampleTarget() ? ctx.laneTitle(state.scene.lanes[state.view.activeLane]) : null,

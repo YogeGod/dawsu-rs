@@ -342,3 +342,27 @@ test("sameUiView detects an autosave interval change and treats a missing one as
   assert.equal(sameUiView({ ...base, autosaveIntervalSecs: 30 }, { ...base, autosaveIntervalSecs: 15 }), false);
   assert.equal(sameUiView({ ...base, autosaveIntervalSecs: 0 }, base), false);
 });
+
+test("a Songs card's difficulty chip wraps a long name instead of cutting off what tells two copies apart", async () => {
+  // "... (copy)" and "... (copy) (1)" both showed as "Echoes Through Eternal Time (co...".
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/StartScreen.svelte", import.meta.url), "utf8").split("<style>")[1];
+  const rule = css.match(/\.home-song-diff > span:first-child\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.doesNotMatch(rule, /nowrap|ellipsis/);
+  assert.match(rule, /overflow-wrap:\s*anywhere;/);
+  assert.match(rule, /white-space:\s*normal;/, "the chip is a <button>: it inherits white-space:nowrap");
+});
+
+test("a Songs card's mapset title and mapper wrap instead of cutting off the song name", async () => {
+  // "Arch Echo - SUPER SUDDEN DEATH (Yoge God) (26)" showed as "Arch Echo - SUPER SUDDEN D...".
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/StartScreen.svelte", import.meta.url), "utf8").split("<style>")[1];
+  for (const selector of [".home-song-meta strong", ".home-song-creator"]) {
+    const rule = css.match(new RegExp(selector.replace(/[.]/g, "\\.") + String.raw`\s*\{([^}]*)\}`))?.[1] ?? "";
+    assert.ok(rule, `${selector} rule found`);
+    assert.doesNotMatch(rule, /nowrap|ellipsis/, selector);
+    assert.match(rule, /overflow-wrap:\s*anywhere;/, selector);
+    // Both sit in a <button>, which inherits white-space:nowrap from legacy-chrome.css.
+    assert.match(rule, /white-space:\s*normal;/, selector);
+  }
+});

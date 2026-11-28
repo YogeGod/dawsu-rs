@@ -1,6 +1,6 @@
 import { modals, openModal, registerModal } from "../lib/registry.js";
 // Lane ordering, folders, numbered families, drum view, lane headers, and Mixer strip models.
-import { laneSounds, sampleFolderNames } from "./helpers.js";
+import { laneSounds, mixSampleName, sampleFolderNames } from "./helpers.js";
 import { cycleLaneColour } from "../lib/colour.js";
 import {
   drumRowToMidiNote, previewDrumVst3Hit, readDrumVst3, sceneDrumHitsToNotes, syncDrumVst3Track,
@@ -78,6 +78,8 @@ export function attachLanes(ctx) {
   // A set lane reads as its sound ("Clap", or "Clap 2" for a numbered layer) with the set as a tag;
   // the skin's default sample adds "skin" to the tag. A map file lane keeps its file name and the tag "File".
   function laneSound(lane) {
+    const mix = mixSampleName(lane?.name);
+    if (!lane?.group && mix) return { name: mix, set: "Mix", icon: "file" };
     if (!lane?.group) return { name: lane?.name ?? "", set: "File", icon: "file" };
     const set = lane.group[0].toUpperCase() + lane.group.slice(1) + (lane.index === 0 ? " · skin" : "");
     const [sound, icon] = laneSounds[lane.family?.slice(lane.family.indexOf("-") + 1)] ?? [];
@@ -180,6 +182,8 @@ export function attachLanes(ctx) {
       paragraph("Leave blank to restore the sample name.")],
       [["Cancel", () => ctx.closeModal()], ["Rename", apply, true]]);
     field.focus();
+    // A lane renamed before opens with its name selected: typing replaces it.
+    field.select();
   }
 
   function refreshLanePresentation() {

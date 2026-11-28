@@ -196,11 +196,11 @@
 #editor-header .map-chip {
   position: relative;
   display: flex;
-  flex: 0 1 240px;
+  flex: 0 1 auto;
   align-items: center;
   gap: 8px;
   min-width: 120px;
-  max-width: 260px;
+  max-width: 460px;
   height: 32px;
   padding: 0 10px 0 12px;
   border-radius: 6px;
@@ -215,7 +215,9 @@
   background: var(--dark-panel);
   color: var(--ink-on-dark);
 }
+/* The title gives way; the difficulty you edit stays whole (up to its own max-width). */
 .map-chip-title {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   font-weight: 500;
@@ -224,9 +226,9 @@
 }
 /* The difficulty pill stays neutral: the editor has no star rating to colour it by. */
 .map-chip-version {
-  flex: 0 1 auto;
+  flex: none;
   min-width: 0;
-  max-width: 160px;
+  max-width: 260px;
   height: 22px;
   padding: 0 9px;
   overflow: hidden;

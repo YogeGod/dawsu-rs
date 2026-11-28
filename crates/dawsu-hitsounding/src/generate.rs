@@ -173,6 +173,19 @@ pub fn new_hitsound_diff(source: &OsuFile, source_file_name: &str, version: &str
     NewDiff::Planned { file: empty_copy(source, version), file_name }
 }
 
+/// Makes a new `[Hitsounds]` diff's timing lines name the skin's samples (sample index 0).
+/// HS mode writes values on objects only, and an object cannot ask for index 0 (on an object it
+/// means "as the timing line"), so lines copied with a custom index would leave every skin lane
+/// unwritable. Only the index field changes; time, beat length, set, volume and effects stay.
+pub fn skin_index_timing(file: &mut OsuFile) {
+    for point in file.timing_points() {
+        if point.sample_index().is_some_and(|index| index != 0) {
+            // The line already has the field, so setting it needs no fill and can't be refused.
+            let _ = file.set_field(point.line(), 4, "0");
+        }
+    }
+}
+
 /// The source with no hit objects, the given Version and `BeatmapID:0`.
 fn empty_copy(source: &OsuFile, version: &str) -> OsuFile {
     let mut file = source.clone();

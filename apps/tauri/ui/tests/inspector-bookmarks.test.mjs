@@ -224,3 +224,11 @@ test("History brings its current step into view the nearest way, moving only its
   assert.match(source("InspectorHistory"), /\$effect\(\(\) => \{[^}]*position[^}]*scrollNearest\(/);
   assert.doesNotMatch(source("InspectorHistory"), /scrollIntoView/);
 });
+
+test("Bookmarks' + sits beside the fold header, not on top of it, so the two buttons never overlap", () => {
+  // .insp-add was position:absolute over .insp-head, so clicks near + could land on the fold header.
+  const rule = selector => css.match(new RegExp(selector.replace(/[.]/g, "\.") + String.raw`\s*\{([^}]*)\}`))?.[1] ?? "";
+  assert.match(rule(".insp-titled"), /display:\s*flex;/);
+  assert.match(rule(".insp-titled .insp-title"), /flex:\s*1;/);
+  assert.doesNotMatch(rule(".insp-add"), /position:\s*absolute/);
+});

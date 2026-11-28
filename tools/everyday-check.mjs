@@ -672,6 +672,46 @@ try {
     return `${before} → ${coarse} → 1/4`;
   });
 
+  await step("Go to a typed time from the transport's readout", async () => {
+    await page().getByRole("button", { name: "Go to time" }).click();
+    const field = page().locator("input.time-field");
+    await field.waitFor({ timeout: 3000 });
+    // osu!'s own timestamp form, as a mapper pastes it from a mod post.
+    await field.fill("00:01:500 (1) - ");
+    await field.press("Enter");
+    await until(() => Math.abs(window.view.position - 1500) < 1, null, "the playhead did not go to 00:01.500");
+    expect(await page().locator("input.time-field").count() === 0, "the time field stayed open after Enter");
+    await page().getByRole("button", { name: "Go to time" }).click();
+    await page().keyboard.press("Escape");
+    await until(() => !document.querySelector("input.time-field"), null, "Escape did not close the time field");
+    return "00:01:500 → 1500 ms";
+  });
+
+  await step("Tap record: a pass of A taps lands when playback stops", async () => {
+    if (!silent) return needsSilence();
+    const before = (await hits()).length;
+    await fromMenu("Playback", "Tap record");
+    await until(() => window.view.tapRecordingArmed && document.getElementById("editor-menu").hidden, null,
+      "Tap record did not arm, or the Playback menu stayed open");
+    await page().keyboard.press("Space");
+    await until(() => window.view.playing, null, "Space did not start playback after arming Tap record");
+    await sleep(400);
+    await page().keyboard.press("a");
+    await sleep(350);
+    await page().keyboard.press("a");
+    await sleep(200);
+    await page().keyboard.press("Space");
+    await until(before => window.scene.moments.reduce((n, m) => n + m[3].length, 0) >= before + 1 && !window.view.playing,
+      before, "the taps did not land when playback stopped", 5000);
+    expect(await read(() => window.view.tapRecordingArmed), "Tap record disarmed itself after one pass");
+    await fromMenu("Playback", "Tap record");
+    await until(() => !window.view.tapRecordingArmed, null, "Tap record did not disarm");
+    // Leave the map as it was for the steps after this one.
+    await page().keyboard.press("Control+z");
+    await until(before => window.scene.moments.reduce((n, m) => n + m[3].length, 0) === before, before, "Undo did not take the pass back");
+    return `${before} hits → a pass → undone`;
+  });
+
   await step("Place a hit with a click", async () => {
     if (!silent) return needsSilence();
     // An empty spot on the first lane, on the beat grid, away from the map's objects.
@@ -841,6 +881,20 @@ try {
     });
   }
 
+  await step("The Mixer shows every strip whole, names included", async () => {
+    await page().locator("button", { hasText: /^Mixer$/ }).first().click();
+    const cut = await until(() => {
+      const strips = document.querySelector(".mixer .strips");
+      const labels = [...document.querySelectorAll(".mixer .strip .label")];
+      if (!strips || !labels.length) return null;
+      const box = strips.getBoundingClientRect();
+      return labels.filter(label => { const b = label.getBoundingClientRect(); return b.bottom > box.bottom + 0.5 || b.height < 18; })
+        .map(label => label.textContent.trim());
+    }, null, "the Mixer did not show its strips", 5000);
+    await page().locator("button", { hasText: /^Volume$/ }).first().click();
+    expect(cut.length === 0, `strip names cut off at the panel's edge: ${cut.join(", ")}`);
+  });
+
   await step("Open and close Preferences (View settings…)", async () => {
     await fromMenu("View", "View settings…");
     await dialogShown("View");
@@ -992,6 +1046,14 @@ try {
     if (await read(() => !window.dawsuUi?.bridge?.mapPreview)) await fromMenu("View", "Map preview");
     const popOut = page().getByRole("button", { name: "Open in its own window" });
     await popOut.waitFor({ timeout: 5000 });
+    // The Inspector's own preview must really paint: a 0 px wide canvas once left the panel blank.
+    await until(() => {
+      const canvas = document.querySelector('#inspector-preview-body canvas[aria-label="Map preview at the playhead"]');
+      if (!canvas || canvas.clientWidth < 100 || canvas.clientHeight < 60) return null;
+      const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 3; i < pixels.length; i += 4) if (pixels[i] > 0) return true;
+      return null;
+    }, null, "the Inspector's map preview canvas has no size or painted nothing", 5000);
     await popOut.click();
     const window = await windowOpened("preview.html");
     await page().getByRole("button", { name: "Show it here" }).click();

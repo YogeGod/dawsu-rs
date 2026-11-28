@@ -154,9 +154,7 @@
     border: 1px solid var(--editor-border);
     color: var(--editor-text);
     font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
   .write-details p { margin: 4px 0 0; color: var(--editor-muted); font-size: 12px; }
   .review-summary {

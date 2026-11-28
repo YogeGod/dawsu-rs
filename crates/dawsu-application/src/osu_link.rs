@@ -244,12 +244,37 @@ fn find_osu_window_title() -> Option<String> {
     found
 }
 
+/// A window title is another process's text: never let it name a path outside one set folder.
+#[cfg(windows)]
+fn is_plain_osu_file_name(name: &str) -> bool {
+    name.len() > 4
+        && !name.contains(['/', '\\', ':'])
+        && name.is_char_boundary(name.len() - 4)
+        && name[name.len() - 4..].eq_ignore_ascii_case(".osu")
+}
+
 #[cfg(windows)]
 fn match_window_title_in_songs(title: &str, songs_folder: Option<&Path>) -> Option<PathBuf> {
     // osu! window titles look like: "osu!  - Artist - Title [Difficulty]"
     let rest = title
         .strip_prefix("osu!  - ")
         .or_else(|| title.strip_prefix("osu! - "))?;
+    // The editor's title is the .osu file name itself ("Artist - Title (Creator) [Diff].osu"):
+    // look for that exact file first, since the folder name need not hold the creator.
+    let file_name = rest.trim();
+    if is_plain_osu_file_name(file_name) {
+        for songs in candidate_songs_folders(songs_folder) {
+            let Ok(dirs) = fs::read_dir(&songs) else {
+                continue;
+            };
+            for dir in dirs.flatten() {
+                let candidate = dir.path().join(file_name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
     let bracket_start = rest.rfind('[')?;
     let bracket_end = rest.rfind(']')?;
     if bracket_end <= bracket_start + 1 {
@@ -488,6 +513,10 @@ trait OsuWindowSystem {
     fn bring_forward(&mut self, hwnd: isize) -> bool;
     fn sleep_ms(&mut self, ms: u64);
     fn key(&mut self, vk: u16, up: bool);
+    /// True when `dialog` is a standard dialog box owned by `owner` (osu!'s own prompts).
+    fn is_dialog_of(&mut self, _dialog: isize, _owner: isize) -> bool {
+        false
+    }
 }
 
 /// Holds Ctrl down while alive and releases it on drop, so no exit path (focus loss, panic)
@@ -573,7 +602,13 @@ fn reload_stable_with<S: OsuWindowSystem>(sys: &mut S, id: &SavedMapIdentity) ->
     {
         let ctrl = CtrlGuard::press(sys);
         for _ in 0..10 {
-            if ctrl.0.foreground() != hwnd {
+            let foreground = ctrl.0.foreground();
+            // osu!stable's editor answers Ctrl+L with its own "Revert file to last saved state?"
+            // dialog: that is the prompt the Enter below answers, not lost focus.
+            if foreground != hwnd && ctrl.0.is_dialog_of(foreground, hwnd) {
+                break;
+            }
+            if foreground != hwnd {
                 return reload_result(
                     "focus_blocked",
                     "osu! lost focus during the reload. Switch to osu! and press Ctrl+L to reload.",
@@ -584,7 +619,11 @@ fn reload_stable_with<S: OsuWindowSystem>(sys: &mut S, id: &SavedMapIdentity) ->
         }
     }
     sys.sleep_ms(100);
-    if let Some(refused) = recheck_osu_window(sys, hwnd, id, "Ctrl+L was sent, Enter was not.") {
+    let foreground = sys.foreground();
+    let revert_prompt = foreground != hwnd && sys.is_dialog_of(foreground, hwnd);
+    if !revert_prompt
+        && let Some(refused) = recheck_osu_window(sys, hwnd, id, "Ctrl+L was sent, Enter was not.")
+    {
         return refused;
     }
     sys.key(VK_RETURN, false);
@@ -645,6 +684,8 @@ mod win32 {
         pub fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
         pub fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
         pub fn SendInput(count: u32, inputs: *const WinInput, size: i32) -> u32;
+        pub fn GetWindow(hwnd: isize, cmd: u32) -> isize;
+        pub fn GetClassNameW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
     }
 
     pub fn window_text(hwnd: isize) -> Option<String> {
@@ -700,6 +741,16 @@ impl OsuWindowSystem for Win32Windows {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
 
+    fn is_dialog_of(&mut self, dialog: isize, owner: isize) -> bool {
+        const GW_OWNER: u32 = 4;
+        let mut class = [0u16; 16];
+        let len = unsafe { win32::GetClassNameW(dialog, class.as_mut_ptr(), class.len() as i32) };
+        // "#32770" is the standard dialog box class osu!stable's MessageBox prompts use.
+        len > 0
+            && String::from_utf16_lossy(&class[..len as usize]) == "#32770"
+            && unsafe { win32::GetWindow(dialog, GW_OWNER) } == owner
+    }
+
     fn key(&mut self, vk: u16, up: bool) {
         use std::mem::{ManuallyDrop, size_of};
         const KEYEVENTF_KEYUP: u32 = 0x0002;
@@ -727,6 +778,47 @@ impl OsuWindowSystem for Win32Windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The osu!stable editor titles its window with the .osu file name, creator included:
+    /// "osu!  - Ludicin - Echoes of Memoria (Shinjuko) [Eternal Reflections of Memory].osu".
+    /// The folder ("2217155 Ludicin - Echoes of Memoria") never holds "(Shinjuko)", so matching the
+    /// title's last " - " part against folder names found nothing and Open from osu! failed.
+    #[cfg(windows)]
+    #[test]
+    fn open_from_osu_finds_the_editor_window_s_exact_osu_file_even_when_the_folder_lacks_the_creator() {
+        let songs = std::env::temp_dir().join(format!("dawsu-osu-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&songs);
+        let set = songs.join("2217155 Ludicin - Echoes of Memoria");
+        let decoy = songs.join("2585881 Ludicin - Echoes of Memoria");
+        fs::create_dir_all(&set).unwrap();
+        fs::create_dir_all(&decoy).unwrap();
+        let wanted = set.join("Ludicin - Echoes of Memoria (Shinjuko) [Eternal Reflections of Memory].osu");
+        fs::write(&wanted, "osu file format v14\n").unwrap();
+        fs::write(decoy.join("Ludicin - Echoes of Memoria (Shinjuko) [The Beginning Before The End].osu"), "x").unwrap();
+
+        let found = match_window_title_in_songs(
+            "osu!  - Ludicin - Echoes of Memoria (Shinjuko) [Eternal Reflections of Memory].osu",
+            Some(&songs),
+        );
+        let _ = fs::remove_dir_all(&songs);
+        assert_eq!(found, Some(wanted));
+    }
+
+    /// `set.join("C:x.osu")` drops the set folder on Windows (a drive-relative name replaces the
+    /// base), and "a:x.osu" names a stream of file "a": a title must not reach either.
+    #[cfg(windows)]
+    #[test]
+    fn open_from_osu_takes_only_a_plain_file_name_from_the_window_title() {
+        assert_eq!(
+            Path::new("D:/Songs/set").join("C:x.osu"),
+            Path::new("C:x.osu")
+        );
+        assert!(is_plain_osu_file_name("Artist - Song (Mapper) [Insane].osu"));
+        let refused = ["C:x.osu", "ab:x.osu", "../x.osu", "set\\x.osu", "/x.osu", ".osu", "x.txt"];
+        for name in refused {
+            assert!(!is_plain_osu_file_name(name), "{name}");
+        }
+    }
 
     #[test]
     fn detects_osu_lazer_external_edit_paths_only_for_64_hex_folders_in_temp() {
@@ -850,8 +942,12 @@ mod tests {
         at_first_sleep: Option<(isize, Option<String>)>,
         lose_focus_after_keys: Option<usize>,
         panic_on_l: bool,
+        /// osu!stable's editor answers Ctrl+L with its own "Revert file to last saved state?" dialog.
+        revert_dialog_after_l: bool,
         keys: Vec<(u16, bool)>,
     }
+
+    const OSU_DIALOG: isize = 13;
 
     impl FakeWindows {
         fn with_osu(title: &str) -> Self {
@@ -900,7 +996,25 @@ mod tests {
             if self.lose_focus_after_keys.is_some_and(|n| self.keys.len() >= n) {
                 self.foreground = OTHER;
             }
+            if self.revert_dialog_after_l && vk == VK_L && up {
+                self.foreground = OSU_DIALOG;
+            }
         }
+        fn is_dialog_of(&mut self, dialog: isize, owner: isize) -> bool {
+            self.revert_dialog_after_l && dialog == OSU_DIALOG && owner == OSU
+        }
+    }
+
+    #[test]
+    fn osu_link_reload_answers_the_osu_editor_s_own_revert_dialog_with_enter() {
+        // In osu!stable Ctrl+L opens a separate "Revert file to last saved state?" dialog window.
+        // The reload took that for focus loss and stopped: "Ctrl+L was sent, Enter was not."
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song (Mapper) [Insane].osu");
+        sys.revert_dialog_after_l = true;
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "reloaded_stable", "{}", res.message);
+        assert_eq!(sys.count(VK_RETURN, false), 1);
+        assert_eq!(sys.count(VK_CONTROL, true), 1);
     }
 
     #[test]

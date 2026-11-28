@@ -162,6 +162,30 @@ test("the tree lists map folder samples under Mapset samples, folds folders and 
   assert.equal(calls.length, sent);
 });
 
+test("+ Add as lane is offered only for a mapset sample whose lane is hidden, never as a silent no-op", async () => {
+  const { context, calls, model, action, settle } = await browserPage();
+  // Kick's lane is on screen, Snare's is hidden (laneOrder lists the shown rows).
+  runInContext("scene = {...scene, laneOrder: [0, 2]}; renderSampleBrowser();", context);
+  action("pick", "kick.wav");
+  await settle();
+  assert.equal(model().canAddAsLane, false, "a lane already on screen has nothing to add");
+  assert.equal(model().laneShown, true, "the disabled button says why");
+  const sent = calls.length;
+  action("addLane");
+  await settle();
+  assert.equal(calls.length, sent);
+  action("toggle", "percussion");
+  action("pick", "percussion/snare.wav");
+  await settle();
+  assert.equal(model().canAddAsLane, true);
+  action("addLane");
+  await settle();
+  assert.deepEqual(calls.at(-1), { kind: "show_lane", target: { map: "copy.osu", lane: "clap" } });
+  // Without a laneOrder every lane is shown.
+  runInContext("scene = {...scene, laneOrder: undefined}; renderSampleBrowser();", context);
+  assert.equal(model().canAddAsLane, false);
+});
+
 test("ArrowDown and ArrowUp play the next sample row; Enter uses it in the active lane", async () => {
   const { calls, invoked, model, action, settle } = await browserPage();
   action("toggle", "percussion");
@@ -498,4 +522,18 @@ test("tag chips and Find similar sound query sample_library_action, cap rows at 
   await flushMicrotasks();
   assert.equal(model().similarTo, null);
   assert.equal(invoked.filter(([cmd]) => cmd === "sample_library_action").length, countBeforeClear);
+});
+
+test("the Browser names dawsu!'s mix samples Mix and a short id, like their lanes, not a cut-off hash", async () => {
+  // After Export the mapset list showed "dawsu-mix-77ca292da2e6545c9adb9540ffd3137bca129272..." cut off.
+  const { context, model, labels } = await browserPage();
+  const hash = "77ca292da2e6545c9adb9540ffd3137bca129272aaaaaaaaaaaaaaaaaaaaaaaa";
+  runInContext(`scene = {path: "copy.osu", lanes: [
+    {key: "m1", sourceKey: "m1", name: "dawsu-mix-${hash}.wav", sample: "dawsu-mix-${hash}.wav"},
+    {key: "m2", sourceKey: "m2", name: "x", sample: "dawsu-mix-a1d4f23b75ecfa80f98e2b96c1f6ef2d5f3a7a71bbbbbbbbbbbbbbbbbbbbbbbb-2.wav"},
+    {key: "kick", sourceKey: "kick", name: "Kick", sample: "kick.wav"},
+  ]};
+  renderPanelLayout();`, context);
+  assert.deepEqual(labels(), ["Mix 77ca29", "Mix a1d4f2 · 2", "kick.wav"]);
+  assert.equal(model().rows[0].title, `dawsu-mix-${hash}.wav`, "the full file name stays in the tooltip");
 });

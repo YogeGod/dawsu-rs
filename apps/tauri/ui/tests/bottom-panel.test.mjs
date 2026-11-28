@@ -259,3 +259,21 @@ test("the ramp key legend fits the room under the tabs: three lines, one line, o
   }
   assert.doesNotMatch(panel(view()), /title="Shift\+drag/, "Hitsounds mode's Volume tab has no ramp keys tooltip");
 });
+
+test("mixer strips fill the panel's height and their faders give way, so every strip's name shows whole", () => {
+  // A fixed 150 px fader made a strip ~282 px tall in a 276 px mixer: the name at the bottom was cut in half.
+  const style = name => readFileSync(new URL(`../src/parts/${name}.svelte`, import.meta.url), "utf8").split("<style>")[1];
+  assert.match(style("Mixer"), /\.strips\s*\{[^}]*align-items:\s*stretch;/);
+  const strip = style("MixerStrip");
+  assert.match(strip, /\.strip :global\(\.fader\)\s*\{[^}]*flex:\s*1 1 150px;[^}]*min-height:\s*\d+px;/);
+  assert.match(strip, /\.label\s*\{[^}]*flex:\s*none;/, "the name never shrinks");
+});
+
+test("the Mixer's Master output wraps the device name instead of cutting it off", async () => {
+  // "Speakers (Realtek(R) Audio)" showed as "Speakers (Realtek(R) Aud...".
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/Mixer.svelte", import.meta.url), "utf8").split("<style>")[1];
+  const rule = css.match(/\.device\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.doesNotMatch(rule, /nowrap|ellipsis/);
+  assert.match(rule, /overflow-wrap:\s*anywhere;/);
+});

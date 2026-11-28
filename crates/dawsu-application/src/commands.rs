@@ -659,6 +659,7 @@ pub fn catalogue() -> CommandCatalog<Application> {
         |app| {
             if app.is_playing() {
                 app.stop();
+                app.commit_tap_take();
             } else {
                 app.seek(0.0);
             }

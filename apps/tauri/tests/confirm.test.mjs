@@ -312,3 +312,51 @@ test("palette Shared Base commands settle the real editor run() queue without de
   await within(app.run("act(null, false)"), "follow-up act");
   assert.equal(app.run("requests"), 0);
 });
+
+test("Open from osu! opens the map osu! has in its editor instead of deadlocking the run() queue", async () => {
+  // openFromOsu awaited ctx.act() inside ctx.run(): act queues a second run() behind the first, so the
+  // open never happened, no error showed, and every later action waited forever.
+  const opened = [];
+  const app = await launch(async (name, args) => {
+    if (name === "open_from_osu") return "F:/osu!/Songs/1 A - B/A - B (C) [D].osu";
+    if (name === "editor_view") {
+      if (args?.action?.kind === "open") opened.push(args.action.path);
+      return { busy: false, hasDocument: opened.length > 0 };
+    }
+    return { busy: false, hasDocument: false };
+  });
+  app.context.window.addEventListener = () => {};
+  const done = app.run("openFromOsu()");
+  await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error("openFromOsu timed out (run queue deadlocked)")), 500))]);
+  assert.deepEqual(opened, ["F:/osu!/Songs/1 A - B/A - B (C) [D].osu"]);
+  assert.equal(app.run("requests"), 0);
+});
+
+test("Create [Hitsounds] from current difficulty opens the new diff instead of deadlocking the run() queue", async () => {
+  const opened = [];
+  const app = await launch(async (name, args) => {
+    if (name === "create_hitsound_diff_from_current") return "F:/Songs/x/A - B (C) [Hitsounds].osu";
+    if (name === "editor_view") {
+      if (args?.action?.kind === "open") opened.push(args.action.path);
+      return { busy: false, hasDocument: true };
+    }
+    return { busy: false, hasDocument: true };
+  });
+  app.context.window.addEventListener = () => {};
+  app.context.window.dawsuUi = { commands: commandList };
+  const { menuCalls } = initMenus(app.context, { ui: app.context.window.dawsuUi });
+  const done = menuCalls.createHsDiffFromCurrent();
+  await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error("createHsDiffFromCurrent timed out (run queue deadlocked)")), 500))]);
+  assert.deepEqual(opened, ["F:/Songs/x/A - B (C) [Hitsounds].osu"]);
+});
+
+test("editor modules raise toasts through notifyToast, never a bare window.showToast the app does not expose", () => {
+  // Production boots with exposeGlobals:false, so env.window.showToast is undefined there: Open from osu!'s
+  // "No open osu! map found" toast was silently dropped. notifyToast falls back to the registry.
+  const dir = new URL("../ui/src/editor/", import.meta.url);
+  for (const file of ["boot.js", "dialogs-edit.js", "ipc.js", "menus.js", "browser.js", "dialogs-copy.js", "modal.js", "timeline.js"]) {
+    const lines = readFileSync(new URL(file, dir), "utf8").split("\n");
+    const bare = lines.filter(line => /showToast\?\.\(/.test(line) && !/const notifyToast\s*=/.test(line));
+    assert.deepEqual(bare, [], `${file} calls showToast directly`);
+  }
+});

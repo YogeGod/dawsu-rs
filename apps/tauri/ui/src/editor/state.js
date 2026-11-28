@@ -117,6 +117,7 @@ export function createState() {
     lastTelemetryAt: 0,
     lastTelemetryStateRev: null,
     telemetryPullPending: false,
+    telemetryPullOwed: false,
     frame: 0,
     playbackFrame: 0,
     playheadAnchor: { position: 0, at: 0, held: false },

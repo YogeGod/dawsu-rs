@@ -198,6 +198,21 @@ test("Follow pages toward an offscreen playhead, including a backward cycle wrap
   assert.equal(evaluate("scene.viewStart"), 480);
 });
 
+test("a jump to a typed time pages the view there, as Follow does, and leaves a visible time alone", async () => {
+  const { calls, evaluate, settle } = await frontend();
+  calls.length = 0;
+  // Already on screen (the view is 1000 ms to 2000 ms): nothing moves.
+  await evaluate("revealTime(1500)");
+  await settle();
+  assert.deepEqual(calls, []);
+  assert.equal(evaluate("scene.viewStart"), 1000);
+  // Far off screen: the view moves so the time sits just inside its left edge, whether or not Follow is on.
+  await evaluate("revealTime(6000)");
+  await settle();
+  assert.equal(evaluate("scene.viewStart"), 5980);
+  assert.deepEqual(calls.pop(), { scene: false, action: { kind: "view", start: 5980, zoom: 1, row_height: 30 } });
+});
+
 test("Centre keeps the playhead in the middle while following, and only while Follow is on", async () => {
   const { calls, evaluate, status, settle } = await frontend();
   let centre = true;

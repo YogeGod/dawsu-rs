@@ -106,6 +106,13 @@ export function nameOf(path) {
   return parts[parts.length - 1];
 }
 
+// dawsu!'s own mixed samples are named by a 64-character hash: "Mix" and its first 6 digits read
+// better, in lane headers and the Browser alike. null for any other file.
+export function mixSampleName(fileName) {
+  const mix = /^dawsu-mix-([0-9a-f]{6})[0-9a-f]*(?:-(\d+))?\.\w+$/i.exec(fileName ?? "");
+  return mix ? "Mix " + mix[1] + (mix[2] ? " · " + mix[2] : "") : null;
+}
+
 export function clock(ms) {
   const rounded = Math.max(Math.round(ms), 0);
   const minutes = Math.floor(rounded / 60000);

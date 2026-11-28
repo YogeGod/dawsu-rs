@@ -751,3 +751,126 @@ test("picking a skin for the map preview reskins the timeline's objects row in t
   const picker = await readFile(new URL("../ui/src/parts/MapPreview.svelte", import.meta.url), "utf8");
   assert.match(picker, /function saveSkin\(next\) \{[^}]*writePreviewSkin\(skinId\);\s*bridge\.callAction\("loadTimelineSkin", skinId\);/);
 });
+
+test("a busy-to-idle telemetry flip that arrives during another request still refreshes the chrome", async () => {
+  // After Ctrl+S, the frame saying "not busy" came while a request was in flight, so its pull was
+  // skipped; the frame had already written busy:false into view, so no later frame saw a change and
+  // Export, the lane M/S and every other document button stayed disabled.
+  let createdChannel = null;
+  let editorViewCount = 0;
+  class FakeChannel { constructor() { this.onmessage = null; createdChannel = this; } }
+  const element = () => ({
+    clientWidth: 200, clientHeight: 80, scrollTop: 0, dataset: {},
+    style: { setProperty() {} }, children: [],
+    addEventListener() {}, append() {}, prepend() {}, setAttribute() {}, replaceChildren() {},
+    matches: () => false, closest: () => null,
+    getContext: () => new Proxy({}, { get: () => () => {} }),
+  });
+  const elements = new Map();
+  const get = id => (elements.has(id) ? elements : elements.set(id, element())).get(id);
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      devicePixelRatio: 1,
+      dawsuUi: { update() {}, lanes() {}, inspector() {}, browser() {}, mixer() {}, menu() {}, viewport() {}, laneOptions() {} },
+      __TAURI__: {
+        core: {
+          Channel: FakeChannel,
+          invoke: async (name) => {
+            if (name !== "editor_view") return {};
+            editorViewCount++;
+            return {
+              busy: editorViewCount === 1, hasDocument: true, playing: false, position: 0, duration: 5000, stateRev: 6, tickRev: 4,
+              scene: { path: "Map.osu", previewKey: 1, viewStart: 0, zoom: 0.2, rowHeight: 30, lanes: [], moments: [], sections: [], difficulties: [] },
+            };
+          },
+        },
+        event: { listen() {} },
+      },
+    },
+    ResizeObserver: class { observe() {} },
+    requestAnimationFrame() {},
+    setInterval() {},
+    performance: { now: () => 1000 },
+    console,
+  });
+  bootEditor(context, { autoStart: true });
+  await context.pending;
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(context.view.busy, true);
+  const pullsBefore = editorViewCount;
+
+  const frame = new ArrayBuffer(64);
+  const dv = new DataView(frame);
+  dv.setUint8(0, 0x01);
+  dv.setUint8(1, 0x04); // has_document, not busy
+  dv.setBigUint64(8, 6n, true);
+  let release;
+  const held = context.run(() => new Promise(resolve => { release = resolve; }));
+  createdChannel.onmessage(frame);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  release();
+  await held;
+  // While stopped, telemetry sends frames only on change: no later frame comes to retry the pull.
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.ok(editorViewCount > pullsBefore, "the skipped busy -> idle pull runs once the request ends");
+  assert.equal(context.view.busy, false);
+});
+
+test("telemetry's busy-to-idle flip makes the next pull a full refresh, not a tick that skips the chrome", async () => {
+  // Telemetry wrote busy:false into view first, so update() and show() saw no busy change, took the
+  // backend's tick answer and returned before re-enabling the document buttons.
+  let createdChannel = null;
+  const requests = [];
+  let busy = true;
+  class FakeChannel { constructor() { this.onmessage = null; createdChannel = this; } }
+  const element = () => ({
+    clientWidth: 200, clientHeight: 80, scrollTop: 0, dataset: {},
+    style: { setProperty() {} }, children: [],
+    addEventListener() {}, append() {}, prepend() {}, setAttribute() {}, replaceChildren() {},
+    matches: () => false, closest: () => null,
+    getContext: () => new Proxy({}, { get: () => () => {} }),
+  });
+  const elements = new Map();
+  const get = id => (elements.has(id) ? elements : elements.set(id, element())).get(id);
+  const scene = { path: "Map.osu", previewKey: 1, viewStart: 0, zoom: 0.2, rowHeight: 30, lanes: [], moments: [], sections: [], difficulties: [] };
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      devicePixelRatio: 1,
+      dawsuUi: { update() {}, lanes() {}, inspector() {}, browser() {}, mixer() {}, menu() {}, viewport() {}, laneOptions() {} },
+      __TAURI__: {
+        core: {
+          Channel: FakeChannel,
+          invoke: async (name, args) => {
+            if (name !== "editor_view") return {};
+            requests.push(args?.scene ?? null);
+            if (args?.scene) return { busy, hasDocument: true, playing: false, position: 0, duration: 5000, stateRev: 6, tickRev: 4, scene };
+            return { tick: true, rev: 4, stateRev: 6, busy, playing: false, position: 0 };
+          },
+        },
+        event: { listen() {} },
+      },
+    },
+    ResizeObserver: class { observe() {} },
+    requestAnimationFrame() {},
+    setInterval() {},
+    performance: { now: () => 1000 },
+    console,
+  });
+  bootEditor(context, { autoStart: true });
+  await context.pending;
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(context.view.busy, true);
+  busy = false;
+  requests.length = 0;
+  const frame = new ArrayBuffer(64);
+  const dv = new DataView(frame);
+  dv.setUint8(0, 0x01);
+  dv.setUint8(1, 0x04); // has_document, not busy
+  dv.setBigUint64(8, 6n, true);
+  createdChannel.onmessage(frame);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.ok(requests.includes(true), `a full view was requested after the flip (requests: ${JSON.stringify(requests)})`);
+  assert.equal(context.view.busy, false);
+});

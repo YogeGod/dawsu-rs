@@ -328,3 +328,12 @@ test("followPointRange includes every active consecutive pair across long object
   }
   assert.deepEqual(activePairsBsearch(NaN), []);
 });
+
+test("the map preview's Skin picker gets a full-width row so a skin name like 'Argon (osu!lazer)' shows whole", async () => {
+  // Label, picker and Browse... shared one 210 px row and the picker showed "Argon (osu!l...".
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/MapPreview.svelte", import.meta.url), "utf8").split("<style>")[1];
+  const rule = selector => css.match(new RegExp(selector.replace(/[.]/g, "\.") + String.raw`\s*\{([^}]*)\}`))?.[1] ?? "";
+  assert.match(rule(".skin-row"), /display:\s*grid;/);
+  assert.match(rule(".skin-select"), /grid-column:\s*1 \/ -1;/);
+});

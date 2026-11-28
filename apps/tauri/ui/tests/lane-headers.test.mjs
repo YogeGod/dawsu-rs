@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
 import { folderShades, laneShades } from "../src/lib/colour.js";
-import { folderChip, laneIcons } from "../src/lib/lanes.js";
+import { folderChip, laneIcons, splitLayerNumber } from "../src/lib/lanes.js";
 import LaneHeaders from "../src/parts/LaneHeaders.svelte";
 
 const folder = (more = {}) => ({ type: "folder", key: "folder:soft", set: "soft", name: "Soft set",
@@ -182,4 +182,26 @@ test("the last row is Add lane, after the lanes, and waits while a job runs", ()
   const iconOnly = buttons(shown([lane()], false)).at(-1);
   assert.equal(iconOnly.text, "");
   assert.match(iconOnly.tag, /title="Add lane"/);
+});
+
+test("a numbered layer keeps its number in sight: only the base name gives way to the ellipsis", () => {
+  assert.deepEqual(splitLayerNumber("Whistle 2"), ["Whistle", " 2"]);
+  assert.deepEqual(splitLayerNumber("Normal 12"), ["Normal", " 12"]);
+  assert.deepEqual(splitLayerNumber("Clap"), ["Clap", ""]);
+  assert.deepEqual(splitLayerNumber("2"), ["2", ""], "a bare number is the whole name");
+  // An indented layer row cut "Whistle 2" to "Whistl…", hiding what tells it from Whistle.
+  const html = shown([lane({ name: "Whistle 2", label: "Whistle 2", layer: true })]);
+  const name = buttons(html).find(item => /class="name\b/.test(item.tag));
+  assert.equal(name.text, "Whistle 2");
+  assert.match(html, /<span class="name-base[^"]*">Whistle<\/span><span class="name-num[^"]*"> 2<\/span>/);
+  const plain = buttons(shown([lane()])).find(item => /class="name\b/.test(item.tag));
+  assert.equal(plain.text, "Clap");
+});
+
+test("the drum map row keeps 'Setup…' in sight; only the kit's name gives way", () => {
+  // "Default osu! kit (12 skin sounds) (Setup…)" lost the clickable word to the ellipsis.
+  bridge.view = { drumView: null };
+  bridge.lanes = { names: true, busy: false, rows: [lane()], drum: true, drumName: "Default osu! kit (12 skin sounds)" };
+  const html = render(LaneHeaders).body;
+  assert.match(html, /<span class="drum-name[^"]*">Default osu! kit \(12 skin sounds\)<\/span><span class="drum-action[^"]*">Setup…<\/span>/);
 });

@@ -831,9 +831,8 @@
     display: block;
     min-width: 0;
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    white-space: normal;
     font-size: 13px;
     font-weight: 650;
     color: #ffffff;
@@ -843,9 +842,8 @@
     display: block;
     min-width: 0;
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    white-space: normal;
     font-size: 11.5px;
     color: rgba(235, 235, 240, 0.84);
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
@@ -863,17 +861,19 @@
     min-height: 23px;
     padding: 2px 8px;
     border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 999px;
+    border-radius: 12px;
     background: rgba(16, 16, 20, 0.78);
     backdrop-filter: blur(6px);
     color: var(--ink-on-dark);
     font-size: 11.5px;
     overflow: hidden;
   }
+  /* A long name wraps: the end is often what tells two difficulties apart ("(copy)", "(copy) (1)"). */
   .home-song-diff > span:first-child {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    text-align: left;
   }
   .home-song-diff:hover:not(:disabled) {
     border-color: var(--editor-accent);

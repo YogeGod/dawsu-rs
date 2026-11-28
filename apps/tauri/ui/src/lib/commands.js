@@ -67,7 +67,8 @@ export const items = [
   { id: "stop", label: "Stop", icon: "Square", command: "stop", run: ["act", { kind: "stop" }] },
   { id: "goToStart", label: "Go to start", icon: "SkipBack", command: "start" },
   { id: "goToEnd", label: "Go to end", icon: "SkipForward", run: ["call", "goToEnd"] },
-  { id: "tapRecord", label: "Tap record (A–L / Numpad 1–9)", run: ["act", { kind: "tap_record_toggle" }], checked: "tapRecordingArmed", enabled: "document" },
+  // Closes the menu: the next keys are Space and A–L, which an open menu would take.
+  { id: "tapRecord", label: "Tap record (A–L / Numpad 1–9)", run: ["act", { kind: "tap_record_toggle" }], checked: "tapRecordingArmed", enabled: "document", close: true },
   { id: "playbackStart", label: "Start playing from", choices: "playbackStart" },
   { id: "returnOnStop", label: "Return on stop", icon: "UndoDot", run: ["toggle", "return_on_stop", "view.returnOnStop", true] },
   { id: "follow", label: "Follow playhead", icon: "LocateFixed", run: ["toggle", "follow", "view.follow", true] },
