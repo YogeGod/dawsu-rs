@@ -197,3 +197,11 @@ test("a numbered layer keeps its number in sight: only the base name gives way t
   const plain = buttons(shown([lane()])).find(item => /class="name\b/.test(item.tag));
   assert.equal(plain.text, "Clap");
 });
+
+test("the drum map row keeps 'Setup…' in sight; only the kit's name gives way", () => {
+  // "Default osu! kit (12 skin sounds) (Setup…)" lost the clickable word to the ellipsis.
+  bridge.view = { drumView: null };
+  bridge.lanes = { names: true, busy: false, rows: [lane()], drum: true, drumName: "Default osu! kit (12 skin sounds)" };
+  const html = render(LaneHeaders).body;
+  assert.match(html, /<span class="drum-name[^"]*">Default osu! kit \(12 skin sounds\)<\/span><span class="drum-action[^"]*">Setup…<\/span>/);
+});

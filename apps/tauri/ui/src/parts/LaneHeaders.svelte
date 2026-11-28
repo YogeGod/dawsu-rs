@@ -114,7 +114,7 @@
     <button type="button" id="drum-map-setup" class="add-lane-row drum-setup-row" class:compact={!names}
       aria-label="Drum map setup" title={headers.drumName ? headers.drumName + " (Presets and Setup)" : "Drum map setup"}
       disabled={headers.busy} onclick={() => bridge.callAction("openDrumMapSetup")}>
-      {#if names}<span>{headers.drumName ? headers.drumName + " (Setup…)" : "Drum map setup…"}</span>{:else}<span>Setup</span>{/if}
+      {#if names && headers.drumName}<span class="drum-name">{headers.drumName}</span><span class="drum-action">Setup…</span>{:else if names}<span>Drum map setup…</span>{:else}<span>Setup</span>{/if}
     </button>
     {#if drumView}
       <!-- One click from the lane column; Drum Map Setup has the same switch and Auto-detect. -->
@@ -378,6 +378,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* The kit's name takes the ellipsis; the word you click stays. */
+  .drum-setup-row .drum-name {
+    min-width: 0;
+  }
+  .drum-setup-row .drum-action {
+    flex: none;
+    color: var(--editor-accent);
   }
   /* The tag gives way before the name: its slot shrinks first and clips it. */
   .tag-slot {
