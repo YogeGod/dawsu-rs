@@ -925,7 +925,9 @@ impl PreparedSave {
                 };
                 let unfinished_record = unfinished_record(needs_recovery_write, promote_unwritten, promote_links);
                 Ok(SaveReport {
-                    file: OsuFile::read(bytes).file,
+                    // Read back keeping line ids: the composer's objects name lines of this file, and a
+                    // fresh read would renumber every line below an inserted green line.
+                    file: self.out.as_written(),
                     problems: Vec::new(),
                     cleaned_greenlines: self.cleaned_greenlines,
                     written: self.written,

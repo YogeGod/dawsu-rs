@@ -361,3 +361,25 @@ fn a_save_with_no_changes_writes_nothing_and_keeps_no_backup() {
     assert_eq!(outcome, SaveOutcome::NothingToSave);
     assert!(!s.path("backups").exists());
 }
+
+// ---- after a save: the written file keeps the ids an editor took from it
+
+#[test]
+fn as_written_reads_back_like_a_fresh_read_but_keeps_line_ids() {
+    let mut file = read("synthetic/custom-samples-and-edges.osu");
+    let objects: Vec<_> = file.hit_objects().iter().map(|o| (o.line(), o.time())).collect();
+    assert!(!objects.is_empty());
+    file.insert_green_line("0,-100,4,2,1,60,0,0");
+    let fresh = OsuFile::read(file.to_bytes()).file;
+    let written = file.as_written();
+    assert_eq!(written.to_bytes(), fresh.to_bytes());
+    assert_eq!(written.original_bytes(), fresh.original_bytes(), "the written bytes are now the original");
+    assert!(written.change_summary().lines.is_empty(), "nothing is left to write");
+    // A fresh read numbers lines by position, so every object below the new green line gets another id.
+    assert_ne!(fresh.hit_objects().iter().map(|o| o.line()).collect::<Vec<_>>(), objects.iter().map(|o| o.0).collect::<Vec<_>>());
+    assert_eq!(written.hit_objects().iter().map(|o| (o.line(), o.time())).collect::<Vec<_>>(), objects);
+    // A line inserted later still gets an id no earlier line has.
+    let mut more = written.clone();
+    let id = more.insert_green_line("1,-100,4,2,1,70,0,0");
+    assert!(written.hit_objects().iter().all(|o| o.line() != id));
+}

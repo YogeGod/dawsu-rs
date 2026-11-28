@@ -621,6 +621,32 @@ fn a_body_volume_left_out_in_normal_mode_keeps_the_head_written_beside_it() {
 }
 
 #[test]
+fn the_objects_row_keeps_every_object_after_a_save_adds_green_lines() {
+    let scratch = Scratch::new("objects-row-after-green-lines");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir(&folder).unwrap();
+    let map = folder.join("a.osu");
+    std::fs::write(&map, SLIDER_MAP).unwrap();
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    open(&mut app, map.clone());
+    let before = presentation::gameplay_overlay(app.document().unwrap());
+    assert!(!before.points.is_empty());
+    app.document.as_mut().unwrap().composer.apply("Head 60", |hits| {
+        let head = hits.moments().iter().position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
+        hits.set_volume(dawsu_hitsounding::MomentId(head), 60);
+    });
+    save_through_summary(&mut app, scratch.path("backups"));
+    let saved = std::fs::read(&map).unwrap();
+    assert!(String::from_utf8_lossy(&saved).contains(",60,0,0\r\n"), "Save wrote a green line above the objects");
+    // The saved file's lines moved down; the composer's objects must still find theirs.
+    assert_eq!(presentation::gameplay_overlay(app.document().unwrap()), before);
+    let doc = app.document().unwrap();
+    assert_eq!(doc.file.original_bytes(), &saved[..], "the document holds what is on disk");
+    assert_eq!(doc.file.to_bytes(), saved);
+}
+
+#[test]
 fn a_recovery_copy_taken_after_a_partial_save_restores() {
     let scratch = Scratch::new("recovery-after-partial-save");
     let (mut app, _map) = open_left_out_fixture(&scratch, true);
