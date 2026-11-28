@@ -520,7 +520,8 @@ function defineSteps(robot, picked) {
     const folded = await rows();
     expect(JSON.stringify(await namedHits()) === JSON.stringify(start), "collapsing changed the hits");
     // The command only folds (nothing in View unfolds): unfold with each family's arrow, as a mapper would.
-    for (const label of open) {
+    // The arrow's label follows its state: "Collapse … layers" while open, "Expand … layers" folded.
+    for (const label of open.map(text => text.replace(/^Collapse\b/, "Expand"))) {
       const arrow = page().locator(`#lanes .lane-disclosure[aria-expanded="false"][aria-label="${label.replace(/"/g, '\\"')}"]`).first();
       if (await arrow.count()) { await arrow.click(); await sleep(80); }
     }
