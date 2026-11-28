@@ -396,6 +396,8 @@ pub(crate) enum Action {
     MomentVolume {
         ms: f64,
         value: i32,
+        #[serde(default)]
+        volume_lanes: Option<Vec<usize>>,
     },
     SetSelectionSampleSet {
         set: String,
@@ -409,6 +411,8 @@ pub(crate) enum Action {
     },
     VolumeScope {
         path: PathBuf,
+        #[serde(default)]
+        mode: Option<String>,
         lanes: Option<Vec<String>>,
     },
     InsertVolume {
@@ -967,8 +971,8 @@ impl Action {
                 }
             }
             Self::Volume { value, relative } => app.selection_volume(value, relative),
-            Self::MomentVolume { ms, value } => {
-                app.set_moment_volume_at(ms, value);
+            Self::MomentVolume { ms, value, volume_lanes } => {
+                app.set_moment_volume_at_scoped(ms, value, volume_lanes.as_deref());
             }
             Self::SetSelectionSampleSet { set } => {
                 let parsed = match set.to_ascii_lowercase().as_str() {
@@ -996,8 +1000,8 @@ impl Action {
             Self::AutoFixProblem { time_ms } => {
                 app.auto_fix_problem(time_ms);
             }
-            Self::VolumeScope { path, lanes } => {
-                if let Err(error) = set_volume_lane_scope(app, &path, lanes) {
+            Self::VolumeScope { path, mode, lanes } => {
+                if let Err(error) = set_volume_lane_scope(app, &path, mode.as_deref(), lanes) {
                     app.set_error(Some(error));
                 }
             }
@@ -1138,15 +1142,36 @@ pub(crate) fn lane_selection_mix(app: &mut Application, target: &SampleTarget, o
     }
 }
 
-pub(crate) fn set_volume_lane_scope(app: &mut Application, path: &Path, lanes: Option<Vec<String>>) -> Result<(), String> {
-    let document = app.document().filter(|document| document.path == path)
+pub(crate) fn set_volume_lane_scope(
+    app: &mut Application,
+    path: &Path,
+    mode: Option<&str>,
+    lanes: Option<Vec<String>>,
+) -> Result<(), String> {
+    let document = app
+        .document()
+        .filter(|document| document.path == path)
         .ok_or("The open difficulty changed. Select the volume lanes again.")?;
     let model = document.composer.hitsounds();
-    let scope = lanes.map(|keys| keys.into_iter().map(|key| {
-        let lane = lane_by_key(app, &key)?;
-        Ok(model.lane_slot(&lane).cloned().unwrap_or(lane))
-    }).collect::<Result<BTreeSet<_>, String>>()).transpose()?;
-    app.set_selection_lane_scope(scope)
+    let resolve = |keys: Vec<String>| -> Result<BTreeSet<_>, String> {
+        keys.into_iter()
+            .map(|key| {
+                let lane = lane_by_key(app, &key)?;
+                Ok(model.lane_slot(&lane).cloned().unwrap_or(lane))
+            })
+            .collect()
+    };
+    let scope = match (mode, lanes) {
+        (Some("hits"), _) => dawsu_application::SelectionVolumeScope::SelectedHits,
+        (Some("all"), _) => dawsu_application::SelectionVolumeScope::AllLanes,
+        (Some("selected"), lanes) => {
+            dawsu_application::SelectionVolumeScope::SelectedLanes(resolve(lanes.unwrap_or_default())?)
+        }
+        (Some(other), _) => return Err(format!("Unknown volume scope mode: {other}")),
+        (None, Some(keys)) => dawsu_application::SelectionVolumeScope::SelectedLanes(resolve(keys)?),
+        (None, None) => dawsu_application::SelectionVolumeScope::AllLanes,
+    };
+    app.set_selection_volume_scope(scope)
 }
 
 pub(crate) fn lane_add_choices(app: &Application, map: &Path) -> Result<Value, String> {

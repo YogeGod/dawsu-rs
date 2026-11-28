@@ -412,7 +412,7 @@ fn a_volume_bar_shows_where_its_hits_play_when_none_plays_at_the_moment_s_own_vo
     Action::Volume { value: 50, relative: false }.run(&mut app);
     let moment = snapshot(&app, true)["scene"]["moments"][0].clone();
     assert_eq!(moment[1], 50, "the bar stands where the only hit plays, not at the moment's own 100");
-    assert_eq!(moment[3], json!([[normal, true, false, 50]]));
+    assert_eq!(moment[3], json!([[normal, true]]));
     assert_eq!(fs::read_to_string(&path).unwrap(), map);
 }
 
@@ -1070,4 +1070,146 @@ fn select_box_selects_only_requested_non_contiguous_visual_rows() {
     .run(&mut app);
     let cleared = snapshot(&app, true)["scene"].clone();
     assert!(cleared["selection"].is_null());
+}
+
+#[test]
+fn per_hit_volumes_work_across_draw_vertical_drag_scopes_reload_and_moment_volume() {
+    use serde_json::json;
+
+    let root = Fixture::new("per-hit-volumes-e2e");
+    let path = root.0.join("Map.osu");
+    let map = "osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,1500,1,0,0:0:0:0:\n";
+    fs::write(&path, map).unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let initial = snapshot(&app, true);
+    assert_eq!(initial["volumeScope"], "hits");
+    let scene_path = initial["scene"]["path"].clone();
+    let lanes = initial["scene"]["lanes"].as_array().unwrap();
+    let normal = lanes.iter().position(|l| l["name"].as_str().unwrap().to_lowercase().contains("hitnormal")).unwrap();
+    let clap = lanes.iter().position(|l| l["name"].as_str().unwrap().to_lowercase().contains("hitclap")).unwrap();
+    let clap_key = lanes[clap]["key"].as_str().unwrap().to_string();
+
+    let ptr = |app: &mut Application, phase: &str, ms: f64, row: usize, y: f64| {
+        Action::Pointer {
+            phase: phase.into(),
+            ms,
+            row: row as i32,
+            x: 0.0,
+            y,
+            value: None,
+            volume_lanes: None,
+            visible_rows: None,
+            button: None,
+            shift: false,
+            ctrl: false,
+            alt: false,
+        }
+        .run(app);
+    };
+    let hit_gain = |moment: &serde_json::Value, row: usize| -> i64 {
+        let base = moment[1].as_i64().unwrap();
+        let entry = moment[3].as_array().unwrap().iter().find(|h| h[0] == row).unwrap();
+        entry.get(3).and_then(|v| v.as_i64()).unwrap_or(base)
+    };
+
+    // 1. Single-click Draw on 1000 ms preserves normal=100, places clap=60, and emits SceneHit.gain.
+    Action::Tool { name: "Draw".into() }.run(&mut app);
+    Action::InsertVolume { value: 60 }.run(&mut app);
+    ptr(&mut app, "down", 1000.0, clap, 200.0);
+    ptr(&mut app, "up", 1000.0, clap, 200.0);
+    let after_click = snapshot(&app, true)["scene"]["moments"].clone();
+    assert_eq!(after_click[0][1], 100);
+    assert_eq!(hit_gain(&after_click[0], normal), 100);
+    assert_eq!(hit_gain(&after_click[0], clap), 60);
+
+    // 2. Vertical drag downward on new 1500 ms clap lowers clap below 80 without shifting normal=100.
+    Action::InsertVolume { value: 80 }.run(&mut app);
+    ptr(&mut app, "down", 1500.0, clap, 200.0);
+    ptr(&mut app, "move", 1500.0, clap, 280.0);
+    ptr(&mut app, "up", 1500.0, clap, 280.0);
+    let after_drag = snapshot(&app, true)["scene"]["moments"].clone();
+    assert_eq!(hit_gain(&after_drag[1], normal), 100);
+    let dragged_clap = hit_gain(&after_drag[1], clap);
+    assert!(dragged_clap < 80, "vertical drag should lower newly drawn clap from 80, got {dragged_clap}");
+
+    // 3. Action::Volume under default "hits" changes only selected hit; unknown mode errors without changing scope.
+    Action::SelectBox { from_ms: 990.0, to_ms: 1010.0, rows: vec![clap], additive: false, active_lane: None }.run(&mut app);
+    Action::Volume { value: 30, relative: false }.run(&mut app);
+    let after_hits_vol = snapshot(&app, true);
+    assert_eq!(hit_gain(&after_hits_vol["scene"]["moments"][0], normal), 100);
+    assert_eq!(hit_gain(&after_hits_vol["scene"]["moments"][0], clap), 30);
+    assert_eq!(hit_gain(&after_hits_vol["scene"]["moments"][1], clap), dragged_clap);
+
+    serde_json::from_value::<Action>(json!({
+        "kind": "volume_scope", "path": scene_path, "mode": "bogus", "lanes": null,
+    }))
+    .unwrap()
+    .run(&mut app);
+    let bad_scope = snapshot(&app, false);
+    assert!(bad_scope["error"].as_str().is_some_and(|e| e.contains("Unknown volume scope mode: bogus")));
+    assert_eq!(bad_scope["volumeScope"], "hits");
+    app.set_error(None);
+
+    // 4. "all" moves moment together keeping gap (100, 30) -> (80, 10); "selected" edits only scoped lanes.
+    serde_json::from_value::<Action>(json!({
+        "kind": "volume_scope", "path": scene_path, "mode": "all", "lanes": null,
+    }))
+    .unwrap()
+    .run(&mut app);
+    assert_eq!(snapshot(&app, false)["volumeScope"], "all");
+    Action::Volume { value: 80, relative: false }.run(&mut app);
+    let after_all = snapshot(&app, true)["scene"]["moments"].clone();
+    assert_eq!(hit_gain(&after_all[0], normal), 80);
+    assert_eq!(hit_gain(&after_all[0], clap), 10);
+
+    serde_json::from_value::<Action>(json!({
+        "kind": "volume_scope", "path": scene_path, "mode": "selected", "lanes": [clap_key],
+    }))
+    .unwrap()
+    .run(&mut app);
+    Action::SelectBox { from_ms: 990.0, to_ms: 1010.0, rows: vec![normal, clap], additive: false, active_lane: None }.run(&mut app);
+    Action::Volume { value: 55, relative: false }.run(&mut app);
+    let after_selected = snapshot(&app, true)["scene"]["moments"].clone();
+    assert_eq!(hit_gain(&after_selected[0], normal), 80);
+    assert_eq!(hit_gain(&after_selected[0], clap), 55);
+
+    // 5. MomentVolume scoped to volume_lanes:[clap] touches only clap; unscoped moves moment keeping gap.
+    serde_json::from_value::<Action>(json!({
+        "kind": "moment_volume", "ms": 1000.0, "value": 45, "volume_lanes": [clap],
+    }))
+    .unwrap()
+    .run(&mut app);
+    let after_scoped_mv = snapshot(&app, true)["scene"]["moments"].clone();
+    assert_eq!(hit_gain(&after_scoped_mv[0], normal), 80);
+    assert_eq!(hit_gain(&after_scoped_mv[0], clap), 45);
+
+    serde_json::from_value::<Action>(json!({
+        "kind": "volume_scope", "path": scene_path, "mode": "hits", "lanes": null,
+    }))
+    .unwrap()
+    .run(&mut app);
+    serde_json::from_value::<Action>(json!({
+        "kind": "moment_volume", "ms": 1000.0, "value": 100,
+    }))
+    .unwrap()
+    .run(&mut app);
+    let after_unscoped_mv = snapshot(&app, true)["scene"]["moments"].clone();
+    assert_eq!(hit_gain(&after_unscoped_mv[0], normal), 100);
+    assert_eq!(hit_gain(&after_unscoped_mv[0], clap), 65);
+
+    // 6. Live reload preserves "all" scope; close + reopen resets to "hits".
+    serde_json::from_value::<Action>(json!({
+        "kind": "volume_scope", "path": scene_path, "mode": "all", "lanes": null,
+    }))
+    .unwrap()
+    .run(&mut app);
+    app.reload_from_disk();
+    wait_for_job(&mut app);
+    assert_eq!(snapshot(&app, false)["volumeScope"], "all");
+
+    app.close_document();
+    open(&mut app, &path);
+    assert_eq!(snapshot(&app, false)["volumeScope"], "hits");
 }

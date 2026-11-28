@@ -105,8 +105,8 @@ test("the Selection model has v3's summary, Start, Volume and On object", async 
     summary: "2 hits selected · Clap (Normal)", start: "00:01.000", volume: "60–80%", object: "2 object moments",
     sliderBody: null,
   });
-  assert.equal(model().scope, "all");
-  assert.equal(model().hint, "Changes all sounds at the selected times.");
+  assert.equal(model().scope, "hits");
+  assert.equal(model().hint, "Changes only the selected hits.");
 
   evaluate(`scene = { ...scene, moments: [[1000, 80, true, [[0, true], [1, true]]]],
     selection: { count: 1, start: 1000, object: "Circle" } };`);
@@ -263,9 +263,17 @@ test("Change volume, -5 and +5, the scope, the slider body and the switches send
     { kind: "audition", on: true },
   ]);
   evaluate(`inspectorAction("scope", "selected");`);
-  assert.deepEqual(await sent(), [{ kind: "volume_scope", path: "Slider.osu", lanes: [] }]);
+  assert.deepEqual(await sent(), [{ kind: "volume_scope", path: "Slider.osu", mode: "selected", lanes: [] }]);
   assert.equal(model().scope, "selected");
   assert.equal(model().hint, "Select lanes to change their volume.");
+  evaluate(`inspectorAction("scope", "all");`);
+  assert.deepEqual(await sent(), [{ kind: "volume_scope", path: "Slider.osu", mode: "all", lanes: null }]);
+  assert.equal(model().scope, "all");
+  assert.equal(model().hint, "Changes all sounds at the selected times.");
+  evaluate(`inspectorAction("scope", "hits");`);
+  assert.deepEqual(await sent(), [{ kind: "volume_scope", path: "Slider.osu", mode: "hits", lanes: null }]);
+  assert.equal(model().scope, "hits");
+  assert.equal(model().hint, "Changes only the selected hits.");
   evaluate(`view.busy = true; inspectorAction("volume", 50, false); inspectorAction("moveStart", "5");`);
   assert.deepEqual(await sent(), [], "nothing is sent while a job runs");
 });

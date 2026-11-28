@@ -1430,3 +1430,89 @@ fn read_only_caligulas_horse_mute_merges_identical_lanes_and_sorts_canonically()
     assert_eq!(off_json["drumView"]["enabled"], false);
     assert_eq!(off_json["scene"]["lanes"].as_array().unwrap().len(), raw_lane_count);
 }
+
+#[test]
+fn drum_view_draw_and_vertical_drag_on_existing_object_preserve_sibling_volumes() {
+    let fixture = Fixture::new("drum-per-hit-volumes");
+    let map = fixture.0.join("Map.osu");
+    fs::write(
+        &map,
+        b"osu file format v14\n\n[General]\nMode:0\nSampleSet:Normal\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n256,192,1500,1,0,0:0:0:0:\n",
+    )
+    .unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &map);
+    let doc_path = app.document().unwrap().path.clone();
+    let mut drums = crate::drum_view::DrumView::for_editor();
+    drums.open_or_toggle_and_sync(&mut app, &doc_path, None, true).unwrap();
+
+    let view_json = {
+        let mut view = snapshot_view(&app, true);
+        drums.decorate(&app, &mut view);
+        serde_json::to_value(view).unwrap()
+    };
+    let drum_rows = view_json["scene"]["drumRows"].as_array().unwrap();
+    let clap_entry = drum_rows
+        .iter()
+        .find(|r| r["name"].as_str().is_some_and(|n| n.starts_with("Clap")))
+        .expect("Clap drum row");
+    let kick_entry = drum_rows
+        .iter()
+        .find(|r| r["name"].as_str().is_some_and(|n| n.starts_with("Kick")))
+        .expect("Kick drum row");
+    let kick_row = kick_entry["row"].as_u64().unwrap() as usize;
+    let clap_row = clap_entry["row"].as_u64().unwrap() as usize;
+    let visible = Some(vec![kick_row, clap_row]);
+
+    let clap_members: Vec<_> = {
+        let doc = app.document().unwrap();
+        app.drum_row_groups()
+            .and_then(|g| g.members_for_row(clap_row))
+            .map(|rows| rows.iter().map(|&r| doc.composer.lanes[r].clone()).collect())
+            .unwrap_or_else(|| vec![doc.composer.lanes[clap_row].clone()])
+    };
+    let kick_lane = app.document().unwrap().composer.hitsounds().moments()[0]
+        .hits()
+        .next()
+        .unwrap()
+        .clone();
+
+    let ptr = |app: &mut Application, phase: &str, ms: f64, y: f64| {
+        Action::Pointer {
+            phase: phase.into(),
+            ms,
+            row: clap_row as i32,
+            x: 0.0,
+            y,
+            value: None,
+            volume_lanes: None,
+            visible_rows: visible.clone(),
+            button: None,
+            shift: false,
+            ctrl: false,
+            alt: false,
+        }
+        .run(app);
+    };
+
+    Action::Tool { name: "Draw".into() }.run(&mut app);
+    Action::InsertVolume { value: 60 }.run(&mut app);
+    ptr(&mut app, "down", 1000.0, 200.0);
+    ptr(&mut app, "up", 1000.0, 200.0);
+
+    Action::InsertVolume { value: 80 }.run(&mut app);
+    ptr(&mut app, "down", 1500.0, 200.0);
+    ptr(&mut app, "move", 1500.0, 280.0);
+    ptr(&mut app, "up", 1500.0, 280.0);
+
+    let hits = app.document().unwrap().composer.hitsounds();
+    let m0 = &hits.moments()[0];
+    let m1 = &hits.moments()[1];
+    let clap0 = clap_members.iter().find(|l| m0.has_hit(l)).expect("clap at 1000 ms");
+    let clap1 = clap_members.iter().find(|l| m1.has_hit(l)).expect("clap at 1500 ms");
+    assert_eq!(m0.hit_volume(&kick_lane), 100);
+    assert_eq!(m0.hit_volume(clap0), 60);
+    assert_eq!(m1.hit_volume(&kick_lane), 100);
+    assert!(m1.hit_volume(clap1) < 80, "vertical drag in Drum View should lower only the new hit: {}", m1.hit_volume(clap1));
+}

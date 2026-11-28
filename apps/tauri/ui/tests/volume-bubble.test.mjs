@@ -57,6 +57,32 @@ test("volumeBubbleAtMoment builds a positioned bubble for the nearest moment", (
   assert.equal(volumeBubbleAtMoment(scene, 9999, rect), null);
 });
 
+test("volumeBubbleAtMoment matches visible active lane volume when a moment has multiple hit volumes", () => {
+  const scene = {
+    viewStart: 1000,
+    zoom: 0.2,
+    moments: [
+      // Kick at row 0 = 100% (moment.volume = 100), active Whistle at row 2 = 60%.
+      [1500, 100, true, [[0, false, false, 100], [2, true, false, 60]]],
+    ],
+  };
+  const rect = { left: 200, top: 500, bottom: 600, width: 800, height: 100 };
+  const bubble = volumeBubbleAtMoment(scene, 1500, rect, {
+    volumeLanes: [2],
+    activeVolumeMembers: new Set([2]),
+  });
+  assert.equal(bubble.ms, 1500);
+  assert.equal(bubble.volume, 60);
+  assert.deepEqual(bubble.volumeLanes, [2]);
+
+  const preferred = volumeBubbleAtMoment(scene, 1500, rect, {
+    volumeLanes: [0, 2],
+    activeVolumeMembers: new Set([2]),
+  });
+  assert.equal(preferred.volume, 60);
+  assert.deepEqual(preferred.volumeLanes, [0, 2]);
+});
+
 test("VolumeBubble renders hover readout and inline numeric input in editing mode", () => {
   bridge.volumeBubble = {
     key: "1500:75:hover",
