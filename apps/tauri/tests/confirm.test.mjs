@@ -349,3 +349,14 @@ test("Create [Hitsounds] from current difficulty opens the new diff instead of d
   await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error("createHsDiffFromCurrent timed out (run queue deadlocked)")), 500))]);
   assert.deepEqual(opened, ["F:/Songs/x/A - B (C) [Hitsounds].osu"]);
 });
+
+test("editor modules raise toasts through notifyToast, never a bare window.showToast the app does not expose", () => {
+  // Production boots with exposeGlobals:false, so env.window.showToast is undefined there: Open from osu!'s
+  // "No open osu! map found" toast was silently dropped. notifyToast falls back to the registry.
+  const dir = new URL("../ui/src/editor/", import.meta.url);
+  for (const file of ["boot.js", "dialogs-edit.js", "ipc.js", "menus.js", "browser.js", "dialogs-copy.js", "modal.js", "timeline.js"]) {
+    const lines = readFileSync(new URL(file, dir), "utf8").split("\n");
+    const bare = lines.filter(line => /showToast\?\.\(/.test(line) && !/const notifyToast\s*=/.test(line));
+    assert.deepEqual(bare, [], `${file} calls showToast directly`);
+  }
+});

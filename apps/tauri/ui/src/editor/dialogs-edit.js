@@ -181,7 +181,7 @@ export function attachEditDialogs(ctx) {
         // Inside run(): update, never act (act queues another run() behind this one and deadlocks).
         if (path) await ctx.update({ kind: "open", path });
       } catch (reason) {
-        env.window?.showToast?.({
+        notifyToast({
           tone: "warning",
           title: "Open from osu!",
           body: String(reason),
