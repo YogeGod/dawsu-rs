@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { COLOR_ROWS, SCHEMES, applyColorConfig, inkFor, resolvePalette } from "../src/lib/theme.js";
+import { COLOR_ROWS, SCHEMES, applyColorConfig, hexToHsb, inkFor, resolvePalette } from "../src/lib/theme.js";
 import { registerTimelineTheme } from "../src/lib/registry.js";
 
 // A document whose root style records every custom property applyColorConfig sets.
@@ -122,6 +122,15 @@ test("text on panel, ruler bar on ruler and playhead on canvas read at 4.5:1 or 
       assert.ok(ratio >= 4.5, `${name}: ${ink} ${palette[ink]} on ${surface} ${palette[surface]} is ${ratio.toFixed(2)}:1`);
     }
   }
+});
+
+test("User Color Scheme tints hue and saturation only: a saved bright scheme stays dark", () => {
+  const dark = resolvePalette({ scheme: "obsidian", rows: { scheme: { h: 50, s: 0.2, b: 0.15 } } });
+  const bright = resolvePalette({ scheme: "obsidian", rows: { scheme: { h: 50, s: 0.2, b: 0.95 } } });
+  assert.deepEqual(bright, dark);
+  assert.equal(bright.text, "#f5f5f7");
+  assert.ok(hexToHsb(bright.panel).b < 0.2, `panel ${bright.panel} stays dark`);
+  assert.equal(COLOR_ROWS.find(r => r.id === "scheme").noBrightness, true);
 });
 
 test("Obsidian's ruler bar and playhead stay crisp #f5f5f7", () => {

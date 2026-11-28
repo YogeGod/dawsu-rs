@@ -139,7 +139,7 @@ export const SCHEMES = [
 ];
 
 export const COLOR_ROWS = [
-  { id: "scheme", group: "Custom Colors", label: "User Color Scheme", mainKey: "panel", hasHue: true },
+  { id: "scheme", group: "Custom Colors", label: "User Color Scheme", mainKey: "panel", hasHue: true, noBrightness: true },
   { id: "accent", group: "Custom Colors", label: "Accent Color", mainKey: "accent", hasHue: true },
   { id: "gridBg", group: "Grid Colors", label: "Background", mainKey: "canvas", hasHue: false },
   { id: "gridLines", group: "Grid Colors", label: "Grid Lines", mainKey: "barLine", hasHue: true },
@@ -190,12 +190,12 @@ export function resolvePalette(config) {
   const schemeHue = rows.scheme ? rows.scheme.h : hexToHsb(base.panel).h;
   const tinted = c => ({ h: schemeHue, s: c.s, b: c.b });
 
+  // The User Color Scheme tints hue and saturation only; brightness stays the built-in dark scheme's
+  // (Yoge, 2026-11-28: no bright schemes), so a saved `b` from older builds is ignored.
   if (rows.scheme) {
     const sc = rows.scheme;
-    const step = sc.b - hexToHsb(base.panel).b;
     for (const key of CHROME_KEYS) {
-      const orig = hexToHsb(base[key]);
-      base[key] = hsbToHex({ h: sc.h, s: sc.s, b: Math.max(0, Math.min(1, orig.b + step)) });
+      base[key] = hsbToHex({ h: sc.h, s: sc.s, b: hexToHsb(base[key]).b });
     }
   }
 
