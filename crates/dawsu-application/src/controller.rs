@@ -123,6 +123,7 @@ impl VolumeBar {
         for (lane, gain) in &self.gains {
             hits.set_hit_volume(self.moment, lane, (gain + delta).clamp(floor, 100));
         }
+        dawsu_editor_composer::collapse_uniform_moment_volume(hits, self.moment);
     }
 }
 
@@ -184,6 +185,7 @@ impl VolumeSpread {
                 for (lane, gain) in &bar.gains {
                     hits.set_hit_volume(bar.moment, lane, scale(*gain));
                 }
+                dawsu_editor_composer::collapse_uniform_moment_volume(hits, bar.moment);
             }
             Ok::<_, Infallible>(())
         });

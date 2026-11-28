@@ -288,7 +288,9 @@ impl Composer {
         if targets.is_empty() {
             return Ok(BatchReport { counts: plan.counts, added: Vec::new() });
         }
-        let volume = self.insert_volume;
+        let volume = self
+            .insert_volume
+            .clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
         let mut added = Vec::new();
         let _ = self.history.apply(label, true, |h| {
             let created: Vec<MomentId> = new_moments.iter().map(|&t| h.add_moment(SongTime::from_ms(t), volume)).collect();

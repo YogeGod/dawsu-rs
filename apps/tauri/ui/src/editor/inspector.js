@@ -174,7 +174,7 @@ export function attachInspector(ctx) {
           whistleSet: body.whistleSet ?? "auto", volume: body.volume,
         } : null,
       } : null,
-      scope: state.selectionLanesOnly ? "selected" : "all", hint: ctx.volumeScopeHint(),
+      scope: state.selectionVolumeScope ?? (state.selectionLanesOnly ? "selected" : "hits"), hint: ctx.volumeScopeHint(),
       range: !!state.scene?.range, insertVolume: state.scene?.insertVolume ?? 100,
       protect: !!state.scene?.protect, audition: !!state.view?.audition, hs: !!state.scene?.hs,
       lane: lane ? {
@@ -242,11 +242,14 @@ export function attachInspector(ctx) {
         if (!Number.isFinite(args[0])) return false;
         ctx.act({ kind: "auto_fix_problem", time_ms: args[0] });
         return true;
-      case "scope":
+      case "scope": {
         if (state.drag) return false;
-        state.selectionLanesOnly = args[0] === "selected";
+        const mode = args[0] === "all" || args[0] === "selected" || args[0] === "hits" ? args[0] : "hits";
+        state.selectionVolumeScope = mode;
+        state.selectionLanesOnly = mode === "selected";
         ctx.updateVolumeScope();
         return true;
+      }
       case "sliderBody": {
         const body = state.scene.selection?.sliderBody;
         const { set, whistleSet, whistle, volume } = args[0];

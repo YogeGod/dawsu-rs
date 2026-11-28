@@ -33,7 +33,7 @@ const mutableStateFields = [
   "browserMap", "browserFolder", "browserSample", "browserSource", "browserLibrary",
   "browserLibraryFolders", "browserScene", "browserState", "browserFilter", "browserPreview",
   "browserModel", "browserTree", "usedLaneKeys", "laneFilterText", "showLaneInfo", "laneRows", "lanePositions",
-  "laneVisualPositions", "drumRowMembers", "drumRowByMember", "selectionLaneAnchor", "selectionLanesOnly", "familyParents",
+  "laneVisualPositions", "drumRowMembers", "drumRowByMember", "selectionLaneAnchor", "selectionVolumeScope", "selectionLanesOnly", "familyParents",
   "familyLayers", "laneRemoving", "previewParents", "orderedLaneKeys", "sampleFolderOrder",
   "layoutWrites", "mixerStrips", "mixerKey", "laneHeaders", "bookmarkPick", "selectedHitsScene",
   "selectedHits", "inspectorState", "problemStripKept", "sectionBarCache", "sliderEndCache",
@@ -526,12 +526,19 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     if (key === "Escape" && state.drag && !ctrl && !shift && !alt) {
       event.preventDefault();
       ctx.stopMarqueeAutoScroll?.();
-      const { surface, firstPoint, lastPoint, id } = state.drag;
+      const { surface, firstPoint, lastPoint, id, optimisticDrawSeq } = state.drag;
       state.drag = null;
+      let repainted = false;
       if (state.drawStrokePreview) {
         state.drawStrokePreview = null;
-        ctx.paintSoon();
+        repainted = true;
       }
+      if (optimisticDrawSeq != null && state.pendingDrawHits?.length) {
+        const beforeLen = state.pendingDrawHits.length;
+        state.pendingDrawHits = state.pendingDrawHits.filter(hit => hit.seq !== optimisticDrawSeq);
+        if (state.pendingDrawHits.length !== beforeLen) repainted = true;
+      }
+      if (repainted) ctx.paintSoon();
       if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id);
       ctx.act({ ...(lastPoint ?? firstPoint), phase: "cancel" });
       ctx.notifyStrokeEnd?.();

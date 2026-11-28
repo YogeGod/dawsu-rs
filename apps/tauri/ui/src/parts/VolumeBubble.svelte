@@ -34,7 +34,12 @@
     const parsed = parseVolumeInput(draft);
     closeBubble();
     if (parsed != null && parsed !== current.volume) {
-      act({ kind: "moment_volume", ms: current.ms, value: parsed });
+      act({
+        kind: "moment_volume",
+        ms: current.ms,
+        value: parsed,
+        ...(current.volumeLanes?.length ? { volume_lanes: current.volumeLanes } : {}),
+      });
     }
   }
 

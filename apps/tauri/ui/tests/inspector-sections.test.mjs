@@ -13,7 +13,7 @@ import InspectorDifficulty from "../src/parts/InspectorDifficulty.svelte";
 import InspectorLane from "../src/parts/InspectorLane.svelte";
 import InspectorSelection from "../src/parts/InspectorSelection.svelte";
 
-const model = (more = {}) => ({ ...emptyInspector, doc: true, hint: "Changes all sounds at the selected times.", ...more });
+const model = (more = {}) => ({ ...emptyInspector, doc: true, hint: "Changes only the selected hits.", ...more });
 const selection = (more = {}) => ({
   summary: "2 hits selected · Clap (Soft)", start: "01:45.263", volume: "60–80%", object: "Circle", sliderBody: null, ...more,
 });
@@ -115,8 +115,8 @@ test("Selection shows v3's summary and rows, with every control the old card had
   for (const text of ["Move", "Apply", "−5", "+5", "Quantize…", "Repeat…", "Duplicate", "Delete", "Edit range…",
     "Scale by volume…"]) assert.ok(button(html, text), text);
   assert.match(html, /<option value="absolute"[^>]*>Set all<\/option>\s*<option value="relative"[^>]*>Relative<\/option>/);
-  assert.match(html, /<option value="all"[^>]*>All lanes<\/option>\s*<option value="selected"[^>]*>Selected lanes<\/option>/);
-  assert.match(html, /Changes all sounds at the selected times\./);
+  assert.match(html, /<option value="hits"[^>]*>Selected hits<\/option>\s*<option value="all"[^>]*>All lanes<\/option>\s*<option value="selected"[^>]*>Selected lanes<\/option>/);
+  assert.match(html, /Changes only the selected hits\./);
   assert.match(html, /aria-label="Insert volume"[^>]*value="100"/);
   assert.match(html, /aria-label="Audition"[^>]*checked/);
   assert.doesNotMatch(html, /Slider body sounds/);

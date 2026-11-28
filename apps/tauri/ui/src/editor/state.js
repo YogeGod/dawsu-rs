@@ -20,6 +20,7 @@ export function createState() {
     markedRange: null,
     drawStrokePreview: null,
     pendingDrawHits: [],
+    drawHitSeq: 0,
 
     browserMap: "",
     browserFolder: "",
@@ -52,6 +53,7 @@ export function createState() {
     drumRowByMember: new Map(),
     selectionLaneKeys: new Set(),
     selectionLaneAnchor: null,
+    selectionVolumeScope: "hits",
     selectionLanesOnly: false,
     collapsedFamilies: new Set(),
     laneColours: new Map(),

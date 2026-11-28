@@ -134,7 +134,7 @@
             <label for="inspector-scope" class="insp-label">Applies to</label>
             <select id="inspector-scope" value={model.scope} disabled={model.busy}
               onchange={event => on.scope(event.currentTarget.value)}>
-              <option value="all">All lanes</option><option value="selected">Selected lanes</option>
+              <option value="hits">Selected hits</option><option value="all">All lanes</option><option value="selected">Selected lanes</option>
             </select>
           </div>
         </div>

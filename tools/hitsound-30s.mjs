@@ -5,7 +5,7 @@
 //   [--pick <n>] [--seed <n>] [--oracle] [--json <file>] [--keep-profile] [--allow-stale]
 //
 //   --map         one osu!standard difficulty of a ranked mapset; its whole folder is copied first
-//   --dataset     a folder of ranked mapsets (folders or .osz files, e.g. E:\osu-lazer\exports\dataset);
+//   --dataset     a folder of ranked mapsets (folders or .osz files);
 //                 one osu!standard difficulty with at least 30 s of objects is picked from it
 //   --pick/--seed which one: --pick n takes the n-th candidate by name, --seed n a repeatable random one
 //                 (the run prints the seed it used)
