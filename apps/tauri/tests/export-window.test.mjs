@@ -166,6 +166,16 @@ test("a hitsound-only Export is still told when a stem message replaced the Expo
   }
 });
 
+test("a Save told while the Export window is open does not hide its hitsound-only write", async () => {
+  const { answer, ctx, get, toasts } = await answering();
+  get("export-entry").events.get("click")();
+  await answer({ status: "Saved fixture.osu.", dirty: false });
+  await answer({ status: "Loading drum stem…" });
+  await ctx.exportClosed(true);
+  assert.deepEqual(toasts.map(toast => toast.title), ["Saved", "Hitsound-only export written"]);
+  assert.deepEqual(toasts[1].actions.map(action => action.label), ["Open folder"]);
+});
+
 test("export.html loads only the fonts and the Svelte bundle, with no inline code", () => {
   const html = read("dist/export.html");
   const head = html.match(/<head>(.*?)<\/head>/s)[1];

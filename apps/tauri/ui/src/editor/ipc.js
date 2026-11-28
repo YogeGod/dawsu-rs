@@ -514,6 +514,7 @@ export function attachIpc(ctx) {
   }
 
   function toastHitsoundOnly(body) {
+    state.hitsoundOnlyToasts = (state.hitsoundOnlyToasts ?? 0) + 1;
     const actions = [{ label: "Open folder", onClick: () => {
       invoke("open_editor_folder", { folder: "last_export" }).catch(error => ctx.setStatusNotice(String(error)));
     } }];
@@ -525,7 +526,7 @@ export function attachIpc(ctx) {
   // A second identical hitsound-only write looks like the first in the view, so the Export modal
   // says when it closes on its own write: unless a write was told since it opened, it is told again.
   function exportOpened() {
-    state.writeToastsAtExportOpen = state.writeToasts ?? 0;
+    state.hitsoundOnlyToastsAtExportOpen = state.hitsoundOnlyToasts ?? 0;
   }
 
   function exportClosed(wroteHitsoundOnly) {
@@ -533,7 +534,8 @@ export function attachIpc(ctx) {
     return run(async () => {
       await update(null, false);
       // A view that looks unchanged takes show's idle fast path, which tells nothing: tell it here.
-      if ((state.writeToasts ?? 0) !== state.writeToastsAtExportOpen) return;
+      // Only a hitsound-only toast told since it opened counts; a Save in between does not.
+      if ((state.hitsoundOnlyToasts ?? 0) !== state.hitsoundOnlyToastsAtExportOpen) return;
       state.announcedWrite = null;
       if (/^Exported \d+ hitsound-only file\(s\)/.test(state.view?.status ?? "")) {
         announceWrite(state.view, state.view, !!state.scene);
