@@ -423,6 +423,7 @@ test("dark-well children and hovers keep readable inks under bright schemes (sli
 
   assertFixedInk("src/parts/export/OsuDiffDrawer.svelte", ".osu-diff-more", "#000000");
   assertFixedInk("src/parts/PreviewWindow.svelte", ":global(body.preview-page .insp-summary)", "#0b0b0f");
+});
 
 test("the header's map chip keeps the difficulty whole and lets the title take the ellipsis", async () => {
   // Both shrank together, so "Echoes of Memoria [Hitsounds]" showed as "Echoes of ... Hitso...".
