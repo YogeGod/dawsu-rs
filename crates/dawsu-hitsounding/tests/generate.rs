@@ -2,7 +2,7 @@
 //! doc "Generate and Copy hitsounds").
 
 use dawsu_foundation::{CustomIndex, Hitsound, SampleIdentity, SampleSet, Sound};
-use dawsu_hitsounding::generate::{file_name_for, generate, new_hitsound_diff, GenerateOutcome, NewDiff, HITSOUNDS_VERSION};
+use dawsu_hitsounding::generate::{file_name_for, generate, new_hitsound_diff, skin_index_timing, GenerateOutcome, NewDiff, HITSOUNDS_VERSION};
 use dawsu_hitsounding::lazer::control_points::offset_for;
 use dawsu_hitsounding::rules::{answer, Answer};
 use dawsu_hitsounding::{decompile, Decompiled, Hitsounds, MomentId, ProblemKind, SaveProblem};
@@ -283,4 +283,18 @@ fn generate_offers_a_mix_for_two_lanes_with_independent_gains() {
     };
     assert!(layers.contains(&(clap, 35)));
     assert!(layers.contains(&(std(SampleSet::Soft, Hitsound::Normal, 1), 60)));
+}
+
+#[test]
+fn a_hitsounds_diff_s_timing_lines_name_the_skin_sample_so_its_skin_lanes_can_be_written() {
+    // HS mode writes on objects only; an object cannot ask for index 0 (it means "as the line"),
+    // so lines copied with index 1 or 2 left every skin lane unwritable on Save.
+    let source = read(b"osu file format v14\r\n\r\n[Metadata]\r\nVersion:Hard\r\n\r\n[TimingPoints]\r\n500,500,4,2,1,70,1,0\r\n1000,-50,4,2,2,85,0,1 // kiai\r\n1500,-100\r\n2000,-100,4,1,0,60,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n");
+    let (mut file, _) = planned(new_hitsound_diff(&source, "a.osu", "Hitsounds", &[]));
+    skin_index_timing(&mut file);
+    let lines: Vec<String> = file.lines().filter(|l| file.section_of(l.id()).as_deref() == Some("TimingPoints"))
+        .map(|l| String::from_utf8_lossy(l.content()).to_string()).filter(|t| t.starts_with(char::is_numeric)).collect();
+    assert_eq!(lines, ["500,500,4,2,0,70,1,0", "1000,-50,4,2,0,85,0,1 // kiai", "1500,-100", "2000,-100,4,1,0,60,0,0"],
+        "only the index field changes; a short line and an index already 0 stay as they were");
+    assert!(file.timing_points().iter().all(|p| p.sample_index().unwrap_or(0) == 0));
 }

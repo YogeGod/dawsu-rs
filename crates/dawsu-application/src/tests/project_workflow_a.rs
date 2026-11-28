@@ -1691,6 +1691,32 @@ fn task2_path1_create_hitsound_diff_preserves_bytes_and_seeds_custom_only_projec
 
 #[test]
 #[allow(clippy::disallowed_methods)]
+fn a_new_hitsounds_diff_saves_skin_lane_hits_from_a_map_whose_lines_use_a_custom_index() {
+    // A reference whose timing lines name custom index 1 (its own drum-hitnormal.wav and so on).
+    let scratch = Scratch::new("hs-skin-index");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir_all(&folder).unwrap();
+    let map = folder.join("Artist - Song (Mapper) [Hard].osu");
+    std::fs::write(&map, "osu file format v14\r\n\r\n[General]\r\nMode: 0\r\n\r\n[Metadata]\r\nTitle:Song\r\nArtist:Artist\r\nCreator:Mapper\r\nVersion:Hard\r\n\r\n[TimingPoints]\r\n0,500,4,2,1,70,1,0\r\n2000,-100,4,2,2,85,0,1\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n").unwrap();
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    let created = app.create_hitsound_diff(&map, false, Some(crate::HsStarterMode::Default12)).unwrap();
+    let text = std::fs::read_to_string(&created).unwrap();
+    assert!(text.contains("0,500,4,2,0,70,1,0\r\n") && text.contains("2000,-100,4,2,0,85,0,1\r\n"), "{text}");
+    open(&mut app, created.clone());
+    assert!(app.document().unwrap().hs_mode);
+    // Tapped onto the 12 default (skin) lanes, as the Default12 path invites.
+    let composer = &mut app.document.as_mut().unwrap().composer;
+    composer.add(1000.0, skin(SampleSet::Normal, Hitsound::Normal), 100, 0.0);
+    composer.add(2500.0, skin(SampleSet::Soft, Hitsound::Finish), 100, 0.0);
+    save_through_summary(&mut app, scratch.path("backups"));
+    assert!(app.output_problems().is_empty(), "{:?}", app.output_problems().iter().map(|p| &p.message).collect::<Vec<_>>());
+    let reopened = reopen(&app, &created);
+    assert_eq!(reopened.document().unwrap().composer.hitsounds().moments().iter().filter(|m| m.hits().next().is_some()).count(), 2);
+}
+
+#[test]
+#[allow(clippy::disallowed_methods)]
 fn task2_add_lane_from_file_stages_safely_sanitizes_and_reuses_mapset_files() {
     let scratch = Scratch::new("task2-add-lane");
     let folder = scratch.path("mapset");

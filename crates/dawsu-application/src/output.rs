@@ -1970,7 +1970,9 @@ pub(super) fn generate_report_for_version(
 }
 pub fn new_diff(source: &Source, name: &str) -> Result<WritePlan, String> {
     match dawsu_hitsounding::generate::new_hitsound_diff(&source.file, &display_file_name(&source.path), name, &folder(source)?) {
-        NewDiff::Planned{file,file_name}=>{
+        NewDiff::Planned{mut file,file_name}=>{
+            // It opens in HS mode, which writes on objects only: its lines must name the skin samples.
+            dawsu_hitsounding::generate::skin_index_timing(&mut file);
             let target_path = source.path.parent().ok_or_else(|| "Missing mapset folder".to_string())?.join(file_name);
             Ok(WritePlan{label:"New hitsound difficulty".into(),mixes:Vec::new(),pending:Vec::new(),ledger:None,combinations:Vec::new(),targets:Vec::new(),generation:None,generated:None,include_slider_audio:false,files:vec![PlannedFile::new(target_path.clone(),file,None,VerifyExpectation::NewEmptyDiff,false,Some(&source.file),None)],details:vec!["All gameplay objects are removed in the new difficulty; the source stays unchanged.".into()],hs_mode_targets:vec![target_path],sample_warnings:Vec::new(),export_index_schema:Default::default(),tick_writes:Default::default(),verification:Default::default(),pending_snapshot:None,source:source.path.clone(),version:source.version})
         },other=>Err(crate::refusals::new_difficulty(&other))

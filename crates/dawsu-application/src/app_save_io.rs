@@ -2398,6 +2398,9 @@ impl Application {
                 }
             })
             .ok_or("Could not find a free Hitsounds difficulty name in this mapset.")?;
+        // It opens in HS mode, which writes on objects only: its lines must name the skin samples.
+        let mut planned = planned;
+        dawsu_hitsounding::generate::skin_index_timing(&mut planned);
 
         let target = folder.join(&file_name);
         dawsu_foundation::safe_write::create(&target, &planned.to_bytes())
