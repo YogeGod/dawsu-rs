@@ -166,6 +166,40 @@ test("a hitsound-only Export is still told when a stem message replaced the Expo
   }
 });
 
+test("a Save told while the Export modal is open does not hide its hitsound-only write", async () => {
+  for (const stemStatus of ["Loading drum stem…", "Drum stem ready"]) {
+    const { answer, ctx, get, toasts } = await answering();
+    await answer({ dirty: true });
+    get("export-entry").events.get("click")();
+    // Ctrl+S while the modal is open: the Saved toast is told.
+    await answer({ dirty: false, status: "Saved Target.osu." });
+    assert.deepEqual(toasts.map(toast => toast.title), ["Saved"]);
+    // The hitsound-only write (id 1) finishes, then a stem message replaces its status.
+    await answer({ status: stemStatus });
+    await ctx.exportClosed(true, 1);
+    assert.deepEqual(toasts.map(toast => toast.title), ["Saved", "Hitsound-only export written"], stemStatus);
+    assert.deepEqual(toasts[1].actions.map(action => action.label), ["Open folder"]);
+  }
+});
+
+test("a late Exported view after the modal told its write gives no second toast", async () => {
+  const { answer, ctx, get, toasts } = await answering();
+  const written = "Exported 2 hitsound-only file(s) to C:\\Exports\\Set-hitsound-only (mapset untouched).";
+  get("export-entry").events.get("click")();
+  await answer({ status: "Drum stem ready" });
+  await ctx.exportClosed(true, 1);
+  assert.equal(toasts.length, 1);
+  // The Exported status of that same write shows up only now.
+  await answer({ status: written });
+  assert.equal(toasts.length, 1, "write 1 is told once");
+  // A new Export session's write is still told.
+  get("export-entry").events.get("click")();
+  await answer({ status: written.replace("Set-hitsound-only", "Other-hitsound-only") });
+  assert.equal(toasts.length, 2);
+  await ctx.exportClosed(true, 2);
+  assert.equal(toasts.length, 2, "write 2 is told once");
+});
+
 test("a Save told while the Export window is open does not hide its hitsound-only write", async () => {
   const { answer, ctx, get, toasts } = await answering();
   get("export-entry").events.get("click")();

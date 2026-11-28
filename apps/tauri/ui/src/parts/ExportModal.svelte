@@ -19,10 +19,10 @@
     exportWindow?.close();
   }
 
-  // Closed on its own hitsound-only write: the editor asks for the view that tells it.
-  function closed({ wroteHitsoundOnly = false } = {}) {
+  // Closed on its own hitsound-only write (writeId): the editor asks for the view that tells it.
+  function closed({ wroteHitsoundOnly = false, writeId = null } = {}) {
     open = false;
-    bridge.callAction("exportClosed", wroteHitsoundOnly);
+    bridge.callAction("exportClosed", wroteHitsoundOnly, writeId);
   }
 
   function onKeydown(event) {
