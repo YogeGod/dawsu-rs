@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 pub enum StemSeparationJobState {
     #[default]
     Idle,
-    DownloadingRuntime,
+    #[serde(rename_all = "camelCase")]
+    DownloadingRuntime {
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+    },
     #[serde(rename_all = "camelCase")]
     DownloadingModel {
         downloaded_bytes: u64,
@@ -38,7 +42,7 @@ impl StemSeparationJobState {
     pub fn is_running(&self) -> bool {
         matches!(
             self,
-            Self::DownloadingRuntime
+            Self::DownloadingRuntime { .. }
                 | Self::DownloadingModel { .. }
                 | Self::Separating { .. }
         )
@@ -66,6 +70,10 @@ pub struct StemSeparationStatus {
     pub song_name: Option<String>,
     pub active_stem_loaded: bool,
     pub active_stem_monitoring: bool,
+    /// Pinned sizes of the runtime and model parts not on disk yet: what "Separate drums" downloads.
+    pub download_bytes_needed: u64,
+    /// Whether the current job was started for the song that is open now.
+    pub job_matches_open_song: bool,
 }
 
 #[cfg(feature = "stem-separation")]
@@ -85,7 +93,7 @@ mod enabled {
     pub const CHUNK_SAMPLES: usize = 343_980;
     /// 25% overlap between consecutive chunks (`CHUNK_SAMPLES * 3 / 4`).
     pub const HOP_SAMPLES: usize = 257_985;
-    /// Default HT-Demucs fp16-weights ONNX model (~166 MB).
+    /// Default HT-Demucs fp16-weights ONNX model (166 MB).
     pub const DEFAULT_MODEL_FILENAME: &str = "htdemucs_fp16weights.onnx";
     /// Pinned to one revision of the repository, so the address always serves the same file.
     pub const DEFAULT_MODEL_URL: &str = "https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/d54ed9eb60e258ea82131c6ee14578628816456a/htdemucs_fp16weights.onnx";
@@ -185,21 +193,29 @@ mod enabled {
             }
         }
 
+        /// Cheap check for `poll()`: a job has finished and nobody has applied it yet.
+        fn has_unapplied_done(&self) -> bool {
+            self.active.as_ref().is_some_and(|job| {
+                job.generation != self.applied_generation
+                    && job
+                        .state
+                        .lock()
+                        .is_ok_and(|state| matches!(*state, StemSeparationJobState::Done { .. }))
+            })
+        }
+
         fn take_unapplied_done(&mut self, current_song: Option<&Path>) -> Option<PathBuf> {
             let job = self.active.as_ref()?;
             if job.generation == self.applied_generation {
                 return None;
             }
-            // Only auto-load if the same song is still open.
-            if let (Some(job_song), Some(open_song)) = (job.song_path.as_deref(), current_song)
-                && job_song != open_song
-            {
-                return None;
-            }
             let state = job.state.lock().ok()?.clone();
             if let StemSeparationJobState::Done { stem_path } = state {
+                // Settled either way: a stem for another song stays in the cache ("Load cached
+                // drums" there) and is not looked at again every poll.
                 self.applied_generation = job.generation;
-                Some(PathBuf::from(stem_path))
+                let same_song = job.song_path.is_some() && job.song_path.as_deref() == current_song;
+                same_song.then(|| PathBuf::from(stem_path))
             } else {
                 None
             }
@@ -478,10 +494,17 @@ mod enabled {
         res
     }
 
-    fn ensure_onnxruntime_library(data_root: &Path, cancel: &AtomicBool) -> Result<PathBuf, String> {
+    /// `on_progress` hears only about a real download: a cached runtime returns before it is called,
+    /// so the dialog never flashes 0%.
+    fn ensure_onnxruntime_library(
+        data_root: &Path,
+        cancel: &AtomicBool,
+        mut on_progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<PathBuf, String> {
         if let Some(existing) = find_onnxruntime_library(data_root, true) {
             return Ok(existing);
         }
+        on_progress(0, Some(ORT_PACKAGE_SIZE));
         let (entry_name, lib_sha256, _) = onnxruntime_package_entry()?;
         let models = models_dir(data_root);
         fs::create_dir_all(&models)
@@ -494,7 +517,7 @@ mod enabled {
             &package_path,
             (ORT_PACKAGE_SHA256, ORT_PACKAGE_SIZE),
             cancel,
-            |_, _| {},
+            on_progress,
         )?;
         let extract_res = extract_runtime_from_package(&package_path, entry_name, lib_sha256, &dest_lib);
         let _ = fs::remove_file(&package_path);
@@ -854,6 +877,14 @@ mod enabled {
             let cached_stem_path = self
                 .cached_stem_for_open_song()
                 .map(|p| p.to_string_lossy().into_owned());
+            let download_bytes_needed = if runtime_ready { 0 } else { ORT_PACKAGE_SIZE }
+                + if model_ready { 0 } else { DEFAULT_MODEL_SIZE };
+            let job_matches_open_song = self
+                .stem_separation
+                .active
+                .as_ref()
+                .and_then(|job| job.song_path.as_deref())
+                .is_some_and(|job_song| song_path.as_deref() == Some(job_song));
 
             StemSeparationStatus {
                 job: self.stem_separation.current_state(),
@@ -863,14 +894,20 @@ mod enabled {
                 cached_stem_path,
                 song_loaded: self.song.is_some(),
                 song_name,
-                active_stem_loaded: self.has_drum_stem(),
+                // A stem still decoding counts: the dialog offers "Separate again", not "Load cached drums".
+                active_stem_loaded: self.has_drum_stem() || self.drum_stem_loading,
                 active_stem_monitoring: self.is_monitoring_stem(),
+                download_bytes_needed,
+                job_matches_open_song,
             }
         }
 
-        /// Returns the current stem separation status, and auto-loads the generated stem
-        /// into the Song ↔ Stem monitor (`T`) the first time a completed job is observed.
-        pub fn stem_separation_status(&mut self) -> StemSeparationStatus {
+        /// Called from `poll()`: the first time a finished job is seen for the open song, its stem
+        /// loads into the Song ↔ Stem monitor (`T`), whether or not the dialog is still asking.
+        pub(crate) fn poll_stem_separation(&mut self) {
+            if !self.stem_separation.has_unapplied_done() {
+                return;
+            }
             let current_song = self.open_song_path();
             if let Some(stem_path) = self
                 .stem_separation
@@ -878,6 +915,11 @@ mod enabled {
             {
                 self.load_drum_stem(stem_path);
             }
+        }
+
+        /// Returns the current stem separation status, applying a finished job first.
+        pub fn stem_separation_status(&mut self) -> StemSeparationStatus {
+            self.poll_stem_separation();
             self.build_stem_separation_status()
         }
 
@@ -932,7 +974,11 @@ mod enabled {
             let generation = self.stem_separation.generation;
             let cancel = Arc::new(AtomicBool::new(false));
             let job = Arc::new(SharedJob {
-                state: Mutex::new(StemSeparationJobState::DownloadingRuntime),
+                // No total yet: the dialog shows a moving bar, not 0%, while the runtime is looked up.
+                state: Mutex::new(StemSeparationJobState::DownloadingRuntime {
+                    downloaded_bytes: 0,
+                    total_bytes: None,
+                }),
                 cancel: cancel.clone(),
                 generation,
                 song_path: Some(song_path),
@@ -945,8 +991,13 @@ mod enabled {
                 .spawn(move || {
                     let run_result = (|| -> Result<PathBuf, String> {
                         // 1. Ensure ONNX Runtime dynamic library is present.
-                        set_job_state(&job, StemSeparationJobState::DownloadingRuntime);
-                        let runtime_lib = ensure_onnxruntime_library(&data_root, &cancel)?;
+                        let runtime_lib =
+                            ensure_onnxruntime_library(&data_root, &cancel, |downloaded_bytes, total_bytes| {
+                                set_job_state(
+                                    &job,
+                                    StemSeparationJobState::DownloadingRuntime { downloaded_bytes, total_bytes },
+                                );
+                            })?;
                         if cancel.load(Ordering::SeqCst) {
                             return Err("Cancelled".into());
                         }
@@ -1051,7 +1102,7 @@ mod enabled {
             self.build_stem_separation_status()
         }
 
-        /// Deletes the downloaded ~166 MB HT-Demucs model file from `<app_data>/models/` to free disk space.
+        /// Deletes the downloaded 166 MB HT-Demucs model file from `<app_data>/models/` to free disk space.
         pub fn stem_separation_delete_cache(&mut self) -> Result<StemSeparationStatus, String> {
             if self.stem_separation.is_running() {
                 return Err("Cancel the running separation before removing the downloaded model.".into());
@@ -1340,6 +1391,190 @@ mod enabled {
             assert_ne!(h1, h3);
             assert_eq!(h3, file_sha256_hex(&song).unwrap());
         }
+
+        const READY: &str = "Drum stem ready. Press T to flip between Song and Drums.";
+
+        fn tone(frames: usize, freq_hz: f32) -> Vec<f32> {
+            (0..frames)
+                .map(|i| (2.0 * std::f32::consts::PI * freq_hz * i as f32 / 44_100.0).sin() * 0.5)
+                .collect()
+        }
+
+        /// A headless editor with `map.osu` and its decoded `song.wav` open, app data under the scratch.
+        fn open_map_with_song(scratch: &Scratch) -> Application {
+            let map = scratch.path("map.osu");
+            fs::write(
+                &map,
+                b"osu file format v14\n[General]\nMode:0\nAudioFilename: song.wav\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+            )
+            .unwrap();
+            let song = tone(44_100, 2000.0);
+            write_stereo_wav_atomic(&scratch.path("song.wav"), &song, &song, TARGET_SAMPLE_RATE).unwrap();
+            let data_root = scratch.path("data");
+            let mut app = Application::headless();
+            app.project_root = Some(data_root.join("projects"));
+            app.data_root = data_root;
+            app.request_open(map);
+            wait_for(&mut app, |app| app.busy || app.song_loading);
+            assert!(app.error.is_none(), "{:?}", app.error);
+            app
+        }
+
+        fn wait_for(app: &mut Application, still_waiting: impl Fn(&Application) -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while still_waiting(app) {
+                app.poll();
+                assert!(std::time::Instant::now() < deadline, "job timed out");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        /// What the separation thread leaves behind: a `Done` job nobody has applied yet.
+        fn finish_job(app: &mut Application, song_path: Option<PathBuf>, stem_path: &Path) {
+            app.stem_separation.generation += 1;
+            app.stem_separation.active = Some(Arc::new(SharedJob {
+                state: Mutex::new(StemSeparationJobState::Done {
+                    stem_path: stem_path.to_string_lossy().into_owned(),
+                }),
+                cancel: Arc::new(AtomicBool::new(false)),
+                generation: app.stem_separation.generation,
+                song_path,
+            }));
+        }
+
+        #[test]
+        fn stem_separation_poll_loads_a_finished_job_for_the_open_song_without_a_status_call() {
+            let scratch = Scratch::new("stem-poll-done");
+            let mut app = open_map_with_song(&scratch);
+            let drums = tone(88_200, 90.0);
+            let stem = scratch.path("data").join("stems").join("abc-drums.wav");
+            write_stereo_wav_atomic(&stem, &drums, &drums, TARGET_SAMPLE_RATE).unwrap();
+            assert!(!app.build_stem_separation_status().job_matches_open_song, "no job yet");
+
+            let song = app.open_song_path();
+            assert!(song.is_some());
+            finish_job(&mut app, song, &stem);
+            assert!(app.build_stem_separation_status().job_matches_open_song);
+            let revision = app.view_revision;
+            app.poll();
+            assert!(app.view_revision > revision);
+            assert!(app.build_stem_separation_status().active_stem_loaded, "a loading stem counts as loaded");
+            // A tiny WAV can finish decoding inside the same poll; otherwise it is still loading.
+            if app.drum_stem_loading {
+                assert_eq!(app.status, "Loading drum stem…");
+            } else {
+                assert!(app.has_drum_stem());
+            }
+            wait_for(&mut app, |app| app.drum_stem_loading);
+            assert!(app.has_drum_stem());
+            assert_eq!(app.drum_stem_path(), Some(stem.as_path()));
+            assert_eq!(app.status, READY);
+
+            // The job is applied once: the next poll does not load it again.
+            let generation = app.drum_stem_generation;
+            app.poll();
+            assert_eq!(app.drum_stem_generation, generation);
+            assert_eq!(app.status, READY);
+        }
+
+        #[test]
+        fn stem_separation_poll_leaves_a_job_for_another_song_alone() {
+            let scratch = Scratch::new("stem-poll-other-song");
+            let mut app = open_map_with_song(&scratch);
+            let drums = tone(4_410, 90.0);
+            let stem = scratch.path("other-drums.wav");
+            write_stereo_wav_atomic(&stem, &drums, &drums, TARGET_SAMPLE_RATE).unwrap();
+            finish_job(&mut app, Some(scratch.path("other.wav")), &stem);
+            assert!(!app.build_stem_separation_status().job_matches_open_song);
+            app.poll();
+            assert!(!app.drum_stem_loading);
+            assert!(!app.has_drum_stem());
+            assert_ne!(app.status, "Loading drum stem…");
+            // Settled once, so later polls do not resolve the song path again every tick.
+            assert!(!app.stem_separation.has_unapplied_done());
+        }
+
+        #[test]
+        fn stem_separation_status_counts_a_stem_still_decoding_as_loaded() {
+            let scratch = Scratch::new("stem-status-loading");
+            let mut app = open_map_with_song(&scratch);
+            let drums = tone(4_410, 90.0);
+            let stem = scratch.path("drums.wav");
+            write_stereo_wav_atomic(&stem, &drums, &drums, TARGET_SAMPLE_RATE).unwrap();
+            app.load_drum_stem(stem);
+            // The decode result lands only on the next poll, so this is the "Load cached drums" answer.
+            assert!(!app.has_drum_stem());
+            assert!(app.build_stem_separation_status().active_stem_loaded);
+        }
+
+        #[test]
+        fn stem_separation_poll_loads_nothing_when_the_open_map_has_no_song() {
+            let scratch = Scratch::new("stem-poll-no-song");
+            let mut app = open_map_with_song(&scratch);
+            app.document.as_mut().unwrap().path = scratch.path("elsewhere").join("map.osu");
+            assert!(app.open_song_path().is_none());
+            let drums = tone(4_410, 90.0);
+            let stem = scratch.path("drums.wav");
+            write_stereo_wav_atomic(&stem, &drums, &drums, TARGET_SAMPLE_RATE).unwrap();
+            finish_job(&mut app, Some(scratch.path("song.wav")), &stem);
+            app.poll();
+            assert!(!app.drum_stem_loading);
+            assert!(!app.has_drum_stem());
+        }
+
+        #[test]
+        fn stem_separation_downloading_runtime_serialises_its_progress() {
+            let state = StemSeparationJobState::DownloadingRuntime {
+                downloaded_bytes: 5,
+                total_bytes: Some(ORT_PACKAGE_SIZE),
+            };
+            assert_eq!(
+                serde_json::to_value(&state).unwrap(),
+                serde_json::json!({ "state": "downloadingRuntime", "downloadedBytes": 5, "totalBytes": 121_402_697 }),
+            );
+            assert!(state.is_running());
+        }
+
+        #[test]
+        fn stem_separation_runtime_progress_starts_only_after_a_cache_miss() {
+            if std::env::var_os("ORT_DYLIB_PATH").is_some() || onnxruntime_package_entry().is_err() {
+                return; // An explicit user library, or no pinned build for this platform.
+            }
+            let scratch = Scratch::new("stem-runtime-progress");
+            let data_root = scratch.path("app_data");
+            // Cancelled up front, so the download stops before it touches the network.
+            let cancel = AtomicBool::new(true);
+            let mut calls = Vec::new();
+            let err = ensure_onnxruntime_library(&data_root, &cancel, |done, total| calls.push((done, total)))
+                .unwrap_err();
+            assert_eq!(err, "Cancelled");
+            assert_eq!(calls, vec![(0, Some(ORT_PACKAGE_SIZE))]);
+        }
+
+        #[test]
+        fn stem_separation_status_counts_the_bytes_still_to_download() {
+            if std::env::var_os("ORT_DYLIB_PATH").is_some() || onnxruntime_package_entry().is_err() {
+                return; // An explicit user library, or no pinned build for this platform.
+            }
+            let scratch = Scratch::new("stem-download-bytes");
+            let mut app = Application::headless();
+            app.data_root = scratch.path("app_data");
+            assert_eq!(app.build_stem_separation_status().download_bytes_needed, 287_015_333);
+
+            fs::create_dir_all(models_dir(&app.data_root)).unwrap();
+            let (_, _, runtime_size) = onnxruntime_package_entry().unwrap();
+            File::create(models_dir(&app.data_root).join(onnxruntime_lib_filename()))
+                .unwrap()
+                .set_len(runtime_size)
+                .unwrap();
+            assert_eq!(app.build_stem_separation_status().download_bytes_needed, 165_612_636);
+
+            File::create(default_model_path(&app.data_root))
+                .unwrap()
+                .set_len(DEFAULT_MODEL_SIZE)
+                .unwrap();
+            assert_eq!(app.build_stem_separation_status().download_bytes_needed, 0);
+        }
     }
 }
 
@@ -1365,9 +1600,16 @@ mod disabled {
                 message: STEM_SEPARATION_DISABLED_MESSAGE.into(),
             }
         }
+
+        pub(crate) fn is_running(&self) -> bool {
+            false
+        }
     }
 
     impl Application {
+        /// Nothing to apply: this build never separates drums.
+        pub(crate) fn poll_stem_separation(&mut self) {}
+
         /// Returns stem separation status when built without the `stem-separation` feature.
         pub fn stem_separation_status(&mut self) -> StemSeparationStatus {
             StemSeparationStatus {
@@ -1378,8 +1620,11 @@ mod disabled {
                 cached_stem_path: None,
                 song_loaded: self.song.is_some(),
                 song_name: None,
-                active_stem_loaded: self.has_drum_stem(),
+                // A stem still decoding counts: the dialog offers "Separate again", not "Load cached drums".
+                active_stem_loaded: self.has_drum_stem() || self.drum_stem_loading,
                 active_stem_monitoring: self.is_monitoring_stem(),
+                download_bytes_needed: 0,
+                job_matches_open_song: false,
             }
         }
 

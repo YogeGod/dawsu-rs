@@ -3,11 +3,15 @@
   import { act, bridge } from "../lib/bridge.svelte.js";
   import { invoke } from "../lib/ipc.js";
   import {
+    createJobPoller,
+    dialogButtons,
+    firstUseCopy,
     formatJobStatus,
     formatModelStatus,
     isJobRunning,
-    primaryButtonLabel,
     progressPercent,
+    removeDownloadedModel,
+    watchInBackground,
   } from "../lib/stemSeparation.js";
 
   // Playback › Separate drums (AI)…: optional on-demand CPU HT-Demucs drum separation.
@@ -26,34 +30,52 @@
     songName: null,
     activeStemLoaded: false,
     activeStemMonitoring: false,
+    downloadBytesNeeded: 0,
+    jobMatchesOpenSong: false,
   });
 
-  let pollTimer = null;
+  // One timer: 400 ms while the dialog is open, a slow background watch after it closes mid-job.
+  const poller = createJobPoller();
   let lastJobState = "idle";
+  const confirm = request => bridge.callAction("confirm", request);
+  const statusNow = () => invoke("stem_separation_action", { action: { kind: "status" } });
 
   const hasDoc = $derived(Boolean(bridge.scene));
   const running = $derived(isJobRunning(status.job));
   const pct = $derived(progressPercent(status.job));
-  const jobLine = $derived(formatJobStatus(status.job));
+  const jobLine = $derived(formatJobStatus(status.job, status.jobMatchesOpenSong));
+  const buttons = $derived(dialogButtons(status));
+  const firstUse = $derived(firstUseCopy(status));
 
   function stopPolling() {
-    if (pollTimer !== null) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
+    poller.stop();
   }
 
   function startPolling() {
-    if (pollTimer !== null) return;
-    pollTimer = setInterval(() => {
+    if (poller.mode === "fast") return;
+    poller.start("fast", 400, () => {
       void pollStatus();
-    }, 400);
+    });
+  }
+
+  function startBackgroundWatch() {
+    watchInBackground(poller, {
+      poll: statusNow,
+      toast: toast => bridge.showToast(toast),
+      onFinish: () => act(null),
+    });
+  }
+
+  function syncPollingFor(next) {
+    if (!isJobRunning(next?.job)) return;
+    if (open) startPolling();
+    else startBackgroundWatch();
   }
 
   async function pollStatus() {
     try {
-      const next = await invoke("stem_separation_action", { action: { kind: "status" } });
-      if (!next) return;
+      const next = await statusNow();
+      if (!next || poller.mode !== "fast") return;
       const prevState = lastJobState;
       const nextState = next.job?.state ?? "idle";
       status = next;
@@ -62,13 +84,16 @@
       if (!isJobRunning(next.job)) {
         stopPolling();
         if (nextState === "done" && prevState !== "done") {
-          notice = "Drum stem loaded. Press T anytime to flip between Song and Drums.";
+          notice = next.jobMatchesOpenSong
+            ? "Drum stem loaded. Press T anytime to flip between Song and Drums."
+            : "Drum stem cached for another song. Open that song's map to use it.";
           await act(null);
         } else if (nextState === "failed") {
           error = next.job?.message || "Stem separation failed.";
         }
       }
     } catch (err) {
+      if (poller.mode !== "fast") return;
       stopPolling();
       error = String(err);
     }
@@ -78,14 +103,16 @@
     if (!hasDoc) return;
     error = "";
     notice = "";
+    // Stops a background watch before anything else polls.
+    stopPolling();
     open = true;
     busy = true;
     try {
-      const next = await invoke("stem_separation_action", { action: { kind: "status" } });
+      const next = await statusNow();
       if (next) {
         status = next;
         lastJobState = next.job?.state ?? "idle";
-        if (isJobRunning(next.job)) startPolling();
+        syncPollingFor(next);
       }
     } catch (err) {
       error = String(err);
@@ -94,19 +121,18 @@
     }
   }
 
-  async function startSeparation() {
+  async function startSeparation(forceRerun) {
     if (busy || running) return;
     error = "";
     notice = "";
     busy = true;
     try {
-      const forceRerun = Boolean(status.cachedStemPath);
       const next = await invoke("stem_separation_action", { action: { kind: "start", forceRerun } });
       if (next) {
         status = next;
         lastJobState = next.job?.state ?? "idle";
         if (isJobRunning(next.job)) {
-          startPolling();
+          syncPollingFor(next);
         } else if (next.job?.state === "done") {
           notice = "Drum stem loaded from cache. Press T to flip between Song and Drums.";
           await act(null);
@@ -134,17 +160,16 @@
     }
   }
 
-  async function removeDownloadedModel() {
+  async function removeModel() {
     if (busy || running || !status.modelReady) return;
     error = "";
     notice = "";
     busy = true;
     try {
-      const next = await invoke("stem_separation_action", { action: { kind: "delete_cache" } });
-      if (next) {
-        status = next;
-        lastJobState = next.job?.state ?? "idle";
-      }
+      const next = await removeDownloadedModel({ invoke, confirm });
+      if (!next) return;
+      status = next;
+      lastJobState = next.job?.state ?? "idle";
       notice = "Removed the downloaded HT-Demucs model from this computer.";
     } catch (err) {
       error = String(err);
@@ -158,8 +183,13 @@
     bridge.callAction("pickDrumStem");
   }
 
+  // Closing mid-job keeps a slow poll alive only to raise one toast when the job ends.
   function closeModal() {
-    stopPolling();
+    if (running) {
+      startBackgroundWatch();
+    } else {
+      stopPolling();
+    }
     open = false;
   }
 
@@ -198,8 +228,7 @@
       <div class="ss-body">
         <p class="ss-copy">
           Optional: splits the song into a drums-only track locally on your CPU so you can flip
-          between Song and Drums with <kbd>T</kbd>. Downloads the ~166 MB HT-Demucs model once on
-          first use.
+          between Song and Drums with <kbd>T</kbd>.{#if firstUse} {firstUse}.{/if}
         </p>
 
         <div class="ss-summary">
@@ -241,10 +270,19 @@
             type="button"
             class="ss-primary"
             disabled={busy || running || !status.songLoaded}
-            onclick={startSeparation}
+            onclick={() => startSeparation(buttons.primary.forceRerun)}
           >
-            {running ? "Separating…" : primaryButtonLabel(status)}
+            {running ? "Separating…" : buttons.primary.label}
           </button>
+          {#if buttons.secondary && !running}
+            <button
+              type="button"
+              disabled={busy || !status.songLoaded}
+              onclick={() => startSeparation(buttons.secondary.forceRerun)}
+            >
+              {buttons.secondary.label}
+            </button>
+          {/if}
           {#if running}
             <button type="button" onclick={cancelSeparation}>Cancel</button>
           {/if}
@@ -259,7 +297,7 @@
               type="button"
               class="ss-danger"
               disabled={busy || running}
-              onclick={removeDownloadedModel}
+              onclick={removeModel}
             >
               Remove downloaded model
             </button>

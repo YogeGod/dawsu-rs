@@ -483,8 +483,15 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   if (songStem) {
     songStem.addEventListener("click", () => {
       if (!state.scene || state.view.busy || state.view.stemLoading) return;
-      if (state.view.stemLoaded) ctx.act({ kind: "toggle_stem_monitor" }, false);
-      else ctx.pickDrumStem();
+      if (state.view.stemLoaded) {
+        ctx.act({ kind: "toggle_stem_monitor" }, false);
+        return;
+      }
+      // No stem yet: offer both ways to get one (ipc.js marks the button aria-haspopup="menu").
+      const openMenu = env !== globalThis ? env.window?.openEditorMenu : actions.openEditorMenu;
+      if (typeof openMenu !== "function") return;
+      const box = songStem.getBoundingClientRect();
+      openMenu("stem", false, { x: box.left, y: box.bottom, trigger: songStem, label: "Add a drum stem" });
     });
     songStem.addEventListener("contextmenu", (event) => {
       if (!state.scene || state.view.busy || !state.view.stemLoaded) return;

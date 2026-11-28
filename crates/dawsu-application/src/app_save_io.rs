@@ -1329,6 +1329,7 @@ impl Application {
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         self.poll_node_graph();
+        self.poll_stem_separation();
         self.poll_async_jobs();
         let clock_snap = self.clock_snapshot();
         let midi_events = self.midi_recorder.poll_with_snapshot(
