@@ -831,9 +831,7 @@
     display: block;
     min-width: 0;
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
     font-size: 13px;
     font-weight: 650;
     color: #ffffff;
@@ -843,9 +841,7 @@
     display: block;
     min-width: 0;
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
     font-size: 11.5px;
     color: rgba(235, 235, 240, 0.84);
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);

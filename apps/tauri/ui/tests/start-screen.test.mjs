@@ -351,3 +351,15 @@ test("a Songs card's difficulty chip wraps a long name instead of cutting off wh
   assert.doesNotMatch(rule, /nowrap|ellipsis/);
   assert.match(rule, /overflow-wrap:\s*anywhere;/);
 });
+
+test("a Songs card's mapset title and mapper wrap instead of cutting off the song name", async () => {
+  // "Arch Echo - SUPER SUDDEN DEATH (Yoge God) (26)" showed as "Arch Echo - SUPER SUDDEN D...".
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/StartScreen.svelte", import.meta.url), "utf8").split("<style>")[1];
+  for (const selector of [".home-song-meta strong", ".home-song-creator"]) {
+    const rule = css.match(new RegExp(selector.replace(/[.]/g, "\\.") + String.raw`\s*\{([^}]*)\}`))?.[1] ?? "";
+    assert.ok(rule, `${selector} rule found`);
+    assert.doesNotMatch(rule, /nowrap|ellipsis/, selector);
+    assert.match(rule, /overflow-wrap:\s*anywhere;/, selector);
+  }
+});
