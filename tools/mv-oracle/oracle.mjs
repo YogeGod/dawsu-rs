@@ -8,13 +8,15 @@ export const MV_SHORT = MV_SHA.slice(0, 7);
 /** A new issue at one of these levels fails a case; `Minor` and `Info` are only reported. */
 export const FAIL_LEVELS = new Set(["Problem", "Warning", "Error"]);
 
-const TIMESTAMP = /\d{2}:\d{2}:\d{3}/g;
+// Kept verbatim: `mm:ss:mmm` timestamps and "quoted" names (MV quotes file names and other
+// identities; measured values sit outside quotes), so `"hit2.wav"` and `"hit8.wav"` stay distinct.
+const KEPT = /\d{2}:\d{2}:\d{3}|"[^"]*"/g;
 
-/** Keeps `mm:ss:mmm` timestamps and turns every other number into `#`, so a changed measured
- *  value ("20 ms" -> "21 ms") keeps its key while an issue at a new time gets a new one. */
+/** Keeps timestamps and quoted names and turns every other number into `#`, so a changed measured
+ *  value ("20 ms" -> "21 ms") keeps its key while an issue at a new time or file gets a new one. */
 export function normalizeMessage(message) {
-  const parts = String(message).split(TIMESTAMP);
-  const stamps = String(message).match(TIMESTAMP) ?? [];
+  const parts = String(message).split(KEPT);
+  const stamps = String(message).match(KEPT) ?? [];
   return parts
     // MV formats numbers with the invariant culture, so only "." is a decimal point.
     .map((part, i) => part.replace(/\d+(?:\.\d+)?/g, "#") + (stamps[i] ?? ""))

@@ -16,6 +16,14 @@ test("timestamps stay, other numbers become #", () => {
   assert.equal(normalizeMessage("00:01:500 (2,3) - 10% volume, 1.5x"), "00:01:500 (#,#) - #% volume, #x");
 });
 
+test("numbers inside quoted file names stay, so different files get different keys", () => {
+  assert.equal(normalizeMessage('"normal-hitnormal8.wav" is shorter than 25 ms (20 ms).'), '"normal-hitnormal8.wav" is shorter than # ms (# ms).');
+  const unused = (f) => ({ id: 2, level: "Problem", message: `"${f}"` });
+  const before = flatten(response({ General: [unused("normal-hitnormal2.wav")] }));
+  const after = flatten(response({ General: [unused("normal-hitnormal8.wav")] }));
+  assert.equal(diffIssues(before, after).failing.length, 1);
+});
+
 test("two same-template issues at different times count as two", () => {
   const before = flatten(response({ Hard: [muted("00:01:000")] }));
   const after = flatten(response({ Hard: [muted("00:01:000"), muted("00:02:000")] }));
