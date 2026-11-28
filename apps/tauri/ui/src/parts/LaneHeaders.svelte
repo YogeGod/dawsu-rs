@@ -3,7 +3,7 @@
   import { bridge } from "../lib/bridge.svelte.js";
   import { folderShades, laneShades } from "../lib/colour.js";
   import { attachStripWheel, laneHandlers } from "../lib/laneHandlers.js";
-  import { folderChip, laneIcons } from "../lib/lanes.js";
+  import { folderChip, laneIcons, splitLayerNumber } from "../lib/lanes.js";
   import Folder from "../icons/Folder.svg?raw";
   import FolderOpen from "../icons/FolderOpen.svg?raw";
   import Plus from "../icons/Plus.svg?raw";
@@ -74,9 +74,10 @@
         <button type="button" class="lane-disclosure" aria-expanded={!row.family.collapsed} aria-label={row.family.label}
           onclick={() => on.family(row.row)}>{row.family.collapsed ? "▸" : "▾"}</button>
       {/if}
-      <button type="button" class="name" class:two-line={names && !!row.caption} data-lane-row={row.row} aria-haspopup="menu" aria-expanded="false"
+      <button type="button" class="name" class:two-line={names && !!row.caption}
+        class:numbered={names && !row.caption && !!splitLayerNumber(row.name)[1]} data-lane-row={row.row} aria-haspopup="menu" aria-expanded="false"
         aria-label={"Select and audition " + row.label} aria-pressed={row.selected} title={row.title}
-        onclick={event => on.select(event, row.row)}>{#if names && row.caption}<span class="name-main">{row.name}</span><span class="name-caption">{row.caption}</span>{:else}{names ? row.name : "▶"}{/if}</button>
+        onclick={event => on.select(event, row.row)}>{#if names && row.caption}<span class="name-main">{row.name}</span><span class="name-caption">{row.caption}</span>{:else if names && splitLayerNumber(row.name)[1]}<span class="name-base">{splitLayerNumber(row.name)[0]}</span><span class="name-num">{splitLayerNumber(row.name)[1]}</span>{:else}{names ? row.name : "▶"}{/if}</button>
       {#if names && (row.vstRouted || row.vstBypassed)}
         <button type="button" class="vst-tag" class:bypassed={!!row.vstBypassed}
           aria-pressed={!!row.vstRouted}
@@ -309,6 +310,21 @@
     flex-direction: column;
     justify-content: center;
     line-height: 1.15;
+  }
+  /* A numbered layer: the base name takes the ellipsis, the number always shows. */
+  button.name.numbered {
+    display: flex;
+    align-items: center;
+  }
+  .name-base {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .name-num {
+    flex: none;
+    white-space: pre;
   }
   .name-main {
     overflow: hidden;
