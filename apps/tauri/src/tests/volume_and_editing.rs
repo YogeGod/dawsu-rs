@@ -1213,3 +1213,48 @@ fn per_hit_volumes_work_across_draw_vertical_drag_scopes_reload_and_moment_volum
     open(&mut app, &path);
     assert_eq!(snapshot(&app, false)["volumeScope"], "hits");
 }
+
+#[test]
+fn standalone_save_succeeds_after_scoped_controller_bar_drag_on_single_hit_moment() {
+    let root = Fixture::new("controller-standalone-save");
+    let path = root.0.join("Single.osu");
+    let map = "osu file format v14\n\n[General]\nMode:0\n\n[TimingPoints]\n0,500,4,1,0,100,1,0\n\n[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n";
+    fs::write(&path, map).unwrap();
+
+    let mut app = Application::headless();
+    open(&mut app, &path);
+    let scene = snapshot(&app, true)["scene"].clone();
+    let normal = scene["lanes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|l| l["name"].as_str().unwrap().to_lowercase().contains("hitnormal"))
+        .unwrap();
+
+    for (phase, value) in [("down", 60.0), ("up", 60.0)] {
+        Action::Pointer {
+            phase: phase.into(),
+            ms: 1000.0,
+            row: 0,
+            x: 0.0,
+            y: 0.0,
+            value: Some(value),
+            volume_lanes: Some(vec![normal]),
+            visible_rows: None,
+            button: None,
+            shift: false,
+            ctrl: false,
+            alt: false,
+        }
+        .run(&mut app);
+    }
+
+    Action::Save.run(&mut app);
+    wait_for_job(&mut app);
+    assert!(!app.is_dirty());
+    assert_eq!(
+        app.document().unwrap().composer.hitsounds().moments()[0].volume(),
+        60
+    );
+    assert!(!app.document().unwrap().composer.hitsounds().moments()[0].has_hit_volume_overrides());
+}

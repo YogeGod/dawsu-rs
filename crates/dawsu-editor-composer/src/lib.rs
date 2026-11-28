@@ -54,7 +54,7 @@ type MoveStroke = (Hitsounds, Vec<(HitKey, f64, i32)>, f64, i32);
 
 /// Collapses per-hit volume overrides back into the moment's shared volume once every hit on
 /// that moment plays at the same level, keeping standalone `.osu` saves override-free.
-fn collapse_uniform_moment_volume(hits: &mut dawsu_hitsounding::Hitsounds, id: MomentId) {
+pub fn collapse_uniform_moment_volume(hits: &mut dawsu_hitsounding::Hitsounds, id: MomentId) {
     let uniform = {
         let moment = hits.moment(id);
         if !moment.has_hit_volume_overrides() {
@@ -505,7 +505,7 @@ impl Composer {
                     return None;
                 }
                 let before = moment.hit_volume(&key.lane);
-                let desired = if relative { before + value } else { value };
+                let desired = if relative { before.saturating_add(value) } else { value };
                 let after = desired.clamp(floor, 100);
                 (after != before).then(|| (MomentId(key.moment), key.lane.clone(), after))
             })

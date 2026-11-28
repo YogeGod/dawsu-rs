@@ -2765,9 +2765,9 @@ pub(crate) fn load(
             }
         }
     }
-    if let Some(recovery) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
-        && let Err(error) = gain_recovery::restore(&mut document, recovery, defaults)
-
+    if recovery.is_none()
+        && let Some(gain_rec) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
+        && let Err(error) = gain_recovery::restore(&mut document, gain_rec, defaults)
     {
         warnings.push(format!("Editable hit gains could not be restored: {error}"));
     }
