@@ -527,7 +527,7 @@ pub(crate) fn prepare_save(
         0
     };
     let green_lines = |f: &OsuFile| f.timing_points().iter().filter(|tp| !tp.uninherited()).count();
-    let added_greenlines = green_lines(&out).saturating_sub(green_lines(&file));
+    let added_greenlines = green_lines(&out).saturating_sub(green_lines(file));
     let written = effective.clone();
     // The pending files the written difficulty plays go into the mapset with its mixes; the
     // project keeps the others the drawn hits still play.
