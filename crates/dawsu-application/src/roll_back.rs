@@ -442,9 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn an_hs_group_under_an_indexed_line_gets_its_circle_and_a_green_line() {
-        // The red line carries custom index 2, so a skin sound (index 0) needs a green line of its
-        // own; HS-mode Save adds it rather than leaving the group out (Yoge 2026-11-28).
+    fn an_hs_group_never_written_makes_no_circle() {
         let base = read(INDEXED);
         let opened = dec(&base);
         let mut drawn = opened.clone();
@@ -452,11 +450,11 @@ mod tests {
         drawn.add_hit(loose, skin(SampleSet::Soft, Hitsound::Normal));
         drawn.add_hit(loose, skin(SampleSet::Soft, Hitsound::Clap));
         let rolled = roll(&base, &drawn, &opened, true);
-        assert!(rolled.left_out.is_empty(), "{:?}", rolled.left_out);
-        assert_eq!(rolled.out.hit_objects().len(), 2, "one new circle for the group");
-        assert_eq!(rolled.circles.len(), 1);
-        let green = rolled.out.timing_points().iter().filter(|tp| !tp.uninherited()).count();
-        assert!(green >= 1, "a green line sets index 0 for the circle");
+        assert_eq!(rolled.out.to_bytes(), base.to_bytes(), "no 256,192 placeholder circle");
+        let [left] = &rolled.left_out[..] else { panic!("{:?}", rolled.left_out) };
+        assert_eq!(left.part, Part::Group(3000));
+        assert_eq!(left.problem.kind, ProblemKind::NeedsGreenLine);
+        assert!(rolled.circles.is_empty());
     }
 
     #[test]

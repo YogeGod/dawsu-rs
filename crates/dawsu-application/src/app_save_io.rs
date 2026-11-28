@@ -1854,13 +1854,10 @@ impl Application {
                                 .then(|| recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
                             let left_out = document.left_out.len();
                             let cleaned = report.cleaned_greenlines;
-                            let added = report.added_greenlines;
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
                             } else if left_out > 0 {
                                 format!("Saved with backup. {left_out} part{} left out.", if left_out == 1 { "" } else { "s" })
-                            } else if added > 0 {
-                                format!("Saved with backup. Added {added} green line{} so every hit plays as drawn.", if added == 1 { "" } else { "s" })
                             } else if cleaned > 0 {
                                 format!("Saved with backup. Removed {cleaned} redundant greenline{}.", if cleaned == 1 { "" } else { "s" })
                             } else {

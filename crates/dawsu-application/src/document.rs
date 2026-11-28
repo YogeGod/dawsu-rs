@@ -250,8 +250,6 @@ pub struct SaveReport {
     pub file: OsuFile,
     pub problems: Vec<SaveProblem>,
     pub cleaned_greenlines: usize,
-    /// Green lines this Save added beyond the ones the difficulty had (each change and its restore line).
-    pub added_greenlines: usize,
     pub(crate) written: Hitsounds,
     pub(crate) drawn: Hitsounds,
     pub(crate) left_out: Vec<roll_back::LeftOut>,
@@ -328,7 +326,7 @@ pub(crate) fn compile_pass(
     let mut removed_circles = BTreeSet::new();
     let (out, mut problems) = if hs {
         let groups = dawsu_hitsounding::hs::hs_groups(file, hits);
-        match dawsu_hitsounding::hs::compile_hs(file, hits, Placement::GreenLines, cancel, progress) {
+        match dawsu_hitsounding::hs::compile_hs(file, hits, Placement::OnObjects, cancel, progress) {
             dawsu_hitsounding::hs::CompiledHs::Done { mut file, mut problems, created } => {
                 let mut removed = BTreeSet::new();
                 for moment in hits.moments() {
@@ -451,10 +449,7 @@ pub(crate) fn prepare_save(
         }
         return Err("Editable hit gains need a writable editor project to save safely.".into());
     }
-    // Save adds the green lines a hit needs in HS mode too (Yoge 2026-11-28): on a mapset whose green
-    // lines carry a custom index, a skin sound (index 0) on a circle needs a line of its own, and
-    // values-on-objects-only left every such hit out. Generate and New hitsound diff stay on objects.
-    let placement = Placement::GreenLines;
+    let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
     let mut mix_files = mixes::MixFiles::default();
     let mut final_mix_target: Option<Hitsounds> = None;
     let mut checked = false;
@@ -526,8 +521,6 @@ pub(crate) fn prepare_save(
     } else {
         0
     };
-    let green_lines = |f: &OsuFile| f.timing_points().iter().filter(|tp| !tp.uninherited()).count();
-    let added_greenlines = green_lines(&out).saturating_sub(green_lines(file));
     let written = effective.clone();
     // The pending files the written difficulty plays go into the mapset with its mixes; the
     // project keeps the others the drawn hits still play.
@@ -612,7 +605,7 @@ pub(crate) fn prepare_save(
         .and_then(|project| project.settings.gain_recovery.as_ref())
         .is_some_and(|record| record.is_current(&expected, revision)));
     let plan = PreparedSave {
-        path: path.to_path_buf(), backups, expected, out, cleaned_greenlines, added_greenlines, mix_files, recovery_revision,
+        path: path.to_path_buf(), backups, expected, out, cleaned_greenlines, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
         pending_writes, pending_kept, ledger: pending.ledger(),
         verify_expected, verify_folder_files: editor,
@@ -773,7 +766,6 @@ pub(crate) struct PreparedSave {
     pub(crate) expected: Vec<u8>,
     pub(crate) out: OsuFile,
     pub(crate) cleaned_greenlines: usize,
-    pub(crate) added_greenlines: usize,
     pub(crate) mix_files: mixes::MixFiles,
     pub(crate) recovery_revision: Option<gain_recovery::Revision>,
     pub(crate) ownership: Option<project::HsCircleOwnership>,
@@ -917,7 +909,6 @@ impl PreparedSave {
                     file: OsuFile::read(bytes).file,
                     problems: Vec::new(),
                     cleaned_greenlines: self.cleaned_greenlines,
-                    added_greenlines: self.added_greenlines,
                     written: self.written,
                     drawn: self.drawn,
                     left_out: self.left_out,
