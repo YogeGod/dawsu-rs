@@ -122,6 +122,8 @@ test("Use in <lane>, whose label grows with the lane name, gets the full-width r
   // The stylesheet spans the last button across both columns; a fixed half-width cell cut it to "Use in Soft Nor…".
   assert.deepEqual(actions.map(item => item.text), ["+ Add as lane", "Browse…", "Use in Soft Normal"]);
   assert.match(actions[2].tag, /title="Use in Soft Normal"/);
+  const shownLane = shown(model({ preview, canAssign: true, canAddAsLane: false, laneShown: true }), BrowserPreview);
+  assert.match(button(shownLane, "+ Add as lane").tag, /disabled[^>]*title="This sample's lane is already on the timeline"|title="This sample's lane is already on the timeline"[^>]*disabled/);
   const css = readFileSync(new URL("../src/parts/browser.css", import.meta.url), "utf8");
   assert.match(css, /\.browser-actions button:last-child\s*\{\s*grid-column: 1 \/ -1;/);
 });

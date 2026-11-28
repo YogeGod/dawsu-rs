@@ -34,7 +34,8 @@
 {/if}
 <!-- Use in <lane> is last, so it takes the full-width row: its label grows with the lane's name. -->
 <div class="browser-actions">
-  <button type="button" id="browser-add-lane" disabled={off || !model.canAddAsLane} onclick={() => send("addLane")}>+ Add as lane</button>
+  <button type="button" id="browser-add-lane" disabled={off || !model.canAddAsLane}
+    title={model.laneShown ? "This sample's lane is already on the timeline" : null} onclick={() => send("addLane")}>+ Add as lane</button>
   <button type="button" disabled={off || !(model.canPick || model.canBrowseAdd)} onclick={() => send("browse")}>Browse…</button>
   <button type="button" disabled={off || !model.canAssign} title={useLabel} onclick={() => send("assign")}>{useLabel}</button>
 </div>

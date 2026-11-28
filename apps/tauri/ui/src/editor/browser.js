@@ -280,6 +280,7 @@ export function attachBrowser(ctx) {
       // A mapset sample already has a lane: Add only shows it, so it is offered only while that lane is hidden.
       canAddAsLane: !state.drag && !state.view.busy && Boolean(state.scene?.path) && visibleSamples.has(state.browserSample)
         && (library || laneHidden(mapsetSamples().get(state.browserSample))),
+      laneShown: !library && mapsetSamples().has(state.browserSample) && !laneHidden(mapsetSamples().get(state.browserSample)),
       canBrowseAdd: !state.drag && !state.view.busy && Boolean(state.scene?.path),
       // The lane Use replaces, by the name its header shows.
       target: sampleTarget() ? ctx.laneTitle(state.scene.lanes[state.view.activeLane]) : null,

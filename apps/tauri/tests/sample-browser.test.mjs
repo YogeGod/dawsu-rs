@@ -169,6 +169,7 @@ test("+ Add as lane is offered only for a mapset sample whose lane is hidden, ne
   action("pick", "kick.wav");
   await settle();
   assert.equal(model().canAddAsLane, false, "a lane already on screen has nothing to add");
+  assert.equal(model().laneShown, true, "the disabled button says why");
   const sent = calls.length;
   action("addLane");
   await settle();
