@@ -3,6 +3,7 @@
 import { describeOutputProblem, nameOf, outputProblemTime } from "./helpers.js";
 import { callAction, setModalOpen } from "../lib/registry.js";
 import { reviewMixSections } from "../lib/review.js";
+import { presetSummary } from "../lib/controls.js";
 
 export function attachModal(ctx) {
   const { env, state, dom, elements } = ctx;
@@ -202,8 +203,8 @@ export function attachModal(ctx) {
     } else if (state.view.firstLaunch) {
       const choose = (name) => ctx.act({ kind: "key_preset", name });
       ctx.modal("key-preset", "Choose your keyboard preset", [
-        paragraph("osu! Editor: arrow keys move on snap, Space plays, 1–3 switch tools."),
-        paragraph("DAW-like uses the editor’s default timeline shortcuts."),
+        paragraph(presetSummary("osu!")),
+        paragraph(presetSummary("DAW")),
       ], [["osu! Editor", () => choose("osu!"), true], ["DAW-like", () => choose("DAW")]], () => {});
     } else if (["error", "pending", "pending-home", "revert", "review", "save-review", "save-problems", "key-preset", "timeline-edit", "sound-set-update"].includes(state.modalKind)) {
       ctx.closeModal();

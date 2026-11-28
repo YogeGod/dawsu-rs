@@ -726,15 +726,19 @@ impl Application {
         drum_map: Option<&dawsu_hitsounding::drums::DrumMap>,
         snap_divisor: Option<u32>,
     ) -> Result<midi_record::MidiRecordStatus, String> {
-        if self.midi_recorder.armed {
+        if self.tap_recording_armed() {
             let port_name = self.midi_recorder.port_name.clone();
-            let snap = self.clock_snapshot();
-            let notes = self.midi_recorder.disarm_with_snapshot(
-                snap,
-                self.position_ms(),
-                self.is_playing(),
-                self.playback_speed,
-            );
+            let notes = if self.midi_recorder.armed {
+                let snap = self.clock_snapshot();
+                self.midi_recorder.disarm_with_snapshot(
+                    snap,
+                    self.position_ms(),
+                    self.is_playing(),
+                    self.playback_speed,
+                )
+            } else {
+                Vec::new()
+            };
             self.tap_recording_armed = false;
             let taps = std::mem::take(&mut self.tap_recorded_hits);
             let summary =
@@ -1325,6 +1329,7 @@ impl Application {
         self.check_set_versions_when_read();
         self.poll_drum_detection();
         self.poll_node_graph();
+        self.poll_stem_separation();
         self.poll_async_jobs();
         let clock_snap = self.clock_snapshot();
         let midi_events = self.midi_recorder.poll_with_snapshot(
@@ -1793,7 +1798,16 @@ impl Application {
                             // the state Undo returns to.
                             let compiled = report.written;
                             let drawn = report.drawn;
+                            let mixed = report.mixed;
+                            let cleaned_greenlines = report.cleaned_greenlines > 0;
                             if self.document.as_ref().is_some_and(|d| d.path == path) {
+                                if let Some(d) = self.document.as_mut()
+                                    && !report.published_mixes.is_empty()
+                                {
+                                    d.files.extend(report.published_mixes);
+                                    d.files.sort();
+                                    d.files.dedup();
+                                }
                                 self.pending_published(&report.published_pending, &report.pending_kept);
                                 // The written difficulty replaces the timed copy, before the sweep.
                                 self.drop_autosave();
@@ -1808,7 +1822,7 @@ impl Application {
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
                                 self.checkpoint = (!crate::practice::is_practice_mapset_path(&path))
-                                    .then(|| recovery::Checkpoint::after_save(d, &compiled, &drawn, hs_mode));
+                                    .then(|| recovery::Checkpoint::after_save(d, &compiled, &drawn, mixed.as_ref(), cleaned_greenlines, hs_mode));
                                 if let Some(id) = &self.restored_recovery {
                                     match recovery::archive(&self.data_root, id) {
                                         Ok(()) => self.restored_recovery = None,
@@ -1855,7 +1869,7 @@ impl Application {
                             let document = self.document.as_mut().unwrap();
                             document.composer.mark_saved();
                             self.checkpoint = (!crate::practice::is_practice_mapset_path(&path))
-                                .then(|| recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
+                                .then(|| recovery::Checkpoint::after_save(document, &compiled, &drawn, mixed.as_ref(), cleaned_greenlines, hs_mode));
                             let left_out = document.left_out.len();
                             let cleaned = report.cleaned_greenlines;
                             self.status = if archive_error.is_some() {

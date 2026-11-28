@@ -30,6 +30,7 @@ test("Home asks before leaving an edited difficulty and preserves recent and res
     },
     window: { __TAURI__: {
       core: { invoke: async (name, args) => {
+        if (name === "editor_shortcuts") return null;
         calls.push(JSON.parse(JSON.stringify(args?.action ?? null)));
         switch (args?.action?.kind) {
           case "home": status.pendingHome = true; break;

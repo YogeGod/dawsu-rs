@@ -1,10 +1,11 @@
 <script>
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "../lib/ipc.js";
-  import { forwardSpace } from "../lib/space.js";
+  import { onlyModalOpen } from "../lib/registry.js";
+  import { exportModalOnTop, forwardSpace } from "../lib/space.js";
   import {
     adoptChoices, afterPoll, baseByteIdentical, baseDiff, baseLineEndingsOnly, baseStatus,
-    baseVerification, blockDrops, choicesFrom, clampFallbackVolume, difficultyName,
+    baseVerification, blockDrops, choicesFrom, clampFallbackVolume, closeExport, difficultyName,
     divisorPresetFrom, exportDiffSummary, exportLabel, exportState, exportSummary,
     exportVerificationError, fileName, laneSwatches, matchWithinValid, minBeatsValid,
     openWarnings, optionsKey, ownWriteError, pollDelay, previewRequest, statusLine,
@@ -30,6 +31,8 @@
   let run = $state.raw(null);
   // The id of this window's last write, so only its own result shows.
   let lastRun = $state(null);
+  // The destination of the write in flight, kept when Export is pressed: the picker stays live during it.
+  let runWriteMode = null;
   // The footer's "N warnings", opened into the list of them.
   let showWarnings = $state(false);
   let showAdvanced = $state(false);
@@ -84,7 +87,7 @@
       if (adopted.choices) choices = adopted.choices;
       const after = afterPoll(run, next);
       run = after.run;
-      if (after.close) return close();
+      if (after.close) return close(true);
       if (after.preview) preview();
     } catch (error) {
       pollError = String(error);
@@ -141,6 +144,7 @@
     if (!status.canExport || run) return;
     run = { id: null };
     try {
+      runWriteMode = choices.writeMode;
       const id = await invoke("export_run", { previewId: sent.id });
       run = { id };
       lastRun = id;
@@ -213,23 +217,31 @@
     }
   });
 
-  async function close() {
+  // Cancel, Escape and the Export modal's backdrop all end here, once. wrote: this window's own write finished.
+  export async function close(wrote = false) {
+    if (closed) return;
     closed = true;
     stopListen();
     clearTimeout(pollTimer);
-    // A choice still waiting for its preview is sent first, so the editor keeps it with the map.
-    if (previewTimer !== null) await preview();
-    if (onclose) {
-      onclose();
-      return;
-    }
     try {
-      await invoke("close_export_window");
+      await closeExport({
+        flush: () => (previewTimer !== null ? preview() : undefined),
+        invoke,
+        onclose: onclose && (() => onclose({
+          wroteHitsoundOnly: wrote && runWriteMode === "hitsound_only",
+          writeId: wrote ? lastRun : null,
+        })),
+      });
     } catch (error) {
       closed = false;
       actionError = String(error);
       schedulePoll();
     }
+  }
+
+  // Embedded in the editor, Space goes to the timeline only while the Export modal is on top.
+  function onWindowKeydown(event) {
+    if (!onclose || exportModalOnTop(onlyModalOpen)) forwardSpace(event);
   }
 
   function showInEditor() {
@@ -250,7 +262,7 @@
   });
 </script>
 
-<svelte:window onkeydown={forwardSpace} />
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="export">
   <div class="routing">
@@ -307,14 +319,16 @@
           <button type="button" class="link" onclick={preview}>{line.tone === "stale" ? "Refresh" : "Preview again"}</button>
         {/if}
       {/if}
-      <button type="button" class="link" onclick={showInEditor}>Show in editor</button>
+      {#if !onclose}
+        <button type="button" class="link" onclick={showInEditor}>Show in editor</button>
+      {/if}
     </div>
     {#if warnings.length}
       <ul class="warning-list" id="export-warnings" aria-label="Warnings">
         {#each warnings as message, index (index)}<li>{message}</li>{/each}
       </ul>
     {/if}
-    <button type="button" class="secondary" onclick={close}>Cancel</button>
+    <button type="button" class="secondary" onclick={() => close()}>Cancel</button>
     <button type="button" class="primary" disabled={!status.canExport || !!run} onclick={exportNow}>{exportLabel(status.count)}</button>
   </footer>
 </div>

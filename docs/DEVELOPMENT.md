@@ -110,7 +110,7 @@ The standard Windows release build uses WASAPI, DirectSound, and MME. The ASIO d
   ```sh
   dotnet run -c Release --project tools/lazer-oracle -- tests/fixtures/lazer-oracle tests/fixtures/save-pack tests/fixtures/oracle-cases
   ```
-- **Windows release packaging (`tools/package-release.ps1`):** stages `dawsu-tauri.exe`, `dawsu_vst3_host.exe` (when built), docs, and assets; produces `-portable.zip`, `-setup.exe` (via Inno Setup), and `SHA256SUMS.txt` under `dist/release/`.
+- **Windows release packaging (`tools/package-release.ps1`):** stages the built `dawsu-tauri.exe` as `dawsu.exe`, plus `dawsu_vst3_host.exe` (when built) and docs, in one flat folder (it fails if the stage holds any subfolder, because the updater only accepts flat portable zips); produces `-portable.zip`, `-setup.exe` (via Inno Setup), and `SHA256SUMS.txt` under `dist/release/`.
 
 These tools require Windows (WebView2), except `tools/lazer-oracle`.
 

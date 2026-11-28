@@ -126,6 +126,7 @@
     border-radius: 6px;
     background: var(--editor-ink);
     box-shadow: var(--shadow-well);
+    color: var(--ink-on-dark);
     font-size: 13px;
     /* A drag that selects text would start a text drag on the next press and end the slider drag. */
     user-select: none;
@@ -137,7 +138,7 @@
     opacity: 0.45;
   }
   .label {
-    color: var(--editor-secondary);
+    color: #c7c7cc;
     font-weight: 500;
   }
   .mode-pill {
@@ -151,10 +152,11 @@
     font-weight: 600;
     cursor: pointer;
   }
-  .mode-pill.objects {
+  .mode-pill.objects,
+  .mode-pill.objects:hover:not(:disabled) {
     border-color: var(--editor-accent);
     background: rgba(56, 189, 248, 0.16);
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
   }
   .mode-pill:hover:not(:disabled) {
     color: var(--editor-text);

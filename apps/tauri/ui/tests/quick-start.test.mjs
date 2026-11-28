@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { render } from "svelte/server";
 import { bridge } from "../src/lib/bridge.svelte.js";
 import {
-  STEPS, STEP_COUNT, STORAGE_KEY, backStep, clampStep, isDone, isLastStep, markDone, nextStep, shouldAutoOpen,
+  STEP_COUNT, STORAGE_KEY, backStep, clampStep, isDone, isLastStep, markDone, nextStep, shouldAutoOpen,
+  stepsFor,
 } from "../src/lib/quickStart.js";
 import QuickStartTour from "../src/parts/QuickStartTour.svelte";
 
@@ -12,6 +13,7 @@ const fakeStorage = (entries = {}) => {
   return { getItem: key => data.has(key) ? data.get(key) : null, setItem: (key, value) => data.set(key, String(value)), data };
 };
 const mapOpen = { hasDocument: true, showHome: false, firstLaunch: false };
+const STEPS = stepsFor({ drawKey: "3" });
 
 test("the tour has five steps; Next and Back walk 1..5 and stop at the ends", () => {
   assert.equal(STEP_COUNT, 5);
@@ -32,6 +34,19 @@ test("step 2 keeps the design's f14 copy", () => {
   assert.equal(STEPS[1].title, "Draw a hit on a circle");
   assert.equal(STEPS[1].body,
     "Each row plays one sound. With Draw (3), click a row under a circle and the hit snaps onto it. Press Space to hear it with the song.");
+});
+
+test("step 2 names the preset's Draw key, and the last step says what Export… does", () => {
+  assert.match(stepsFor({ drawKey: "2" })[1].body, /With Draw \(2\), click a row/);
+  assert.match(stepsFor({ drawKey: "Shift+D" })[1].body, /With Draw \(Shift\+D\), click a row/);
+  assert.match(stepsFor({ drawKey: null })[1].body, /With Draw, click a row/);
+  for (const drawKey of ["2", "3"]) {
+    const steps = stepsFor({ drawKey });
+    assert.equal(steps.length, STEP_COUNT);
+    assert.ok(steps.every(step => !step.body.includes("packs the mapset")));
+    assert.equal(steps.at(-1).body,
+      "Save writes the hitsounds into the .osu file. Export… copies your hitsounds into the other difficulties.");
+  }
 });
 
 test("done is kept in localStorage as dawsu.quickStartDone = 1", () => {
@@ -82,5 +97,10 @@ test("the card shows its step, five pills, Back, Next or Done, and Skip tour", (
   assert.match(render(QuickStartTour).body, /class="qs-back[^"]*"[^>]*disabled/);
   bridge.quickStart = 2;
   assert.ok(render(QuickStartTour).body.includes("Press Space to hear it with the song."));
+  bridge.set({ keyPreset: "osu!" }, null);
+  assert.ok(render(QuickStartTour).body.includes("With Draw (2), click"), "osu! draws with 2");
+  bridge.set({ keyPreset: "DAW" }, null);
+  assert.ok(render(QuickStartTour).body.includes("With Draw (3), click"), "DAW draws with 3");
+  bridge.set(null, null);
   bridge.quickStart = 0;
 });

@@ -115,6 +115,7 @@
   padding: 0;
   overflow: hidden;
   background: var(--editor-tealtint);
+  color: var(--ink-on-dark);
 }
 .song-strip {
   display: grid;
@@ -143,7 +144,7 @@
 }
 .song-title {
   overflow: hidden;
-  color: var(--editor-text);
+  color: var(--ink-on-dark);
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
@@ -167,11 +168,11 @@
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.35);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), var(--shadow-raised);
-  color: var(--editor-secondary);
+  color: #c7c7cc;
   font: 600 12px var(--font-ui);
 }
 .ruler-sidebar .song-row button:hover:not(:disabled) {
-  color: var(--editor-text);
+  color: var(--ink-on-dark);
 }
 .ruler-sidebar #song-mute[aria-pressed="true"] {
   background: var(--editor-accent);

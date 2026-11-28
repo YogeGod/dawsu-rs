@@ -5,9 +5,10 @@ import { callAction, getTimelineTheme } from "./registry.js";
 export const STORAGE_KEY = "dawsu.colorScheme";
 
 export function hexToRgb(hex) {
-  const clean = String(hex || "#000000").replace("#", "");
-  const full = clean.length === 3 ? clean.split("").map(c => c + c).join("") : clean.slice(0, 6);
-  const n = Number.parseInt(full, 16) || 0;
+  const match = String(hex ?? "").trim().match(/^#?(?:([0-9a-f]{3})[0-9a-f]?|([0-9a-f]{6})(?:[0-9a-f]{2})?)$/i);
+  if (!match) return { r: 0, g: 0, b: 0 };
+  const full = match[1] ? match[1][0] + match[1][0] + match[1][1] + match[1][1] + match[1][2] + match[1][2] : match[2];
+  const n = Number.parseInt(full, 16);
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
@@ -51,6 +52,26 @@ export function hsbToHex({ h, s, b }, alpha = null) {
 function mixHex(a, b, t) {
   const ca = hexToRgb(a), cb = hexToRgb(b);
   return rgbToHex(ca.r + (cb.r - ca.r) * t, ca.g + (cb.g - ca.g) * t, ca.b + (cb.b - ca.b) * t);
+}
+
+// WCAG 2 relative luminance and contrast ratio.
+function luminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const lin = c => (c /= 255) <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function contrast(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const LIGHT_INK = "#f5f5f7";
+const DARK_INK = { text: "#141416", secondary: "#3c3c42", muted: "#4a4a50" };
+
+// The light or dark ink that reads better on `bgHex`.
+export function inkFor(bgHex) {
+  return contrast(LIGHT_INK, bgHex) >= contrast(DARK_INK.text, bgHex) ? LIGHT_INK : DARK_INK.text;
 }
 
 function tintDarkPalette(base, hue, sat, lift) {
@@ -118,7 +139,7 @@ export const SCHEMES = [
 ];
 
 export const COLOR_ROWS = [
-  { id: "scheme", group: "Custom Colors", label: "User Color Scheme", mainKey: "panel", hasHue: true },
+  { id: "scheme", group: "Custom Colors", label: "User Color Scheme", mainKey: "panel", hasHue: true, noBrightness: true },
   { id: "accent", group: "Custom Colors", label: "Accent Color", mainKey: "accent", hasHue: true },
   { id: "gridBg", group: "Grid Colors", label: "Background", mainKey: "canvas", hasHue: false },
   { id: "gridLines", group: "Grid Colors", label: "Grid Lines", mainKey: "barLine", hasHue: true },
@@ -169,19 +190,18 @@ export function resolvePalette(config) {
   const schemeHue = rows.scheme ? rows.scheme.h : hexToHsb(base.panel).h;
   const tinted = c => ({ h: schemeHue, s: c.s, b: c.b });
 
+  // The User Color Scheme tints hue and saturation only; brightness stays the built-in dark scheme's
+  // (Yoge, 2026-11-28: no bright schemes), so a saved `b` from older builds is ignored.
   if (rows.scheme) {
     const sc = rows.scheme;
-    const step = sc.b - hexToHsb(base.panel).b;
     for (const key of CHROME_KEYS) {
-      const orig = hexToHsb(base[key]);
-      base[key] = hsbToHex({ h: sc.h, s: sc.s, b: Math.max(0, Math.min(1, orig.b + step)) });
-    }
-    if (sc.b > 0.62) {
-      base.text = "#141416";
-      base.secondary = "#3c3c42";
-      base.muted = "#4a4a50";
+      base[key] = hsbToHex({ h: sc.h, s: sc.s, b: hexToHsb(base[key]).b });
     }
   }
+
+  // Keep a scheme's hand-tuned inks while they read on its panel; a bright panel takes dark ink.
+  if (inkFor(base.panel) !== LIGHT_INK) Object.assign(base, DARK_INK);
+  else if (contrast(base.text, base.panel) < 4.5) base.text = LIGHT_INK;
 
   if (rows.accent) {
     base.accent = hsbToHex(rows.accent);
@@ -222,6 +242,8 @@ export function resolvePalette(config) {
   if (rows.rulerActive) base.cycle = hsbToHex(rows.rulerActive);
   if (rows.rulerReverse) base.reverse = hsbToHex(rows.rulerReverse);
 
+  base.rulerBar = inkFor(base.ruler);
+  base.playhead = inkFor(base.canvas);
   return base;
 }
 
@@ -247,7 +269,6 @@ export function applyColorConfig(config, doc = null) {
     set("--editor-readout", palette.text);
     set("--editor-accent", palette.accent);
     set("--editor-focus", palette.focus);
-    set("--editor-warning", palette.cycle);
     set("--editor-error", palette.reverse);
     set("--transport-seg", palette.chrome);
   }
@@ -258,7 +279,7 @@ export function applyColorConfig(config, doc = null) {
     tl.activeRow = palette.activeRow;
     tl.group = palette.group;
     tl.ruler = palette.ruler;
-    tl.rulerBar = palette.text;
+    tl.rulerBar = palette.rulerBar;
     tl.rulerEdge = palette.border;
     tl.overview = palette.overview;
     tl.volume = palette.volume;
@@ -271,7 +292,7 @@ export function applyColorConfig(config, doc = null) {
     tl.cycle = palette.cycle;
     tl.loop = palette.loop;
     tl.locator = palette.locator;
-    tl.playhead = palette.text;
+    tl.playhead = palette.playhead;
   }
   callAction("paintSoon");
   return palette;

@@ -92,6 +92,8 @@ async function setupHarness({ deferInvoke = false } = {}) {
         core: {
           invoke: (_name, args) => {
             if (_name === "editor_waveform") return Promise.resolve(new Float32Array(0));
+            // The first view fetches the shortcuts (Slice 6); not a pointer or scene IPC.
+            if (_name === "editor_shortcuts") return Promise.resolve(null);
             calls.push(args ? JSON.parse(JSON.stringify(args)) : undefined);
             const buildReply = () => ({
               busy: false,

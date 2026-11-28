@@ -46,7 +46,7 @@
   padding: 0 12px;
   border-radius: var(--radius-6);
   background: var(--editor-ink);
-  color: var(--editor-muted);
+  color: #98989f;
 }
 .browser-search-row {
   display: flex;
@@ -98,11 +98,11 @@
   border: 0;
   outline: 0;
   background: transparent;
-  color: var(--editor-text);
+  color: var(--ink-on-dark);
   font: inherit;
 }
 .browser-search input::placeholder {
-  color: var(--editor-muted);
+  color: #98989f;
 }
 .browser-tabs {
   display: flex;

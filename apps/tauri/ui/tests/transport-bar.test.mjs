@@ -311,3 +311,16 @@ test("only TransportBar and MapPreview read bridge.playhead across all Svelte pa
   const transportSource = readFileSync(new URL("TransportBar.svelte", partsDir), "utf8");
   assert.match(transportSource, /readout\(\s*bridge\.playhead\s*,\s*scene\s*\)/);
 });
+
+test("MIDI Record's pressed state is view.tapRecordingArmed, also right after a toggle answer", () => {
+  const record = view => bar(shown({ busy: false, playing: false, cycle: false, ...view })).at(-1);
+  for (const armed of [true, false]) {
+    assert.match(record({ tapRecordingArmed: armed }), new RegExp(`aria-pressed="${armed}"`));
+  }
+  assert.match(record({ tapRecordingArmed: true }), /title="Stop MIDI recording and add the notes"/);
+  // No local flag can disagree with the view: the toggle answer only decides whether to refresh hits.
+  const source = readFileSync(new URL("../src/parts/TransportBar.svelte", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /let armed\b|\barmed = /);
+  assert.match(source, /const recordArmed = \$derived\(!!view\?\.tapRecordingArmed\);/);
+  assert.match(source, /await act\(null, !status\?\.armed && !!status\?\.committedNotes\);/);
+});

@@ -242,6 +242,28 @@ test("an empty track shows one hint line in the roll, and only while it has no n
   assert.equal(hint({ notes: [], trackId: null }), null);
 });
 
+test("the empty-track hint tracks bridge.shortcutsRev so Draw updates after refreshShortcuts", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { render } = await import("svelte/server");
+  const { bridge } = await import("../src/lib/bridge.svelte.js");
+  const { registerAction, actions } = await import("../src/lib/registry.js");
+  const { default: KeysoundRollSurface } = await import("../src/parts/keysounds/KeysoundRollSurface.svelte");
+  const surface = readFileSync(new URL("../src/parts/keysounds/KeysoundRollSurface.svelte", import.meta.url), "utf8");
+  assert.match(surface, /const drawKey = \$derived\(\([^)]*bridge\.shortcutsRev[^)]*toolKey/);
+  let key = "3";
+  registerAction("toolKey", tool => (tool === "Draw" ? key : null));
+  try {
+    const hint = () => render(KeysoundRollSurface, { props: { pitches, trackId: 4, trackName: "Lead", notes: [] } }).body
+      .replace(/<!--[^]*?-->/g, "").match(/<p class="ks-empty[^"]*"[^>]*>([^<]*)<\/p>/)?.[1] ?? null;
+    assert.match(hint(), /pick Draw \(3\)/);
+    key = "2";
+    bridge.shortcutsRev++;
+    assert.match(hint(), /pick Draw \(2\)/);
+  } finally {
+    delete actions.toolKey;
+  }
+});
+
 test("a wheel bend survives pointer moves while Alt or Ctrl stays held; pressing a key mid-drag sets its shape", () => {
   const keys = (altKey, ctrlKey) => ({ altKey, ctrlKey });
   // Shift+Alt press: ease in, then the wheel bends it to 1.25.

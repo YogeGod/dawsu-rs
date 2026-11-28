@@ -22,7 +22,7 @@ import { attachModal } from "./modal.js";
 import { attachPanels } from "./panels.js";
 import { createState } from "./state.js";
 import { attachTimeline } from "./timeline.js";
-import { createQuasimodeController, toolKeyFor } from "../lib/quasimode.js";
+import { createQuasimodeController, toolDisplayKeyFor, toolKeyFor } from "../lib/quasimode.js";
 import { PREVIEW_SKIN_KEY, readPreviewSkin, timelineSkinSource } from "../lib/previewSkin.js";
 import { resolveVisibleTapRow, tapLaneSlotForKey } from "../lib/tapRecord.js";
 import { attachGlobalWheelGuard } from "../lib/wheelGuard.js";
@@ -50,7 +50,7 @@ const readonlyStateFields = [
 
 const exportedMethods = [
   "invoke", "setStatusNotice", "run", "update", "act", "command", "toggle",
-  "missingUiParts", "renderFrame", "show",
+  "missingUiParts", "renderFrame", "show", "exportClosed",
   "dockState", "setDockOverride", "panelPrefs", "effectivePanelState",
   "panelOn", "togglePanel", "openPanelAt", "renderPanelLayout",
   "hydrateLaneLayout", "saveLaneLayout", "reorderSampleFolder", "folderHeaderModel",
@@ -88,7 +88,8 @@ const exportedMethods = [
   "editBookmark", "openTimeSignatures",
   "openFolders", "openAudioOutput", "openViewSettings", "openPreferences", "showHelp", "showShortcutEditor",
   "clampSnapInput", "popoverAction", "startScreenAction", "statusBarAction",
-  "setQuasimodeShortcuts", "notifyStrokeStart", "notifyStrokeEnd", "toolKey", "loadTimelineSkin",
+  "setQuasimodeShortcuts", "refreshShortcuts", "notifyStrokeStart", "notifyStrokeEnd", "toolKey", "toolDisplayKey",
+  "loadTimelineSkin",
   "startTelemetry", "parseTelemetryFrame",
 ];
 
@@ -102,7 +103,6 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
     ruler: $("ruler"),
     overview: $("overview"),
     dialog: $("dialog"),
-    speedButtons: [...env.document.querySelectorAll("[data-playback-speed]")],
   };
 
   const dock = env.window.editorDocking?.attach($("editor-dock"));
@@ -228,7 +228,25 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   };
   ctx.notifyStrokeStart = () => quasimode.notifyStrokeStart();
   ctx.notifyStrokeEnd = () => quasimode.notifyStrokeEnd();
-  ctx.setQuasimodeShortcuts = (shortcuts) => quasimode.setShortcuts(shortcuts);
+  // The last editor_shortcuts answer, for the keys tooltips and the tour name.
+  let shownShortcuts = null;
+  let shortcutLoads = 0;
+  ctx.setQuasimodeShortcuts = (shortcuts) => {
+    if (!Array.isArray(shortcuts?.entries)) return;
+    quasimode.setShortcuts(shortcuts);
+    shownShortcuts = shortcuts;
+    ctx.ui()?.shortcutsChanged?.();
+  };
+  // Fetches the shortcuts again after the first view, a preset switch, a rebind or Import…; an
+  // answer a newer fetch overtook is not applied.
+  ctx.refreshShortcuts = async () => {
+    const load = ++shortcutLoads;
+    const res = await invoke("editor_shortcuts");
+    if (load === shortcutLoads) ctx.setQuasimodeShortcuts(res);
+    return res;
+  };
+  // The key tooltips and the tour name for `tool`, "4" (Erase) and chords included.
+  ctx.toolDisplayKey = tool => toolDisplayKeyFor(shownShortcuts, state.view?.keyPreset, tool);
   ctx.setQuasimodePreset = (preset) => quasimode.setPreset(preset);
 
   function clampSnapInput(value, fallback) {
@@ -390,6 +408,9 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   // Keysounds mode owns the keyboard like a modal, except for its plain tool keys (keysoundsToolKey).
   const keysoundsMode = () => ctx.ui()?.mode?.() === "keysounds";
   const modalOpen = () => (env === globalThis && hasOpenModal()) || otherModalOpen() || keysoundsMode();
+  // Space from another window or the Export modal plays unless something else is open; the Export modal alone is not.
+  const spaceBlocked = () => otherModalOpen() || keysoundsMode() ||
+    (env === globalThis && hasOpenModal() && !onlyModalOpen("export"));
   // Plain 1-4 in Keysounds mode with nothing else open: the tool quasimode (plan 3.5, task 5.2).
   // Every other key stays with the Keysounds host, so no hit is tapped, deleted or edited.
   // Numpad digits are tap-lane keys, never tool keys, so they stay blocked here too.
@@ -455,6 +476,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   // Export opens inside the editor as a modal dialog (falling back to the standalone window if not mounted).
   $("export-entry").addEventListener("click", () => {
     const opener = env !== globalThis ? env.window?.openExportModal : modals.openExportModal;
+    ctx.exportOpened();
     if (typeof opener === "function") opener();
     else invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
   });
@@ -465,8 +487,15 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   if (songStem) {
     songStem.addEventListener("click", () => {
       if (!state.scene || state.view.busy || state.view.stemLoading) return;
-      if (state.view.stemLoaded) ctx.act({ kind: "toggle_stem_monitor" }, false);
-      else ctx.pickDrumStem();
+      if (state.view.stemLoaded) {
+        ctx.act({ kind: "toggle_stem_monitor" }, false);
+        return;
+      }
+      // No stem yet: offer both ways to get one (ipc.js marks the button aria-haspopup="menu").
+      const openMenu = env !== globalThis ? env.window?.openEditorMenu : actions.openEditorMenu;
+      if (typeof openMenu !== "function") return;
+      const box = songStem.getBoundingClientRect();
+      openMenu("stem", false, { x: box.left, y: box.bottom, trigger: songStem, label: "Add a drum stem" });
     });
     songStem.addEventListener("contextmenu", (event) => {
       if (!state.scene || state.view.busy || !state.view.stemLoaded) return;
@@ -654,7 +683,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
 
   // Space in the map preview window plays and stops here, through the same key route as the editor's own.
   env.window.__TAURI__.event.listen("preview-space", () => {
-    if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false || modalOpen()) return;
+    if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false || spaceBlocked()) return;
     ctx.act({ kind: "key", key: " ", code: "Space", ctrl: false, shift: false, alt: false });
   });
 
@@ -726,7 +755,6 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
       ruler: { value: elements.ruler, writable: true, configurable: true },
       overview: { value: elements.overview, writable: true, configurable: true },
       dialog: { value: elements.dialog, writable: true, configurable: true },
-      speedButtons: { value: elements.speedButtons, writable: true, configurable: true },
       dock: { value: dock, writable: true, configurable: true },
       playbackStartChoices: { value: playbackStartChoices, writable: true, configurable: true },
       sampleFolderNames: { value: sampleFolderNames, writable: true, configurable: true },

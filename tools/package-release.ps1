@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     1. Optionally builds the Svelte UI bundle and `dawsu-tauri.exe` (via `cargo build --locked`).
-    2. Stages `dawsu-tauri.exe`, `dawsu_vst3_host.exe` (if built), docs, and any default assets.
+    2. Stages `dawsu-tauri.exe` as `dawsu.exe`, `dawsu_vst3_host.exe` (if built), and docs into a flat folder.
     3. Produces `dawsu-v<version>-windows-x64-portable.zip`.
     4. Invokes Inno Setup (`ISCC.exe`) if installed to produce `dawsu-v<version>-windows-x64-setup.exe`.
     5. Writes `SHA256SUMS.txt` covering every release artifact in the output directory.
@@ -26,6 +26,18 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# The portable zip must stay flat: updater.rs rejects archives with subdirectories.
+function Assert-FlatStageDir {
+    param([Parameter(Mandatory)][string]$StageDir)
+    if (-not (Test-Path -LiteralPath $StageDir -PathType Container)) {
+        throw "Stage folder does not exist or is not a directory: $StageDir"
+    }
+    $dirs = @(Get-ChildItem -LiteralPath $StageDir -Directory -Force -ErrorAction Stop)
+    if ($dirs.Count -gt 0) {
+        throw "Stage folder $StageDir must be flat but contains subfolder(s): $(($dirs | ForEach-Object { $_.Name }) -join ', ')"
+    }
+}
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $CargoTomlPath = Join-Path $RepoRoot "apps\tauri\Cargo.toml"
@@ -98,7 +110,7 @@ if (Test-Path $StageDir) {
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-Copy-Item $TauriExe (Join-Path $StageDir "dawsu-tauri.exe")
+Copy-Item $TauriExe (Join-Path $StageDir "dawsu.exe")
 if ($Vst3HostExe) {
     Write-Host "==> Bundling VST3 sidecar: $Vst3HostExe"
     Copy-Item $Vst3HostExe (Join-Path $StageDir "dawsu_vst3_host.exe")
@@ -115,10 +127,7 @@ foreach ($doc in @("README.md", "THIRD-PARTY-NOTICES.md")) {
     }
 }
 
-$DefaultAssets = Join-Path $RepoRoot "assets"
-if (Test-Path $DefaultAssets) {
-    Copy-Item -Recurse -Force $DefaultAssets (Join-Path $StageDir "assets")
-}
+Assert-FlatStageDir $StageDir
 
 # Build flat portable ZIP (updater.rs enforces flat archives with no subdirectories and checks portable.marker)
 $PortableStageDir = Join-Path $OutputDir "portable-stage"

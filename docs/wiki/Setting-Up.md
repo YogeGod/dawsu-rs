@@ -9,7 +9,7 @@ This page walks you through installing **dawsu!**, configuring audio and your os
 Download the latest Alpha build from the [GitHub Releases page](https://github.com/YogeGod/dawsu-rs/releases). Two Windows x64 packages are published for each release alongside `SHA256SUMS.txt`:
 
 - **Setup Installer (`dawsu-v…-windows-x64-setup.exe`):** Installs per-user into `%LOCALAPPDATA%\Programs\dawsu` (no administrator rights required). During setup you can optionally create a Desktop shortcut or associate `.osu` and `.osz` files with dawsu!.
-- **Portable ZIP (`dawsu-v…-windows-x64-portable.zip`):** Extract anywhere on your PC and launch `dawsu-tauri.exe`. Keeps a `portable.marker` file in its folder so updates know to stay portable.
+- **Portable ZIP (`dawsu-v…-windows-x64-portable.zip`):** Extract anywhere on your PC and launch `dawsu.exe`. Keeps a `portable.marker` file in its folder so updates know to stay portable.
 
 > [!NOTE]
 > **Windows SmartScreen:** Early Alpha builds are not code-signed, so Windows may show a *"Windows protected your PC"* prompt on first launch. You can verify the download's SHA-256 checksum against `SHA256SUMS.txt` on the Releases page before clicking **More info → Run anyway**.

@@ -159,11 +159,16 @@ pub(crate) fn open_from_osu(state: State<'_, Editor>) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub(crate) fn reload_osu_editor(state: State<'_, Editor>) -> Result<osu_link::OsuReloadResult, String> {
-    let Some(path) = ask(&state, Request::CurrentDocumentPath)? else {
+pub(crate) async fn reload_osu_editor(
+    state: State<'_, Editor>,
+) -> Result<osu_link::OsuReloadResult, String> {
+    let Some((path, identity)) = ask(&state, Request::OsuReloadTarget)? else {
         return Err("Open a difficulty before reloading it in osu!.".into());
     };
-    Ok(osu_link::reload_osu_editor(&path))
+    // The reload sleeps (300 ms focus wait, key pacing): keep it off the IPC thread.
+    tauri::async_runtime::spawn_blocking(move || osu_link::reload_osu_editor(&path, &identity))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 

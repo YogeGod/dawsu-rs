@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { render } from "svelte/server";
 import {
-  adoptChoices, afterPoll, baseDiff, baseStatus, ownWriteError, blockDrops, choicesFrom, diffView,
+  adoptChoices, afterPoll, baseDiff, baseStatus, ownWriteError, blockDrops, choicesFrom, closeExport, diffView,
   divisorPresetFrom, divisorsFromPreset, minBeatsValid, runOutcome, statusLine, copyOptions,
   defaultChoices, defaultSliderEndMute, difficultyName, exportDiffSummary, exportLabel, exportState,
   exportSummary, exportVerificationError, filterDiffGroups, included, laneSwatches, matchWithinValid,
@@ -167,6 +167,53 @@ test("before the first answer the window shows no rows and a disabled Export", (
   assert.match(body, />Show in editor<\/button>/);
   assert.doesNotMatch(body, /role="switch"/);
   assert.doesNotMatch(body, /ROUTING|Routing/, "no eyebrow label");
+});
+
+test("Show in editor is offered only by the Export window, not by the Export modal inside the editor", () => {
+  assert.match(render(ExportWindow, { props: { initialView: view } }).body, />Show in editor<\/button>/);
+  const embedded = render(ExportWindow, { props: { initialView: view, onclose: () => {} } }).body;
+  assert.doesNotMatch(embedded, /Show in editor/);
+  assert.match(embedded, />Cancel<\/button>/);
+});
+
+test("closing sends a waiting choice first, then tells the editor, then closes the modal", async () => {
+  const steps = [];
+  const invoke = async name => { steps.push(name); };
+  const flush = async () => { steps.push("export_preview"); };
+  await closeExport({ flush, invoke, onclose: () => steps.push("onclose") });
+  assert.deepEqual(steps, ["export_preview", "close_export_window", "onclose"]);
+
+  // Embedded, the modal closes even when the editor refuses or is gone.
+  steps.length = 0;
+  await closeExport({ flush, invoke: async name => { steps.push(name); throw new Error("lost"); },
+    onclose: () => steps.push("onclose") });
+  assert.deepEqual(steps, ["export_preview", "close_export_window", "onclose"]);
+
+  // The Export window stays open with its error when the editor refuses to close it.
+  steps.length = 0;
+  await assert.rejects(closeExport({ flush, invoke: async name => { steps.push(name); throw new Error("nope"); } }), /nope/);
+  assert.deepEqual(steps, ["export_preview", "close_export_window"]);
+});
+
+test("Cancel, Escape and the backdrop all go through ExportWindow's one close, which runs once", () => {
+  const read = name => readFileSync(new URL(`../src/parts/${name}.svelte`, import.meta.url), "utf8");
+  const win = read("ExportWindow");
+  assert.match(win, /export async function close\(wrote = false\) \{\s*if \(closed\) return;\s*closed = true;/,
+    "a double click or Escape while a preview is still being sent closes once");
+  assert.match(win, /await closeExport\(\{/);
+  assert.match(win, /onclick=\{\(\) => close\(\)\}>Cancel</, "Cancel is no write: the click event is not passed as one");
+  assert.match(win, /if \(after\.close\) return close\(true\);/, "only the window's own finished write");
+  assert.match(win, /runWriteMode = choices\.writeMode;\s*const id = await invoke\("export_run"/,
+    "the write's mode is kept when Export is pressed");
+  assert.match(win, /wroteHitsoundOnly: wrote && runWriteMode === "hitsound_only"/,
+    "a destination switched during the write does not change what the write was");
+  assert.doesNotMatch(win, /wroteHitsoundOnly: wrote && choices\.writeMode/);
+  const modal = read("ExportModal");
+  assert.match(modal, /<ExportWindow bind:this=\{exportWindow\} onclose=\{closed\} \/>/);
+  assert.match(modal, /function requestClose\(\) \{\s*exportWindow\?\.close\(\);\s*\}/);
+  assert.match(modal, /if \(e\.target === e\.currentTarget\) requestClose\(\);/, "the backdrop");
+  assert.match(modal, /event\.preventDefault\(\);\s*requestClose\(\);/, "Escape");
+  assert.doesNotMatch(modal, /open = false;\s*\}\s*function onKeydown/, "no second close path beside ExportWindow's");
 });
 
 test("each difficulty is a row with its include switch; a left-out one keeps its own hitsounds", () => {

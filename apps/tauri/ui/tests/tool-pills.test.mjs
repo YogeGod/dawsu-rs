@@ -125,3 +125,57 @@ test("the Keysounds pills toggle the roll's switches through the host's action",
   assert.match(pill, /bridge\.callAction\("keysoundsUi", name\)/);
   assert.match(host, /bridge\.registerAction\("keysoundsUi", \(action, \.\.\.args\) => ui\[action\]\?\.\(\.\.\.args\)\)/);
 });
+
+test("toolDisplayKeyFor keeps 4 for Erase and the mapper's own keys, while quasimode leaves 4 to its tap/hold", async () => {
+  const { buildToolKeyMap, toolDisplayKeyFor, MORE_TOOLS_KEY } = await import("../src/lib/quasimode.js");
+  assert.equal(toolDisplayKeyFor(null, "DAW", "Select"), "1");
+  assert.equal(toolDisplayKeyFor(null, "DAW", "Draw"), "3");
+  assert.equal(toolDisplayKeyFor(null, "DAW", "Erase"), "4");
+  assert.equal(toolDisplayKeyFor(null, "osu!", "Draw"), "2");
+  assert.equal(toolDisplayKeyFor(null, "osu!", "Erase"), "4");
+  assert.equal(toolDisplayKeyFor(null, "osu!", "Grab"), null);
+  assert.equal(toolDisplayKeyFor(null, "DAW", "Range"), null);
+  const rebound = { preset: "DAW", entries: [
+    ["toolSelect", "Select", ["1"]], ["toolDraw", "Draw", ["Shift+D", "3"]], ["toolErase", "Erase", ["4"]],
+    ["toolRange", "Range", []],
+  ] };
+  assert.equal(toolDisplayKeyFor(rebound, "DAW", "Draw"), "Shift+D", "the first key, as menus show it");
+  assert.equal(toolDisplayKeyFor(rebound, "DAW", "Erase"), "4");
+  assert.equal(toolDisplayKeyFor(rebound, "DAW", "Range"), null, "unbound stays unbound");
+  assert.equal(toolDisplayKeyFor(rebound, "DAW", "Mute"), "5", "a command the answer leaves out falls back to the default");
+  assert.equal(MORE_TOOLS_KEY, "4");
+  assert.equal(buildToolKeyMap(rebound, "DAW")["4"], undefined, "4 stays out of the quasimode map");
+});
+
+test("pill titles name each tool's key in the current preset and follow rebound keys", async () => {
+  const { registerAction, actions } = await import("../src/lib/registry.js");
+  const { toolDisplayKeyFor } = await import("../src/lib/quasimode.js");
+  const titles = html => [...html.matchAll(/<button[^>]*title="([^"]*)"/g)].map(match => match[1]);
+  assert.deepEqual(titles(shown(ToolPills, { tool: "Select", busy: false, keyPreset: "DAW" })),
+    ["Select (1)", "Draw (3)", "Erase (4)", "More tools (4)"]);
+  assert.deepEqual(titles(shown(ToolPills, { tool: "Select", busy: false, keyPreset: "osu!" })),
+    ["Select (1)", "Draw (2)", "Erase (4)", "More tools (4)"]);
+  const entries = [["toolSelect", "Select", ["Q"]], ["toolDraw", "Draw", ["W"]], ["toolErase", "Erase", ["4"]]];
+  registerAction("toolDisplayKey", tool => toolDisplayKeyFor({ entries }, "DAW", tool));
+  try {
+    bridge.shortcutsRev++;
+    assert.deepEqual(titles(shown(ToolPills, { tool: "Select", busy: false, keyPreset: "DAW" })),
+      ["Select (Q)", "Draw (W)", "Erase (4)", "More tools (4)"]);
+  } finally {
+    delete actions.toolDisplayKey;
+  }
+});
+
+test("an unbound tool's pill shows just its name, not the preset default", async () => {
+  const { registerAction, actions } = await import("../src/lib/registry.js");
+  const { toolDisplayKeyFor } = await import("../src/lib/quasimode.js");
+  registerAction("toolDisplayKey", tool => toolDisplayKeyFor({ entries: [["toolDraw", "Draw", []]] }, "DAW", tool));
+  try {
+    bridge.shortcutsRev++;
+    const html = shown(ToolPills, { tool: "Select", busy: false, keyPreset: "DAW" });
+    assert.match(html, /title="Draw"/);
+    assert.doesNotMatch(html, /title="Draw \(3\)"/);
+  } finally {
+    delete actions.toolDisplayKey;
+  }
+});

@@ -1,5 +1,6 @@
 // Pure hover-hint helpers for the editor's bottom status bar.
-// Maps (zone, activeTool) -> compact [{ keys, action }] gesture hints in plain osu! mapper English.
+// Maps (zone, activeTool, keyPreset) -> compact [{ keys, action }] gesture hints in plain osu! mapper English.
+import { wheelHints } from "./controls.js";
 
 const TIMELINE_HINTS = {
   Select: [
@@ -11,22 +12,22 @@ const TIMELINE_HINTS = {
   Draw: [
     { keys: "Click", action: "Place hit" },
     { keys: "Right-click", action: "Delete" },
-    { keys: "Alt+Wheel", action: "Zoom" },
+    { wheel: "zoom", action: "Zoom" },
   ],
   Erase: [
     { keys: "Click / Drag", action: "Erase hits" },
     { keys: "Alt+Click", action: "Draw hit" },
-    { keys: "Alt+Wheel", action: "Zoom" },
+    { wheel: "zoom", action: "Zoom" },
   ],
   Mute: [
     { keys: "Click / Drag", action: "Mute hits" },
     { keys: "Alt+Click", action: "Draw hit" },
-    { keys: "Alt+Wheel", action: "Zoom" },
+    { wheel: "zoom", action: "Zoom" },
   ],
   Grab: [
     { keys: "Drag", action: "Pan timeline" },
-    { keys: "Alt+Wheel", action: "Zoom" },
-    { keys: "Wheel", action: "Seek" },
+    { wheel: "zoom", action: "Zoom" },
+    { wheel: "seek", action: "Seek" },
   ],
   Range: [
     { keys: "Drag", action: "Mark range" },
@@ -36,7 +37,7 @@ const TIMELINE_HINTS = {
   Ramp: [
     { keys: "Drag", action: "Ramp volume" },
     { keys: "Right-click", action: "Delete" },
-    { keys: "Alt+Wheel", action: "Zoom" },
+    { wheel: "zoom", action: "Zoom" },
   ],
 };
 
@@ -45,7 +46,6 @@ const ZONE_HINTS = {
     { keys: "Drag", action: "Set cycle loop" },
     { keys: "Ctrl+Click", action: "L locator" },
     { keys: "Alt+Click", action: "R locator" },
-    { keys: "Wheel", action: "Zoom" },
   ],
   volume: [
     { keys: "Drag", action: "Adjust" },
@@ -75,14 +75,17 @@ const ZONE_HINTS = {
   ],
   overview: [
     { keys: "Click / Drag", action: "Jump & pan song" },
-    { keys: "Wheel", action: "Zoom" },
   ],
 };
 
-export function hintsFor(zone, tool) {
+// Wheel rows take their keys from the preset (controls.js); a gesture the preset lacks is left out.
+export function hintsFor(zone, tool, keyPreset = "DAW") {
   if (!zone || typeof zone !== "string") return [];
   if (zone === "timeline") {
-    return TIMELINE_HINTS[tool] ?? TIMELINE_HINTS.Select;
+    const wheel = wheelHints(keyPreset);
+    return (TIMELINE_HINTS[tool] ?? TIMELINE_HINTS.Select)
+      .map(row => (row.wheel ? (wheel[row.wheel] ? { keys: wheel[row.wheel], action: row.action } : null) : row))
+      .filter(Boolean);
   }
   return ZONE_HINTS[zone] ?? [];
 }

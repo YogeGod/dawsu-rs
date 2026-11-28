@@ -19,7 +19,7 @@
 #define MyAppName "dawsu!"
 #define MyAppPublisher "YogeGod"
 #define MyAppURL "https://github.com/YogeGod/dawsu-rs"
-#define MyAppExeName "dawsu-tauri.exe"
+#define MyAppExeName "dawsu.exe"
 
 [Setup]
 AppId={{8E5F2D61-4C8B-4B97-9E71-3F5D8A9E42C1}
@@ -62,7 +62,6 @@ Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\dawsu_vst3_host.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SourceDir}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#SourceDir}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -86,6 +85,10 @@ Root: HKA; Subkey: "Software\Classes\dawsu.Mapset\shell\open\command"; ValueType
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 ; Silent auto-update relaunch triggered by apps/tauri/src/updater.rs when /relaunch=1 is passed.
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: Relaunch
+
+[InstallDelete]
+; Builds before the dawsu.exe rename installed dawsu-tauri.exe; remove it on upgrade.
+Type: files; Name: "{app}\dawsu-tauri.exe"
 
 [UninstallDelete]
 Type: files; Name: "{app}\*.old"

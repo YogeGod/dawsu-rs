@@ -51,6 +51,8 @@ pub(crate) enum Request {
     CreateHitsoundDiffFromCurrent(mpsc::Sender<Result<PathBuf, String>>),
     SongsDirectory(mpsc::Sender<Option<PathBuf>>),
     CurrentDocumentPath(mpsc::Sender<Option<PathBuf>>),
+    /// The open difficulty's path and the `[Metadata]` an osu!stable window title must name.
+    OsuReloadTarget(mpsc::Sender<Option<(PathBuf, osu_link::SavedMapIdentity)>>),
     SetSongsDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
     LibraryDirectory(mpsc::Sender<Option<PathBuf>>),
     SetLibraryDirectory(PathBuf, mpsc::Sender<Result<ViewResponse, String>>),
@@ -476,6 +478,14 @@ fn editor_thread_with_cache(
                         let _ = response.send(value);
                     }
                 }
+                Ok(Request::OsuReloadTarget(response)) => {
+                    if let Ok(value) = guard(&mut app, &mut fault, |app| {
+                        app.document()
+                            .map(|d| (d.path.clone(), osu_link::SavedMapIdentity::from_document(d)))
+                    }) {
+                        let _ = response.send(value);
+                    }
+                }
                 Ok(Request::CreateHitsoundDiff(sibling_path, reuse_existing, starter_mode, response)) => {
                     let result = guard(&mut app, &mut fault, |app| {
                         app.create_hitsound_diff(&sibling_path, reuse_existing, starter_mode)
@@ -642,6 +652,7 @@ fn editor_thread_with_cache(
                             app.document().map(|d| d.path.as_path()),
                             app.preferences().hitsound_library.as_deref(),
                             &dawsu_application::data_folder(),
+                            app.last_hitsound_only_export(),
                         )
                     })
                     .and_then(|result| result);

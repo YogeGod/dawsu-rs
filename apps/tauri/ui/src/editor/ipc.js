@@ -4,6 +4,7 @@ import { callAction, showToast } from "../lib/registry.js";
 import { markPracticeTried } from "../lib/startScreen.js";
 import { sameSoundSetPrompts, sameUiView } from "../lib/view.js";
 import { parseSpectrumFrame } from "../lib/spectrum.js";
+import { osuReloadFailedToast, osuReloadToast } from "../lib/tapRecord.js";
 
 function folderOfPath(path) {
   const normalized = String(path ?? "");
@@ -475,7 +476,8 @@ export function attachIpc(ctx) {
   // last message told is kept, so a view still busy after the write (a sweep) can't swallow it.
   function announceWrite(before, after, hadMap) {
     const status = after.status ?? "";
-    const title = /^Saved\b/.test(status) ? "Saved" : /^Wrote \d+ reviewed files?\b/.test(status) ? "Files written" : null;
+    const title = /^Saved\b/.test(status) ? "Saved" : /^Wrote \d+ reviewed files?\b/.test(status) ? "Files written"
+      : /^Exported \d+ hitsound-only file\(s\)/.test(status) ? "Hitsound-only export written" : null;
     if (!title) {
       state.announcedWrite = null;
       return;
@@ -484,6 +486,12 @@ export function attachIpc(ctx) {
     // The same message again is news only when the map became saved with it (a second Save).
     if (status === state.announcedWrite && !(before.dirty && !after.dirty)) return;
     state.announcedWrite = status;
+    if (title === "Hitsound-only export written") {
+      // The Export modal already told this write when it closed (its status came too late): once.
+      if (state.toldExportWriteId != null) return;
+      toastHitsoundOnly(status);
+      return;
+    }
     if (title === "Saved" && after.isLazerExternalEdit) {
       try {
         notifyToast({
@@ -494,17 +502,59 @@ export function attachIpc(ctx) {
       } catch (error) { (env.console ?? console).error(error); }
       return;
     }
-    if (title === "Saved" && after.reloadOsuAfterSave) {
-      invoke("reload_osu_editor").then((res) => {
-        const toastTitle = res?.status === "reloaded_stable" ? "Saved & reloaded in osu!" : title;
-        const body = res?.status === "reloaded_stable" ? `${status} ${res.message}` : status;
-        notifyToast({ tone: "success", title: toastTitle, body });
-      }).catch(() => {
-        notifyToast({ tone: "success", title, body: status });
-      });
-      return;
-    }
     try { notifyToast({ tone: "success", title, body: status }); } catch (error) { (env.console ?? console).error(error); }
+    // The reload runs after the Saved toast; only a reload that did not happen raises a second one.
+    if (title === "Saved" && after.reloadOsuAfterSave) {
+      invoke("reload_osu_editor").then(
+        (res) => {
+          if (res && res.status !== "reloaded_stable" && res.status !== "lazer_external_edit") notifyToast(osuReloadToast(res));
+        },
+        (error) => notifyToast(osuReloadFailedToast(error)),
+      ).catch((error) => (env.console ?? console).error(error));
+    }
+  }
+
+  function toastHitsoundOnly(body) {
+    state.hitsoundToasts = (state.hitsoundToasts ?? 0) + 1;
+    const actions = [{ label: "Open folder", onClick: () => {
+      invoke("open_editor_folder", { folder: "last_export" }).catch(error => ctx.setStatusNotice(String(error)));
+    } }];
+    try {
+      notifyToast({ tone: "success", title: "Hitsound-only export written", body, actions });
+    } catch (error) { (env.console ?? console).error(error); }
+  }
+
+  // A second identical hitsound-only write looks like the first in the view, so the Export modal
+  // says when it closes on its own write: unless a hitsound-only write was told since it opened,
+  // it is told again. Only hitsound-only toasts count, so a Save told meanwhile hides nothing.
+  // toldExportWriteId is the write the close told: a late view of it is not told twice.
+  function exportOpened() {
+    state.hitsoundToastsAtExportOpen = state.hitsoundToasts ?? 0;
+    state.toldExportWriteId = null;
+  }
+
+  function exportClosed(wroteHitsoundOnly, writeId = null) {
+    if (!wroteHitsoundOnly) return Promise.resolve();
+    return run(async () => {
+      await update(null, false);
+      if (state.toldExportWriteId != null) return;
+      // A view that looks unchanged takes show's idle fast path, which tells nothing: tell it here.
+      if ((state.hitsoundToasts ?? 0) !== state.hitsoundToastsAtExportOpen) {
+        state.toldExportWriteId = writeId ?? true;
+        return;
+      }
+      if (/^Exported \d+ hitsound-only file\(s\)/.test(state.view?.status ?? "")) {
+        state.announcedWrite = null;
+        announceWrite(state.view, state.view, !!state.scene);
+        state.toldExportWriteId = writeId ?? true;
+        return;
+      }
+      // The window saw its own write finish, but a later message (a background stem load) replaced
+      // the Exported status before a view showed it: still tell the write.
+      if (!state.scene) return;
+      toastHitsoundOnly("Exported the hitsound-only files (mapset untouched).");
+      state.toldExportWriteId = writeId ?? true;
+    });
   }
 
   function samePollBase(before, next) {
@@ -588,6 +638,12 @@ export function attachIpc(ctx) {
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
     ctx.setQuasimodePreset?.(state.view.keyPreset);
+    // The first view and every preset switch (the first-launch chooser too) fetch the shortcuts again.
+    const shortcutPreset = state.view.keyPreset ?? "";
+    if (shortcutPreset !== state.lastShortcutPreset) {
+      state.lastShortcutPreset = shortcutPreset;
+      ctx.refreshShortcuts?.().catch(() => {});
+    }
     if (!state.view.hasDocument || state.view.showHome) {
       state.scene = null;
       state.pendingDrawHits = [];
@@ -755,6 +811,13 @@ export function attachIpc(ctx) {
       const stemName = state.view.stemName || "stem";
       stemButton.ariaPressed = String(stemActive);
       stemButton.dataset.loaded = String(stemLoaded);
+      // With no stem the button opens the stem menu; once one loads it toggles Song and Stem.
+      if (!stemLoaded && !stemLoading) {
+        stemButton.setAttribute("aria-haspopup", "menu");
+      } else {
+        stemButton.removeAttribute?.("aria-haspopup");
+        stemButton.removeAttribute?.("aria-expanded");
+      }
       if (stemLoading) {
         stemButton.textContent = "Stem…";
         stemButton.title = `Loading drum stem (${stemName})…`;
@@ -767,7 +830,7 @@ export function attachIpc(ctx) {
         stemButton.setAttribute("aria-label", stemActive ? `Monitoring stem ${stemName}` : `Monitoring song, switch to stem ${stemName}`);
       } else {
         stemButton.textContent = "+ Stem";
-        stemButton.title = "Attach a drum stem audio file (T toggles Song / Stem)";
+        stemButton.title = "Add a drum stem: separate with AI or attach a file";
         stemButton.setAttribute("aria-label", "Attach drum stem");
       }
     }
@@ -822,6 +885,6 @@ export function attachIpc(ctx) {
 
   Object.assign(ctx, {
     invoke, setStatusNotice, run, update, act, command, toggle,
-    missingUiParts, renderFrame, show, startTelemetry, parseTelemetryFrame,
+    missingUiParts, renderFrame, show, startTelemetry, parseTelemetryFrame, exportOpened, exportClosed,
   });
 }

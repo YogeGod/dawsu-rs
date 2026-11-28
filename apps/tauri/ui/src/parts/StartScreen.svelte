@@ -866,7 +866,7 @@
     border-radius: 999px;
     background: rgba(16, 16, 20, 0.78);
     backdrop-filter: blur(6px);
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
     font-size: 11.5px;
     overflow: hidden;
   }
@@ -878,10 +878,11 @@
   .home-song-diff:hover:not(:disabled) {
     border-color: var(--editor-accent);
     background: rgba(28, 28, 34, 0.92);
+    color: var(--ink-on-dark);
   }
   .home-song-diff small {
     font-size: 10px;
-    color: var(--editor-muted);
+    color: #98989f;
     text-transform: uppercase;
   }
   .home-song-hs {
@@ -928,10 +929,12 @@
     min-width: 0;
     border: 1px solid var(--editor-border);
     background: var(--editor-panel);
+    color: var(--editor-text);
   }
   :global(#home .home-recent-row .home-recent-map:hover:not(:disabled)) {
     border-color: var(--editor-muted);
     background: var(--editor-chrome);
+    color: var(--editor-text);
   }
   :global(#home .home-recent-row .home-recent-map::before),
   :global(#home .home-recent-row .home-recent-map > :not(.home-recent-bg)) {

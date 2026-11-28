@@ -213,3 +213,20 @@ export function createQuasimodeController({
 export function toolKeyFor(keyMap, tool) {
   return Object.keys(keyMap ?? {}).find(key => keyMap[key] === tool) ?? null;
 }
+
+// The key a tooltip or the tour names for `tool`: the first key editor_shortcuts gives it (any
+// form, "4" and chords included), else the preset's default. Unlike buildToolKeyMap, this keeps
+// MORE_TOOLS_KEY, which picks Erase on hold.
+export function toolDisplayKeyFor(shortcuts = null, preset = "DAW", tool = null) {
+  const entries = Array.isArray(shortcuts) ? shortcuts : shortcuts?.entries;
+  const row = Array.isArray(entries)
+    ? entries.find(item => TOOL_COMMAND_TO_NAME[Array.isArray(item) ? item[0] : item?.id] === tool)
+    : null;
+  if (row) {
+    const keys = Array.isArray(row) ? row[2] : row.keys;
+    const key = Array.isArray(keys) ? keys.find(raw => typeof raw === "string" && raw.trim()) : null;
+    return key ? key.trim() : null;
+  }
+  if (tool === "Erase") return MORE_TOOLS_KEY;
+  return toolKeyFor(preset === "osu!" ? DEFAULT_OSU_TOOL_KEYS : DEFAULT_DAW_TOOL_KEYS, tool);
+}

@@ -214,3 +214,213 @@ test("canvas grid lines honour slateTimeline overrides (#103) and marquee box an
   // At viewStart=50, zoom=0.25: 100ms -> x=12.5, 300ms -> x=62.5 (width=50).
   assert.deepEqual(grid.strokeRects.at(-1), [12.5, 5, 50, 35]);
 });
+
+// Slice 11.3: a fixed dark surface must not take an inherited, themed foreground. A bright custom
+// scheme turns --editor-text dark, so text on a literal dark background (or a fixed-dark token)
+// would vanish. Each such rule sets a fixed light `color` (var(--ink-on-dark) or a literal light
+// colour), or is listed here because it paints no text of its own.
+const backdrop = "modal backdrop; its text sits in the themed card above it";
+const DARK_SURFACE_ALLOW = new Map(Object.entries({
+  "src/legacy-chrome.css :where(body.editor-page) dialog::backdrop": backdrop,
+  "src/legacy-chrome.css input[type=checkbox]:checked::before": "switch knob, no text",
+  "src/parts/CommandPalette.svelte .cmdp-backdrop": backdrop,
+  "src/parts/DrumMapEditorModal.svelte .dme-backdrop": backdrop,
+  "src/parts/ExportModal.svelte .export-backdrop": backdrop,
+  "src/parts/KeysoundBounceModal.svelte .kb-backdrop": backdrop,
+  "src/parts/MapsetIntakeCard.svelte .intake-backdrop": backdrop,
+  "src/parts/MidiImportModal.svelte .midi-backdrop": backdrop,
+  "src/parts/node-graph.css .ng-checklist-overlay": backdrop,
+  "src/parts/preferences/preferences.css .pref-backdrop": backdrop,
+  "src/parts/SharedBaseModal.svelte .sb-backdrop": backdrop,
+  "src/parts/StemSeparationModal.svelte .ss-backdrop": backdrop,
+  "src/parts/Vst3BounceModal.svelte .vb-backdrop": backdrop,
+  "src/parts/Fader.svelte .track": "fader track line, no text",
+  "src/parts/Fader.svelte .meter": "level meter well, no text",
+  "src/parts/keysounds/KeysoundRollSurface.svelte .ks-keys": "key column; each .ks-key sets its own colour",
+  "src/parts/PianoKeyboard.svelte .pk-col": "key column; each .pk-key sets its own colour",
+  "src/parts/TransportBar.svelte .bar": "segment frame; each .seg sets its own colour on the themed --transport-seg",
+  "src/parts/MapPreview.svelte .preview-frame": "canvas frame, no text",
+  "src/parts/PreviewCanvas.svelte .frame canvas": "canvas, no text",
+  "src/parts/SpectrumPanel.svelte .spectrum-canvas": "canvas, no text",
+  "src/parts/SharedBaseModal.svelte .sb-curve-svg": "curve plot svg, no text",
+  "src/parts/OszBudgetGauge.svelte .osz-track": "gauge track, no text",
+  "src/parts/SnapSlider.svelte .between .thumb": "slider thumb, no text",
+  "src/parts/MapsetIntakeCard.svelte .intake-hero-scrim": "image scrim, no text",
+  "src/parts/StartScreen.svelte .home-song-scrim": "image scrim, no text",
+  ...Object.fromEntries([0, 1, 2, 3, 4, 5].map(n =>
+    [`src/parts/StartScreen.svelte .home-art-${n}`, "aria-hidden cover art backdrop, no text"])),
+}));
+
+async function styleSources() {
+  const { readdir } = await import("node:fs/promises");
+  const uiRoot = new URL("../ui/", import.meta.url);
+  const out = [];
+  async function walk(dir, rel) {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (["node_modules", "dist", "tests"].includes(entry.name)) continue;
+      const path = rel + entry.name;
+      if (entry.isDirectory()) await walk(new URL(entry.name + "/", dir), path + "/");
+      else if (/\.(css|svelte|html)$/.test(entry.name)) {
+        let text = await readFile(new URL(entry.name, dir), "utf8");
+        if (!entry.name.endsWith(".css")) text = [...text.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m => m[1]).join("\n");
+        out.push([path, text.replace(/\/\*[\s\S]*?\*\//g, "")]);
+      }
+    }
+  }
+  await walk(uiRoot, "");
+  return out;
+}
+
+async function themedProperties() {
+  const { applyColorConfig } = await import("../ui/src/lib/theme.js");
+  const names = new Set();
+  applyColorConfig({ scheme: "obsidian", rows: {} },
+    { documentElement: { style: { setProperty: name => names.add(name) } } });
+  return names;
+}
+
+// A literal colour as { hex, alpha }, or null.
+function literalColour(value) {
+  const hex = value.match(/^#([0-9a-f]{3,8})$/i)?.[1];
+  if (hex) {
+    const full = hex.length <= 4 ? [...hex].map(c => c + c).join("") : hex;
+    return { hex: `#${full.slice(0, 6)}`, alpha: full.length === 8 ? parseInt(full.slice(6), 16) / 255 : 1 };
+  }
+  const rgb = value.match(/^rgba?\(([^)]*)\)$/i)?.[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+  if (rgb?.length >= 3) {
+    return { hex: "#" + rgb.slice(0, 3).map(c => Math.round(c).toString(16).padStart(2, "0")).join(""), alpha: rgb[3] ?? 1 };
+  }
+  return null;
+}
+
+async function themeTokenContext() {
+  const tokens = await readFile(new URL("../ui/src/tokens.css", import.meta.url), "utf8");
+  const themed = await themedProperties();
+  const defs = {};
+  for (const source of [tokens, css]) {
+    for (const [, block] of source.matchAll(/:root\s*\{([^}]*)\}/g)) {
+      for (const [, name, value] of block.matchAll(/(--[\w-]+):\s*([^;]+);/g)) defs[name] ??= value.trim();
+    }
+  }
+  // A token's fixed literal value, or null when any step of its chain is themed by applyColorConfig.
+  const resolve = (value, depth = 0) => {
+    const name = value.match(/^var\((--[\w-]+)\)$/)?.[1];
+    if (!name) return literalColour(value);
+    if (themed.has(name) || !defs[name] || depth > 8) return null;
+    return resolve(defs[name], depth + 1);
+  };
+  const dropFallbacks = text => text.replace(/var\((--[\w-]+)\s*,(?:[^()]|\([^()]*\))*\)/g, "var($1)");
+  const rules = [];
+  for (const [file, text] of await styleSources()) {
+    for (const [, rawSelector, rawBody] of text.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      rules.push({
+        file,
+        selector: rawSelector.trim().replace(/\s+/g, " "),
+        body: dropFallbacks(rawBody),
+      });
+    }
+  }
+  const propOf = (body, property) =>
+    [...body.matchAll(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;]+)`, "g"))].at(-1)?.[1].trim() ?? null;
+  return { tokens, themed, defs, resolve, rules, propOf };
+}
+
+test("text on a fixed dark surface takes a fixed light ink, not a themed one (slice 11.3)", async () => {
+  const { tokens, resolve, rules, propOf } = await themeTokenContext();
+  assert.match(tokens, /--ink-on-dark:\s*#f5f5f7;/);
+  assert.match(tokens, /--readout-value:\s*var\(--ink-on-dark\);/);
+
+  const darkLimit = luminance("#303030");
+  const fixedDarkToken = /^var\(--(?:editor-ink|transport-rec-on|dark-[\w-]+)\)$/;
+
+  const flagged = [];
+  const failures = [];
+  for (const { file, selector, body } of rules) {
+    const surfaces = [...body.matchAll(/(?:^|[;\s])background(?:-color)?:\s*([^;]+)/g)]
+      .flatMap(([, value]) => [...value.matchAll(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|var\(--[\w-]+\)/gi)].map(m => m[0]))
+      .map(colour => colour.startsWith("var(") ? (fixedDarkToken.test(colour) ? resolve(colour) : null) : literalColour(colour))
+      // Half-transparent or fainter tints sit over a themed surface; they are not surfaces.
+      .filter(colour => colour && colour.alpha > .5 && luminance(colour.hex) < darkLimit);
+    if (!surfaces.length) continue;
+    const key = `${file} ${selector}`;
+    flagged.push(key);
+    if (DARK_SURFACE_ALLOW.has(key)) continue;
+    const colourValue = propOf(body, "color");
+    const ink = colourValue && resolve(colourValue);
+    const readable = ink && surfaces.every(surface => contrast(ink.hex, surface.hex) >= 4.5);
+    if (!readable) failures.push(`${key} { color: ${colourValue ?? "(inherited)"} }`);
+  }
+  for (const key of ["src/parts/TransportBar.svelte .readout", "src/parts/browser.css .browser-search"]) {
+    assert.ok(flagged.includes(key), `scan finds ${key}`);
+  }
+  for (const key of DARK_SURFACE_ALLOW.keys()) assert.ok(flagged.includes(key), `allow-list entry still matches: ${key}`);
+  assert.deepEqual(failures, []);
+});
+
+test("dark-well children and hovers keep readable inks under bright schemes (slice 11.3)", async () => {
+  const { resolve, rules, propOf } = await themeTokenContext();
+  const findRule = (file, selector, property = "color") => {
+    const matches = rules.filter(r => r.file === file && r.selector === selector);
+    assert.ok(matches.length > 0, `missing rule: ${file} ${selector}`);
+    const withProp = property ? matches.filter(r => propOf(r.body, property) !== null) : matches;
+    return withProp.at(-1) ?? matches.at(-1);
+  };
+  const assertFixedInk = (file, selector, surfaceHex) => {
+    const color = propOf(findRule(file, selector).body, "color");
+    assert.ok(color, `${file} ${selector} declares color`);
+    const ink = resolve(color);
+    assert.ok(ink, `${file} ${selector} color ${color} must resolve to a fixed literal, not a themed token`);
+    const ratio = contrast(ink.hex, surfaceHex);
+    assert.ok(ratio >= 4.5, `${file} ${selector} ${ink.hex} on ${surfaceHex} is ${ratio.toFixed(2)}:1`);
+  };
+  const assertThemedColor = (file, selector) => {
+    const color = propOf(findRule(file, selector).body, "color");
+    assert.equal(color, "var(--editor-text)", `${file} ${selector} uses themed --editor-text`);
+  };
+
+  assertFixedInk("src/parts/pill.css", ".ui-pill", "#000000");
+  assertThemedColor("src/parts/pill.css", ".ui-pill:hover:not(:disabled)");
+
+  assertFixedInk("src/parts/PlayheadGroup.svelte", ".label", "#000000");
+  assertFixedInk("src/parts/PlayheadGroup.svelte", ".toggle", "#000000");
+  assertThemedColor("src/parts/PlayheadGroup.svelte", ".toggle:hover:not(:disabled)");
+
+  for (const surface of ["#1e1e21", "#151517"]) {
+    assertFixedInk("src/parts/ToastStack.svelte", ".toast-body", surface);
+    assertFixedInk("src/parts/ToastStack.svelte", ".toast-dismiss", surface);
+  }
+
+  assertFixedInk("src/parts/browser.css", ".browser-search input", "#000000");
+  assertFixedInk("src/parts/browser.css", ".browser-search input::placeholder", "#000000");
+
+  assertFixedInk("src/parts/export/ExportOptionsForm.svelte", "select.field", "#000000");
+
+  assertFixedInk("src/parts/inspector.css", "#editor-inspector .insp-pill-bar .insp-pill, .insp-pill", "#000000");
+  assertFixedInk("src/parts/inspector.css", "#editor-inspector .insp-pill-bar .insp-pill.insp-pill-mixed, .insp-pill-mixed", "#000000");
+
+  assertFixedInk("src/parts/SnapSlider.svelte", ".label", "#000000");
+  assertFixedInk("src/parts/SnapSlider.svelte", ".mode-pill.objects, .mode-pill.objects:hover:not(:disabled)", "#000000");
+
+  const selectionHover = findRule("src/parts/TransportBar.svelte", ".selection:hover:not(:disabled)").body;
+  const selectionHoverBg = resolve(propOf(selectionHover, "background"));
+  assert.ok(selectionHoverBg, "TransportBar .selection:hover background must resolve to a fixed dark surface");
+  assertFixedInk("src/parts/TransportBar.svelte", ".selection:hover:not(:disabled)", selectionHoverBg.hex);
+  assertThemedColor("src/parts/TransportBar.svelte", ".tab:hover:not(:disabled)");
+
+  const chipHover = findRule("src/shell.css", "#editor-header .map-chip:hover").body;
+  const chipHoverBg = resolve(propOf(chipHover, "background"));
+  assert.ok(chipHoverBg, "shell.css #editor-header .map-chip:hover background must resolve to a fixed dark surface");
+  assertFixedInk("src/shell.css", "#editor-header .map-chip:hover", chipHoverBg.hex);
+  assertFixedInk("src/shell.css", ".map-chip-chevron", "#000000");
+
+  assertThemedColor("src/parts/StartScreen.svelte", ":global(#home .home-recent-row .home-recent-map)");
+  assertThemedColor("src/parts/StartScreen.svelte", ":global(#home .home-recent-row .home-recent-map:hover:not(:disabled))");
+
+  assertFixedInk("src/timeline.css", ".ruler-sidebar .song-row", "#121718");
+  assertFixedInk("src/timeline.css", ".song-title", "#121718");
+  assertFixedInk("src/timeline.css", ".ruler-sidebar .song-row button", "#121718");
+  assertFixedInk("src/timeline.css", ".ruler-sidebar .song-row button:hover:not(:disabled)", "#121718");
+
+  assertFixedInk("src/parts/export/OsuDiffDrawer.svelte", ".osu-diff-more", "#000000");
+  assertFixedInk("src/parts/PreviewWindow.svelte", ":global(body.preview-page .insp-summary)", "#0b0b0f");
+});
