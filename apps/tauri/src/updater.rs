@@ -1209,8 +1209,10 @@ pub fn validate_staged_installer_path(data_root: &Path, candidate: &Path) -> Res
 
 pub fn installer_launch_args() -> &'static [&'static str] {
     if cfg!(target_os = "windows") {
-        // Inno Setup silent upgrade: waits for dawsu! to exit, updates in place, and relaunches.
-        &["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"]
+        // Inno Setup silent upgrade: closes dawsu!, updates in place, then relaunches through
+        // installer/dawsu.iss's `Relaunch` check on `/relaunch=1`. No /RESTARTAPPLICATIONS: it
+        // would override `RestartApplications=no` and let Restart Manager start a second copy.
+        &["/SILENT", "/CLOSEAPPLICATIONS", "/relaunch=1"]
     } else {
         &[]
     }
@@ -1896,5 +1898,30 @@ mod tests {
 
         assert_eq!(strip_unc_prefix(Path::new(r"\\?\C:\Tools\dawsu.exe")), r"C:\Tools\dawsu.exe");
         assert_eq!(strip_unc_prefix(Path::new(r"\\?\UNC\server\share\dawsu.exe")), r"\\server\share\dawsu.exe");
+    }
+
+    #[test]
+    fn installer_launch_args_trigger_inno_silent_relaunch_without_restart_manager() {
+        let args = installer_launch_args();
+        #[cfg(target_os = "windows")]
+        {
+            for required in ["/SILENT", "/CLOSEAPPLICATIONS", "/relaunch=1"] {
+                assert!(args.contains(&required), "missing {required} in {args:?}");
+            }
+            assert!(
+                !args.contains(&"/RESTARTAPPLICATIONS"),
+                "/RESTARTAPPLICATIONS overrides RestartApplications=no: {args:?}"
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        assert!(args.is_empty(), "{args:?}");
+
+        // The installer script must keep the matching switches.
+        let iss = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/dawsu.iss"),
+        )
+        .unwrap();
+        assert!(iss.contains("RestartApplications=no"));
+        assert!(iss.contains("{param:relaunch|0}"));
     }
 }
