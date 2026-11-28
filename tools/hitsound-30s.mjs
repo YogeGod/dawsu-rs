@@ -82,6 +82,7 @@ async function sceneLanes() {
 try {
   await step("Open the copied ranked map and see its objects", async () => {
     await robot.launch(reference);
+    await robot.answerKeyPreset();
     await until(() => window.scene?.lanes?.length > 0 && !window.view?.songLoading, null, "the map did not open", 60000);
     const path = await read(() => window.scene.path);
     expect(samePath(path, reference), `the editor opened ${path}, not the copy`);
@@ -107,7 +108,7 @@ try {
     expect(hsPath, "the editor did not open a new difficulty");
     expect(samePath(dirname(hsPath), mapFolder), `the new difficulty is not in the mapset copy: ${hsPath}`);
     const added = readdirSync(mapFolder).filter(name => !before.has(name));
-    expect(added.length === 1 && added[0] === basename(hsPath), `the mapset gained ${JSON.stringify(added)}`);
+    expect(hsPath && added.length === 1 && added[0] === basename(hsPath), `the mapset gained ${JSON.stringify(added)}`);
     expect(await read(() => window.scene.hs === true), "the new difficulty is not in Hitsounding mode");
     expect(await hitCount() === 0, `the new difficulty already has ${await hitCount()} hits`);
     const hs = readOsu(readFileSync(hsPath));
@@ -274,9 +275,9 @@ try {
     expect(!removed.length, `removed: ${removed.join(", ")}`);
     expect(!changed.length, `changed: ${changed.join(", ")}`);
     // Every planned layer is a plain sound a circle's line can hold, so Save needs no new sample file.
-    const stray = added.filter(name => name !== basename(hsPath));
+    const stray = added.filter(name => !hsPath || name !== basename(hsPath));
     expect(!stray.length, `new files besides the difficulty: ${stray.join(", ")}`);
-    return `only ${basename(hsPath)} added`;
+    return hsPath ? `only ${basename(hsPath)} added` : "no difficulty was made; nothing else added";
   }, { always: true, covers: ["F048"] });
 
   await step("The original ranked mapset is byte-identical", async () => {
@@ -289,6 +290,7 @@ try {
   await step("Reopening the saved difficulty shows the same hits", async () => {
     expect(savedHits && hsPath, "Save did not finish");
     await robot.launch(hsPath);
+    await robot.answerKeyPreset(5000);
     await until(() => window.scene?.lanes?.length > 0, null, "the saved difficulty did not open", 60000);
     await sleep(500);
     // Save writes each circle at whole milliseconds, so a hit matches within 1 ms on the same lane.

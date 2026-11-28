@@ -197,6 +197,8 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
       console.log(`SKIP ${number} ${name} — ${stopReason}`);
       return results.at(-1);
     }
+    // A menu or dialog the step before left open would cover this step's first click.
+    if (app?.page) await tidy().catch(() => {});
     current = number;
     const result = { number, name, covers, status: "PASS", detail: "" };
     let threw = false;
@@ -234,6 +236,26 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
   }
 
   const expect = (ok, message) => { if (!ok) throw new Error(message); };
+
+  /**
+   * A fresh profile asks "Choose your keyboard preset" and holds the startup map until it is
+   * answered (apps/tauri/src/main.rs). Answers DAW-like; returns true when the question showed.
+   */
+  async function answerKeyPreset(timeout = 20000) {
+    const preset = page().getByRole("button", { name: "DAW-like" });
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      // The map is open, so no question is holding it.
+      if (await read(() => window.scene?.lanes?.length > 0).catch(() => false)) return false;
+      if (await preset.count() && await preset.first().isVisible().catch(() => false)) {
+        await preset.first().click();
+        await until(() => window.view.keyPreset === "DAW", null, "DAW-like did not set the key preset", 4000);
+        return true;
+      }
+      await sleep(250);
+    }
+    return false;
+  }
 
   // The scene, read through the page's read-only globals.
   const hits = () => read(() => window.scene.moments.flatMap(([time, volume, , list]) =>
@@ -280,6 +302,10 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
 
   const menuRow = text => page().locator("#editor-menu button").filter({ hasText: text }).first();
   async function openMenu(name) {
+    if (await read(() => !document.getElementById("editor-menu").hidden).catch(() => false)) {
+      await page().keyboard.press("Escape");
+      await until(() => document.getElementById("editor-menu").hidden, null, "an open menu did not close", 2000);
+    }
     await page().click(`#menu-${name.toLowerCase()}`);
     await until(() => !document.getElementById("editor-menu").hidden &&
       document.querySelectorAll("#editor-menu button").length > 0, null, `the ${name} menu did not open`, 4000);
@@ -333,12 +359,16 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
    * Answer the dialogs an output action shows (save review, output review, problems) with their
    * go-ahead button until none is open or `done` holds. Returns the titles seen. Any other dialog fails.
    */
-  async function answerDialogs(done, { timeout = 30000, accept = /^(Write files|Save|Done|Continue to Save|Apply|OK|Revert)$/ } = {}) {
+  async function answerDialogs(done, { timeout = 30000, accept = /^(Write files|Save|Done|Continue to Save|Apply|OK|Revert)$/, refuse = null } = {}) {
     const seen = [];
     const end = Date.now() + timeout;
     while (Date.now() < end) {
       if (await read(done).catch(() => false) && !(await dialogTitle())) return seen;
       const title = await dialogTitle();
+      if (title && refuse?.test(title)) {
+        const body = (await read(() => document.getElementById("dialog-body").innerText)).trim();
+        throw Object.assign(new Error(`"${title}": ${body}`), { refused: true });
+      }
       if (title) {
         const buttons = await read(() => Array.from(document.querySelectorAll("#dialog-actions button"), b => b.textContent.trim()));
         const go = buttons.find(text => accept.test(text));
@@ -370,7 +400,7 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
 
   return {
     launch, quit, step, expect, until, read, page: () => page(), app: () => app, results, errors, tidy,
-    hits, hitCount, namedHits, focusEditor, laneRow, showTime, showRow, at, openMenu, fromMenu, menuRow, palette, pickTool,
+    hits, hitCount, namedHits, focusEditor, answerKeyPreset, laneRow, showTime, showRow, at, openMenu, fromMenu, menuRow, palette, pickTool,
     setDivisor, dialogTitle, dialogShown, dialogButton, answerDialogs, save, finish,
   };
 }

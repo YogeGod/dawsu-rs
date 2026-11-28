@@ -224,9 +224,15 @@ function defineSteps(robot, picked) {
       await until(() => window.scene.snapMode === "grid", null, "the snap stayed on Objects");
     }
     // A lane the map does not use, so throwaway hits never touch the map's own sounds.
-    const row = await read(() => window.scene.lanes.findIndex(lane => lane.name === "drum-hitwhistle" && (lane.index ?? 0) === 0 && lane.hitCount === 0));
-    const fallback = row >= 0 ? row : await read(() => window.scene.lanes.findIndex(lane => lane.hitCount === 0 && lane.canDelete !== undefined));
-    expect(fallback >= 0, "no empty lane for throwaway hits");
+    // Only a lane with a header on screen can be clicked; slider slide/tick rows have none.
+    const fallback = await read(() => {
+      const shown = lane => !!document.querySelector(`#lanes [data-lane-row="${lane}"]`);
+      const lanes = window.scene.lanes;
+      const plain = (lane, row) => lane.hitCount === 0 && shown(row) && !/slider(slide|tick|whistle)/.test(lane.name);
+      const whistle = lanes.findIndex((lane, row) => lane.name === "drum-hitwhistle" && (lane.index ?? 0) === 0 && plain(lane, row));
+      return whistle >= 0 ? whistle : lanes.findIndex(plain);
+    });
+    expect(fallback >= 0, "no empty lane with a header on screen for throwaway hits");
     const objects = soundMoments(osuBefore);
     // A spot away from every object (the widest gap in the middle half of the map), so a drawn hit
     // makes a moment of its own and takes the Insert volume (Composer::add joins a nearby moment).
@@ -444,6 +450,7 @@ function defineSteps(robot, picked) {
   define("Used lanes only hides empty lanes and shows them again", ["F019"], async () => {
     const visible = () => read(() => window.scene.laneOrder.map(row => window.scene.lanes[row]));
     const all = await visible();
+    if (!all.some(lane => !lane.hitCount)) return { skip: "every lane on screen already has hits, so there is nothing to hide" };
     await fromMenu("View", "Used lanes only");
     const used = await until(n => window.scene.laneOrder.length !== n && window.scene.laneOrder.map(row => window.scene.lanes[row]), all.length,
       "Used lanes only changed nothing");
@@ -495,7 +502,9 @@ function defineSteps(robot, picked) {
     const head = objects.find(m => m.node === "head" && !m.samples.some(s => s.name === "hitwhistle") && m.time > 2000);
     expect(circle && head, "the map has no plain circle or slider head");
     for (const moment of [circle, head]) {
-      const bank = moment.samples.find(s => s.name === "hitnormal")?.bank ?? "normal";
+      // One object has one addition bank: an existing addition (a clap, a finish) sets it, else the hitnormal's.
+      const addition = moment.samples.find(s => s.name !== "hitnormal" && s.name !== "file");
+      const bank = addition?.bank ?? moment.samples.find(s => s.name === "hitnormal")?.bank ?? "normal";
       // The object's own custom index when the mapset has that whistle file, else the skin's (index 0).
       const index = moment.samples[0].index ?? 0;
       const file = `${bank}-hitwhistle${index >= 2 ? index : ""}`;
@@ -588,8 +597,17 @@ function defineSteps(robot, picked) {
     expect(await box.count(), `the Copy dialog does not list ${name}`);
     await box.check();
     await dialogButton("Review output").click();
-    await answerDialogs(() => !window.view.busy && !window.view.review, { timeout: 60000 });
+    // "Editor message" is a refusal (for example sample-mix fixes needed first): report it, never OK it.
+    try {
+      await answerDialogs(() => !window.view.busy && !window.view.review, { timeout: 60000, refuse: /^Editor message$/ });
+    } catch (error) {
+      if (!error.refused) throw error;
+      await page().keyboard.press("Escape");
+      expect(readFileSync(targetPath).equals(before), "Copy refused but still changed the target");
+      return { skip: `the editor refused: ${error.message.slice(0, 220)}` };
+    }
     const after = readFileSync(targetPath);
+    expect(!after.equals(before), "Copy finished but the target file did not change");
     const shape = bytes => (readOsu(bytes).sections.HitObjects ?? []).map(line => line.split(",").slice(0, 4).join(","));
     expect(JSON.stringify(shape(before)) === JSON.stringify(shape(after)), "Copy moved, added or removed objects in the target");
     const source = soundMoments(readFileSync(copy));
