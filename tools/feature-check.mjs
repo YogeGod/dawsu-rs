@@ -509,14 +509,26 @@ function defineSteps(robot, picked) {
     }
   });
 
-  define("Collapse sample layers folds and unfolds without touching hits", ["F018"], async () => {
+  define("Collapse sample layers folds the numbered layers without touching hits", ["F018"], async () => {
     const start = await namedHits();
+    const rows = () => read(() => document.querySelectorAll("#lanes [data-lane-row]").length);
+    // The families open now, so exactly those are unfolded again afterwards.
+    const open = await read(() => Array.from(document.querySelectorAll('#lanes .lane-disclosure[aria-expanded="true"]'), b => b.getAttribute("aria-label")));
+    const before = await rows();
     await fromMenu("View", "Collapse sample layers");
     await sleep(500);
+    const folded = await rows();
     expect(JSON.stringify(await namedHits()) === JSON.stringify(start), "collapsing changed the hits");
-    await fromMenu("View", "Collapse sample layers");
-    await sleep(500);
+    // The command only folds (nothing in View unfolds): unfold with each family's arrow, as a mapper would.
+    for (const label of open) {
+      const arrow = page().locator(`#lanes .lane-disclosure[aria-expanded="false"][aria-label="${label.replace(/"/g, '\\"')}"]`).first();
+      if (await arrow.count()) { await arrow.click(); await sleep(80); }
+    }
+    await until(n => document.querySelectorAll("#lanes [data-lane-row]").length === n, before, "the family arrows did not bring every layer back", 4000);
     expect(JSON.stringify(await namedHits()) === JSON.stringify(start), "unfolding changed the hits");
+    if (!open.length) return "no numbered layers to fold";
+    expect(folded < before, `Collapse sample layers hid nothing (${before} rows before and after)`);
+    return `${before} → ${folded} → ${before} rows`;
   });
 
   define("Hitsounding mode turns on and off from the Map menu", ["F050"], async () => {
