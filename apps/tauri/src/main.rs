@@ -652,6 +652,7 @@ fn editor_thread_with_cache(
                             app.document().map(|d| d.path.as_path()),
                             app.preferences().hitsound_library.as_deref(),
                             &dawsu_application::data_folder(),
+                            app.last_hitsound_only_export(),
                         )
                     })
                     .and_then(|result| result);

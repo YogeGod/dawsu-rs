@@ -476,7 +476,8 @@ export function attachIpc(ctx) {
   // last message told is kept, so a view still busy after the write (a sweep) can't swallow it.
   function announceWrite(before, after, hadMap) {
     const status = after.status ?? "";
-    const title = /^Saved\b/.test(status) ? "Saved" : /^Wrote \d+ reviewed files?\b/.test(status) ? "Files written" : null;
+    const title = /^Saved\b/.test(status) ? "Saved" : /^Wrote \d+ reviewed files?\b/.test(status) ? "Files written"
+      : /^Exported \d+ hitsound-only file\(s\)/.test(status) ? "Hitsound-only export written" : null;
     if (!title) {
       state.announcedWrite = null;
       return;
@@ -485,6 +486,14 @@ export function attachIpc(ctx) {
     // The same message again is news only when the map became saved with it (a second Save).
     if (status === state.announcedWrite && !(before.dirty && !after.dirty)) return;
     state.announcedWrite = status;
+    state.writeToasts = (state.writeToasts ?? 0) + 1;
+    if (title === "Hitsound-only export written") {
+      const actions = [{ label: "Open folder", onClick: () => {
+        invoke("open_editor_folder", { folder: "last_export" }).catch(error => ctx.setStatusNotice(String(error)));
+      } }];
+      try { notifyToast({ tone: "success", title, body: status, actions }); } catch (error) { (env.console ?? console).error(error); }
+      return;
+    }
     if (title === "Saved" && after.isLazerExternalEdit) {
       try {
         notifyToast({
@@ -505,6 +514,23 @@ export function attachIpc(ctx) {
         (error) => notifyToast(osuReloadFailedToast(error)),
       ).catch((error) => (env.console ?? console).error(error));
     }
+  }
+
+  // A second identical hitsound-only write looks like the first in the view, so the Export modal
+  // says when it closes on its own write: unless a write was told since it opened, it is told again.
+  function exportOpened() {
+    state.writeToastsAtExportOpen = state.writeToasts ?? 0;
+  }
+
+  function exportClosed(wroteHitsoundOnly) {
+    if (!wroteHitsoundOnly) return Promise.resolve();
+    return run(async () => {
+      await update(null, false);
+      // A view that looks unchanged takes show's idle fast path, which tells nothing: tell it here.
+      if ((state.writeToasts ?? 0) !== state.writeToastsAtExportOpen) return;
+      state.announcedWrite = null;
+      announceWrite(state.view, state.view, !!state.scene);
+    });
   }
 
   function samePollBase(before, next) {
@@ -835,6 +861,6 @@ export function attachIpc(ctx) {
 
   Object.assign(ctx, {
     invoke, setStatusNotice, run, update, act, command, toggle,
-    missingUiParts, renderFrame, show, startTelemetry, parseTelemetryFrame,
+    missingUiParts, renderFrame, show, startTelemetry, parseTelemetryFrame, exportOpened, exportClosed,
   });
 }

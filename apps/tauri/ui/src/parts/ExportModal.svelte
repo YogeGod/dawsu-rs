@@ -1,24 +1,34 @@
 <script>
   import { onMount } from "svelte";
   import { bridge } from "../lib/bridge.svelte.js";
+  import { exportModalOnTop } from "../lib/space.js";
   import ExportWindow from "./ExportWindow.svelte";
 
   // In-editor Export modal: embeds ExportWindow.svelte inside the main editor window instead of
   // opening a separate OS window.
   let open = $state(false);
+  let exportWindow = $state(null);
 
   function show() {
     open = true;
   }
 
-  function close() {
+  // The button, Escape and the backdrop all close through ExportWindow, which sends a waiting
+  // choice and tells the editor first, then calls closed().
+  function requestClose() {
+    exportWindow?.close();
+  }
+
+  // Closed on its own hitsound-only write: the editor asks for the view that tells it.
+  function closed({ wroteHitsoundOnly = false } = {}) {
     open = false;
+    bridge.callAction("exportClosed", wroteHitsoundOnly);
   }
 
   function onKeydown(event) {
-    if (open && event.key === "Escape") {
+    if (open && event.key === "Escape" && exportModalOnTop(bridge.onlyModalOpen)) {
       event.preventDefault();
-      close();
+      requestClose();
     }
   }
 
@@ -36,9 +46,9 @@
 
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="export-backdrop" onclick={(e) => { if (e.target === e.currentTarget) close(); }}>
+  <div class="export-backdrop" onclick={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
     <div class="export-dialog" role="dialog" aria-modal="true" aria-label="Export">
-      <ExportWindow onclose={close} />
+      <ExportWindow bind:this={exportWindow} onclose={closed} />
     </div>
   </div>
 {/if}

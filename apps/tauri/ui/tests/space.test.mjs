@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { forwardSpace } from "../src/lib/space.js";
+import { exportModalOnTop, forwardSpace } from "../src/lib/space.js";
 
 // A key event on a target whose closest() answers like the browser's: the target, or a parent,
 // is one of the tags in the selector.
@@ -51,8 +51,15 @@ test("a held, modified, already-handled or other key is not sent", () => {
 test("each window sends Space through the shared helper on its window keydown", () => {
   for (const name of ["ExportWindow", "DrumDetectWindow", "NodeGraphWindow"]) {
     const source = readFileSync(new URL(`../src/parts/${name}.svelte`, import.meta.url), "utf8");
-    assert.match(source, /import \{ forwardSpace \} from "\.\.\/lib\/space\.js";/, name);
+    if (name !== "ExportWindow") assert.match(source, /import \{ forwardSpace \} from "\.\.\/lib\/space\.js";/, name);
     assert.doesNotMatch(source, /preview-space/, name + " has no copy of its own");
+    if (name === "ExportWindow") {
+      // Embedded in the editor, the modal sends Space only while it is on top (see below).
+      assert.match(source, /import \{ exportModalOnTop, forwardSpace \} from "\.\.\/lib\/space\.js";/);
+      assert.match(source, /<svelte:window onkeydown=\{onWindowKeydown\} \/>/);
+      assert.match(source, /function onWindowKeydown\(event\) \{\s*if \(!onclose \|\| exportModalOnTop\(onlyModalOpen\)\) forwardSpace\(event\);\s*\}/);
+      continue;
+    }
     if (name === "NodeGraphWindow") {
       // Space first, before the raw graph's own keys can take it.
       assert.match(source, /<svelte:window onkeydown=\{handleWindowKeyDown\} \/>/);
@@ -61,4 +68,20 @@ test("each window sends Space through the shared helper on its window keydown", 
       assert.match(source, /<svelte:window onkeydown=\{forwardSpace\} \/>/, name);
     }
   }
+});
+
+test("the Export modal takes Space and Escape only while it is the one modal and no dialog is over it", () => {
+  const opened = new Set();
+  const only = id => [...opened].every(open => open === id);
+  const page = dialogOpen => ({ querySelector: selector => (selector === "dialog[open]" && dialogOpen ? {} : null) });
+  opened.add("export");
+  assert.equal(exportModalOnTop(only, page(false)), true);
+  assert.equal(exportModalOnTop(only, page(true)), false, "a confirm or error dialog is on top");
+  opened.add("confirm");
+  assert.equal(exportModalOnTop(only, page(false)), false, "another modal is open too");
+});
+
+test("ExportModal's Escape waits for anything open on top of it", () => {
+  const source = readFileSync(new URL("../src/parts/ExportModal.svelte", import.meta.url), "utf8");
+  assert.match(source, /if \(open && event\.key === "Escape" && exportModalOnTop\(bridge\.onlyModalOpen\)\) \{/);
 });

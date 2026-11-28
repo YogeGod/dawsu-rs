@@ -75,6 +75,77 @@ test("Export copies with exactly the options the old Copy dialog sends by defaul
   assert.deepEqual(copyOptions(defaultChoices), sent.options);
 });
 
+// The editor with a map open whose answers the test sets field by field.
+async function answering() {
+  const calls = [];
+  const status = { busy: false, hasDocument: false, duration: 10_000, playing: false, position: 0 };
+  const makeElement = () => ({
+    events: new Map(), children: [], dataset: {}, style: { setProperty() {} },
+    addEventListener(name, callback) { this.events.set(name, callback); },
+    append() {}, prepend() {}, setAttribute() {},
+    getBoundingClientRect: () => ({ x: 0, top: 0, width: 1000 }),
+  });
+  const elements = new Map();
+  const get = id => {
+    if (!elements.has(id)) elements.set(id, makeElement());
+    return elements.get(id);
+  };
+  const toasts = [];
+  const context = createContext({
+    document: { documentElement: { dataset: {} }, getElementById: get, createElement: makeElement,
+      querySelectorAll: () => [], addEventListener() {} },
+    window: {
+      __TAURI__: {
+        core: { invoke: async (name, args) => { calls.push({ name, args }); return { ...status }; } },
+        event: { listen() {} },
+      },
+      showToast: toast => toasts.push(toast),
+      openExportModal: () => {},
+    },
+    performance: { now: () => 0 },
+    ResizeObserver: class { observe() {} },
+    HTMLElement: class {},
+    requestAnimationFrame() {},
+    setInterval() {},
+    console,
+  });
+  const ctx = bootEditor(context, { autoStart: false });
+  await ctx.act(null);
+  status.hasDocument = true;
+  runInContext('view = { busy: false, hasDocument: true, duration: 10_000 }; scene = { path: "fixture.osu", viewStart: 0, zoom: 1, rowHeight: 30 }', context);
+  const answer = async fields => { Object.assign(status, fields); await ctx.act(null); };
+  return { answer, calls, ctx, get, toasts };
+}
+
+test("a hitsound-only Export says so with Open folder, once per write, also for the same write again", async () => {
+  const { answer, calls, ctx, get, toasts } = await answering();
+  const written = "Exported 2 hitsound-only file(s) to C:\\Exports\\Set-hitsound-only (mapset untouched).";
+  const titles = () => toasts.map(toast => toast.title);
+  get("export-entry").events.get("click")();
+  await answer({ status: written });
+  assert.deepEqual(titles(), ["Hitsound-only export written"]);
+  assert.equal(toasts[0].body, written);
+  assert.deepEqual(toasts[0].actions.map(action => action.label), ["Open folder"]);
+  calls.length = 0;
+  toasts[0].actions[0].onClick();
+  assert.deepEqual(calls, [{ name: "open_editor_folder", args: { folder: "last_export" } }]);
+  // The modal closing on that write asks for a view, and the write is not told twice.
+  await ctx.exportClosed(true);
+  assert.equal(toasts.length, 1);
+  // Opened again, views before the next write tell nothing.
+  get("export-entry").events.get("click")();
+  await answer({});
+  await ctx.exportClosed(false);
+  assert.equal(toasts.length, 1, "Cancel writes nothing");
+  // The identical write to the same folder: its view looks the same, the modal's close tells it.
+  get("export-entry").events.get("click")();
+  await answer({ status: written });
+  assert.equal(toasts.length, 1);
+  await ctx.exportClosed(true);
+  assert.deepEqual(titles(), ["Hitsound-only export written", "Hitsound-only export written"]);
+  assert.equal(toasts[1].actions.length, 1);
+});
+
 test("export.html loads only the fonts and the Svelte bundle, with no inline code", () => {
   const html = read("dist/export.html");
   const head = html.match(/<head>(.*?)<\/head>/s)[1];

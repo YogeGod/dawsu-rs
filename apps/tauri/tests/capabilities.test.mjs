@@ -46,7 +46,10 @@ test("main may call every command its scripts and parts call, and opens Export",
   assert.ok(needed.length > 20, "the invoke pattern no longer matches editor sources");
   assert.deepEqual(needed.filter(command => !main.permissions.includes(permission(command))), []);
   assert.ok(main.permissions.includes("core:event:default"));
-  for (const command of ["close_export_window", ...drumCommands.filter(c => c !== "vst3_scan" && c !== "keysounds_action"), ...nodeGraphCommands.filter(c => c !== "show_in_editor")]) assert.ok(!main.permissions.includes(permission(command)), command);
+  // The Export modal embeds ExportWindow.svelte in main, and its close cancels the preview through
+  // close_export_window (ExportClose when no Export window is open).
+  assert.ok(main.permissions.includes(permission("close_export_window")));
+  for (const command of [...drumCommands.filter(c => c !== "vst3_scan" && c !== "keysounds_action"), ...nodeGraphCommands.filter(c => c !== "show_in_editor")]) assert.ok(!main.permissions.includes(permission(command)), command);
   assert.ok(main.permissions.includes(permission("drum_window_open")));
   assert.ok(main.permissions.includes(permission("open_node_graph_window")));
 });

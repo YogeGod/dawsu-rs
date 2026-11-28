@@ -14,3 +14,12 @@ test("Audio controls offer the four playback start positions and Return on stop"
     assert.ok(editor.includes('"' + label + '"'), label);
   }
 });
+
+test("Space from the Export modal plays here while it is the one modal open", () => {
+  const editor = readEditorSource();
+  const listener = editor.match(/listen\("preview-space", \(\) => \{([\s\S]*?)\n  \}\);/)[1];
+  assert.match(listener, /spaceBlocked\(\)/);
+  assert.doesNotMatch(listener, /modalOpen\(\)/, "an open Export modal no longer swallows its own Space");
+  // Any other modal, Preferences, the palette, Keysounds or a <dialog> still blocks it.
+  assert.match(editor, /const spaceBlocked = \(\) => otherModalOpen\(\) \|\| keysoundsMode\(\) \|\|\s*\(env === globalThis && hasOpenModal\(\) && !onlyModalOpen\("export"\)\);/);
+});

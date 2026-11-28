@@ -939,6 +939,12 @@ try {
       await dialog.locator(".osu-diff-body").first().waitFor({ state: "visible", timeout: 5000 });
       expect(await dialog.locator(".listen-btn").first().isEnabled(), "Listen button must stay usable with diff open");
       await page().screenshot({ path: join(shots, "26-export-review-verified.png") });
+      // Space inside the modal plays and stops the editor, as it does over the timeline.
+      await dialog.locator("h1").click();
+      await page().keyboard.press("Space");
+      await until(() => window.dawsuUi.bridge.latestView?.playing === true, null, "Space in the Export modal did not start playback", 5000);
+      await page().keyboard.press("Space");
+      await until(() => window.dawsuUi.bridge.latestView?.playing === false, null, "Space in the Export modal did not stop playback", 5000);
     } finally {
       for (const sw of toggledOff) {
         if ((await sw.getAttribute("aria-checked").catch(() => null)) === "false") {

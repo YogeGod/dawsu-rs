@@ -511,6 +511,19 @@ export function runOutcome(run, view) {
 
 // What a poll's answer asks of the window: close after its own write, or preview again after a
 // failed one (the write used up the preview, and nothing else would ask for a new one).
+// The one close path of the Export window and the Export modal: a choice still waiting for its
+// preview is sent first, so the editor keeps it with the map, then close_export_window cancels the
+// preview. Embedded (onclose), the modal closes whatever the editor answers; the window throws.
+export async function closeExport({ flush, invoke, onclose = null }) {
+  await flush();
+  if (onclose) {
+    await invoke("close_export_window").catch(() => {});
+    onclose();
+    return;
+  }
+  await invoke("close_export_window");
+}
+
 export function afterPoll(run, view) {
   const outcome = runOutcome(run, view);
   if (outcome === "written") return { run: null, close: true, preview: false };

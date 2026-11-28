@@ -7,3 +7,9 @@ export function forwardSpace(event, events = globalThis.window?.__TAURI__?.event
   events?.emitTo("main", "preview-space").catch(reason => console.error(reason));
   return true;
 }
+
+// The Export modal inside the editor takes Space and Escape only while it is the one modal open
+// and no confirm or error <dialog> is over it.
+export function exportModalOnTop(onlyModalOpen, page = globalThis.document) {
+  return onlyModalOpen("export") && !page?.querySelector?.("dialog[open]");
+}

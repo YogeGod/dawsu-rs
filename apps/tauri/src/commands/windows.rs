@@ -23,11 +23,21 @@ pub(crate) async fn open_export_window(app: tauri::AppHandle) -> Result<(), Stri
 }
 
 /// Closes the Export window the way its title bar does, so its preview is cancelled too.
+/// With no Export window it is the Export modal inside main that closed: its preview is cancelled here.
 #[tauri::command]
-pub(crate) fn close_export_window(app: tauri::AppHandle) -> Result<(), String> {
-    match app.get_webview_window("export") {
-        Some(window) => window.close().map_err(|error| error.to_string()),
-        None => Ok(()),
+pub(crate) fn close_export_window(app: tauri::AppHandle, state: State<'_, Editor>) -> Result<(), String> {
+    let window = app.get_webview_window("export");
+    close_export(window.map(|window| move || window.close().map_err(|error| error.to_string())), &state)
+}
+
+pub(crate) fn close_export(close_window: Option<impl FnOnce() -> Result<(), String>>, editor: &Editor) -> Result<(), String> {
+    match close_window {
+        // The window's close handler (close_requested) sends ExportClose.
+        Some(close) => close(),
+        None => {
+            let _ = editor.0.send(Request::ExportClose);
+            Ok(())
+        }
     }
 }
 
