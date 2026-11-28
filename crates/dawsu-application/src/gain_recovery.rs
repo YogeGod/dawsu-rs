@@ -151,6 +151,43 @@ impl Captured {
         vols.next().is_some_and(|first| vols.any(|v| v != first))
     }
 
+    /// Aggregates `(lane -> hit_volume)` across all non-empty moments in an HS group, returning
+    /// `None` if any lane appears more than once (a reopened circle cannot hold duplicate lanes).
+    fn hs_group_gains(hits: &Hitsounds, group_indices: &[usize]) -> Option<BTreeMap<SampleIdentity, i32>> {
+        let mut grouped = BTreeMap::new();
+        for &idx in group_indices {
+            let moment = hits.moment(MomentId(idx));
+            for lane in moment.hits() {
+                if grouped.insert(lane.clone(), moment.hit_volume(lane)).is_some() {
+                    return None;
+                }
+            }
+        }
+        (!grouped.is_empty()).then_some(grouped)
+    }
+
+    fn hs_group_has_differing(hits: &Hitsounds, group_indices: &[usize]) -> bool {
+        group_indices
+            .iter()
+            .any(|&idx| Self::has_differing_hit_volumes(hits.moment(MomentId(idx))))
+    }
+
+    /// Checks before compile whether HS-mode `Place::NoObject` groups would require gain recovery
+    /// so projectless Saves refuse early instead of panicking during `PreparedSave::apply`.
+    pub(super) fn needs_hs_no_object_recovery(hits: &Hitsounds, base: &OsuFile) -> bool {
+        let mut groups: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+        for (i, moment) in hits.moments().iter().enumerate() {
+            if moment.place() == Place::NoObject && moment.hits().next().is_some() {
+                let time = dawsu_hitsounding::hs::hs_group_time(base, moment.time());
+                groups.entry(time).or_default().push(i);
+            }
+        }
+        groups.into_values().any(|indices| {
+            Self::hs_group_has_differing(hits, &indices)
+                && Self::hs_group_gains(hits, &indices).is_some()
+        })
+    }
+
     pub(super) fn read_with_hs(
         hits: &Hitsounds,
         root: &Path,
@@ -176,27 +213,11 @@ impl Captured {
             }
         }
         for (location, group_indices) in no_object_groups {
-            let mut grouped = BTreeMap::new();
-            let mut duplicate_lane = false;
-            for &idx in &group_indices {
-                let moment = hits.moment(MomentId(idx));
-                for lane in moment.hits() {
-                    if grouped.insert(lane.clone(), moment.hit_volume(lane)).is_some() {
-                        duplicate_lane = true;
-                        break;
-                    }
-                }
-                if duplicate_lane {
-                    break;
-                }
-            }
             // A single reopened Circle moment cannot hold duplicate lanes cleanly.
-            if duplicate_lane || grouped.is_empty() {
+            let Some(grouped) = Self::hs_group_gains(hits, &group_indices) else {
                 continue;
-            }
-            let has_differing = group_indices
-                .iter()
-                .any(|&idx| Self::has_differing_hit_volumes(hits.moment(MomentId(idx))));
+            };
+            let has_differing = Self::hs_group_has_differing(hits, &group_indices);
             let has_mixed_placement =
                 group_indices.iter().any(|idx| placed.contains(idx)) && mixed.contains(&location);
             if has_differing || has_mixed_placement {

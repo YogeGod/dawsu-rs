@@ -2248,3 +2248,106 @@ fn same_session_recovery_rejects_tampered_last_save_mixed_entry() {
     );
 }
 
+#[test]
+fn hs_mode_save_without_project_refuses_differing_no_object_gains_without_panicking() {
+    let fixture = Scratch::new("hs-gain-recovery-no-project");
+    let path = fixture.path("map (HS).osu");
+    let map = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,0,1,0,1:1:1:100:\n";
+    std::fs::write(&path, map).unwrap();
+    let wav_head = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0";
+    for (name, sample) in [("normal-hitwhistle.wav", 12288_i16), ("normal-hitclap.wav", 16384)] {
+        let mut wav = wav_head.to_vec();
+        wav.extend(sample.to_le_bytes());
+        std::fs::write(fixture.path(name), wav).unwrap();
+    }
+
+    let mut app = Application::with_data_root(fixture.path("app-data"));
+    app.clear_error();
+    app.audio = None;
+    app.project_root = None;
+    open(&mut app, path.clone());
+    app.set_hs_mode(true);
+
+    let whistle = skin(SampleSet::Normal, Hitsound::Whistle);
+    let clap = skin(SampleSet::Normal, Hitsound::Clap);
+    app.document.as_mut().unwrap().composer.apply("Differing NoObject gains", |hits| {
+        let id = hits.add_moment(SongTime::from_ms(1000.0), 70);
+        hits.add_hit(id, clap);
+        hits.add_hit(id, whistle.clone());
+        hits.set_hit_volume(id, &whistle, 50);
+    });
+    app.save_with_backups(fixture.path("backups"));
+    wait(&mut app);
+    assert_eq!(
+        app.error.as_deref(),
+        Some("Editable hit gains need a writable editor project to save safely.")
+    );
+    assert!(app.is_dirty());
+    assert_eq!(std::fs::read(&path).unwrap(), map);
+}
+
+#[test]
+fn same_session_recovery_after_hs_mode_mixed_save_restores_working_edits_and_undo() {
+    let fixture = Scratch::new("same-session-hs-mixed-recovery");
+    let path = fixture.path("map (HS).osu");
+    let map = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,1,100,1,0\n[HitObjects]\n256,192,0,1,0,1:1:1:100:\n";
+    std::fs::write(&path, map).unwrap();
+    let wav_head = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0";
+    for (name, sample) in [("normal-hitnormal.wav", 8192_i16), ("normal-hitclap.wav", 16384)] {
+        let mut wav = wav_head.to_vec();
+        wav.extend(sample.to_le_bytes());
+        std::fs::write(fixture.path(name), wav).unwrap();
+    }
+
+    let data = fixture.path("app-data");
+    let sessions = fixture.path("sessions");
+    let mut app = Application::with_data_root(data.clone());
+    app.clear_error();
+    app.audio = None;
+    app.project_root = Some(sessions.clone());
+    open(&mut app, path);
+    app.set_hs_mode(true);
+
+    let normal = skin(SampleSet::Normal, Hitsound::Normal);
+    let clap = skin(SampleSet::Normal, Hitsound::Clap);
+    app.document.as_mut().unwrap().composer.apply("Mixed NoObject moment", |hits| {
+        let id = hits.add_moment(SongTime::from_ms(1000.0), 70);
+        hits.add_hit(id, normal.clone());
+        hits.set_hit_volume(id, &normal, 35);
+        hits.add_hit(id, clap.clone());
+    });
+    app.save_with_backups(fixture.path("backups"));
+    wait(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+
+    let idx = app.document().unwrap().composer.hitsounds().moments().iter()
+        .position(|m| (m.time().ms() - 1000.0).abs() < 1.0)
+        .unwrap();
+    app.select_hit(HitKey { moment: idx, lane: normal.clone() }, false);
+    app.selection_volume(90, false);
+    app.refresh_recovery_edit();
+    let offer = app.write_recovery_copy().unwrap().unwrap();
+    drop(app);
+
+    let mut reopened = Application::with_data_root(data);
+    reopened.clear_error();
+    reopened.audio = None;
+    reopened.project_root = Some(sessions);
+    reopened.restore_recovery(&offer.id).unwrap();
+    wait(&mut reopened);
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert!(reopened.document().unwrap().hs_mode);
+    let moment = reopened.document().unwrap().composer.hitsounds().moments().iter()
+        .find(|m| (m.time().ms() - 1000.0).abs() < 1.0)
+        .unwrap();
+    assert_eq!((moment.hit_volume(&normal), moment.hit_volume(&clap)), (90, 70));
+    assert!(reopened.is_dirty());
+
+    reopened.command("undo");
+    let moment = reopened.document().unwrap().composer.hitsounds().moments().iter()
+        .find(|m| (m.time().ms() - 1000.0).abs() < 1.0)
+        .unwrap();
+    assert_eq!((moment.hit_volume(&normal), moment.hit_volume(&clap)), (35, 70));
+    assert!(!reopened.is_dirty());
+}
+

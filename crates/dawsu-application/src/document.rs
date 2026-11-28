@@ -402,6 +402,14 @@ pub(crate) struct PrepareSaveInput<'a> {
     pub(crate) clean_redundant_greenlines: bool,
 }
 
+fn gain_recovery_without_project(hits: &Hitsounds, pending: &pending::Pending) -> String {
+    // A new sample the gains mix from would be left out with nothing to keep it.
+    if let Some(file) = pending::needed(hits, pending, &[]).first() {
+        return pending::left_out_without_project(&file.name);
+    }
+    "Editable hit gains need a writable editor project to save safely.".into()
+}
+
 pub(crate) fn prepare_save(
     input: PrepareSaveInput<'_>,
     cancel: &dyn Fn() -> bool,
@@ -445,12 +453,11 @@ pub(crate) fn prepare_save(
     if project.is_none() && !hits.placements().is_empty() {
         return Err("Sound set links need a writable editor project to save safely.".into());
     }
-    if project.is_none() && gain_recovery::Captured::read(hits, root, pending, defaults, &BTreeSet::new())?.needs_recovery() {
-        // A new sample the gains mix from would be left out with nothing to keep it.
-        if let Some(file) = pending::needed(hits, pending, &[]).first() {
-            return Err(pending::left_out_without_project(&file.name));
-        }
-        return Err("Editable hit gains need a writable editor project to save safely.".into());
+    if project.is_none()
+        && (gain_recovery::Captured::read(hits, root, pending, defaults, &BTreeSet::new())?.needs_recovery()
+            || hs && gain_recovery::Captured::needs_hs_no_object_recovery(hits, &file))
+    {
+        return Err(gain_recovery_without_project(hits, pending));
     }
     let placement = if hs { Placement::OnObjects } else { Placement::GreenLines };
     let mut mix_files = mixes::MixFiles::default();
@@ -553,6 +560,9 @@ pub(crate) fn prepare_save(
     let recovery = gain_recovery::Captured::read_with_hs(&effective, root, pending, defaults, &mixed, hs_circles)?;
     if cancel() {
         return Err("Save cancelled before writing".into());
+    }
+    if project.is_none() && recovery.needs_recovery() {
+        return Err(gain_recovery_without_project(&effective, pending));
     }
     let recovery_revision = if recovery.needs_recovery() || project
         .and_then(|project| project.settings.gain_recovery.as_ref())
