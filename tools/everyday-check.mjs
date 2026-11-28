@@ -992,6 +992,14 @@ try {
     if (await read(() => !window.dawsuUi?.bridge?.mapPreview)) await fromMenu("View", "Map preview");
     const popOut = page().getByRole("button", { name: "Open in its own window" });
     await popOut.waitFor({ timeout: 5000 });
+    // The Inspector's own preview must really paint: a 0 px wide canvas once left the panel blank.
+    await until(() => {
+      const canvas = document.querySelector('#inspector-preview-body canvas[aria-label="Map preview at the playhead"]');
+      if (!canvas || canvas.clientWidth < 100 || canvas.clientHeight < 60) return null;
+      const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 3; i < pixels.length; i += 4) if (pixels[i] > 0) return true;
+      return null;
+    }, null, "the Inspector's map preview canvas has no size or painted nothing", 5000);
     await popOut.click();
     const window = await windowOpened("preview.html");
     await page().getByRole("button", { name: "Show it here" }).click();
