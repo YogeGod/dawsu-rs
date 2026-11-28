@@ -16,6 +16,20 @@ export const clock = ms => {
 // would go before the dash; the editor state has none yet.
 export const osuTimestamp = ms => parts(ms).join(":") + " -";
 
+// A time typed into the readout, in ms: "01:54.385" (the readout), "01:54:385 (1,2) -" (osu!'s
+// timestamp, read up to the first space as osu! does), "1:54" or plain seconds ("114.5"). null if unreadable.
+export function parseTime(text) {
+  const head = String(text ?? "").trim().split(/\s/)[0];
+  let match = /^(\d+):(\d{1,2})(?:[.:](\d{1,3}))?$/.exec(head);
+  if (match) {
+    const [, minutes, seconds, millis = "0"] = match;
+    if (Number(seconds) > 59) return null;
+    return Number(minutes) * 60000 + Number(seconds) * 1000 + Number(millis.padEnd(3, "0"));
+  }
+  match = /^\d+(?:\.\d+)?$/.exec(head);
+  return match ? Math.round(Number(head) * 1000) : null;
+}
+
 // The backend sends "bar.beat.tick · 190.0 BPM · 4/4 · snap" and no separate fields.
 export function readout(view, scene) {
   const [, textTempo, textMeter] = (scene && view?.musicalPosition?.split(" · ")) || [];

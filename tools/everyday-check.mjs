@@ -672,6 +672,21 @@ try {
     return `${before} → ${coarse} → 1/4`;
   });
 
+  await step("Go to a typed time from the transport's readout", async () => {
+    await page().getByRole("button", { name: "Go to time" }).click();
+    const field = page().locator("input.time-field");
+    await field.waitFor({ timeout: 3000 });
+    // osu!'s own timestamp form, as a mapper pastes it from a mod post.
+    await field.fill("00:01:500 (1) - ");
+    await field.press("Enter");
+    await until(() => Math.abs(window.view.position - 1500) < 1, null, "the playhead did not go to 00:01.500");
+    expect(await page().locator("input.time-field").count() === 0, "the time field stayed open after Enter");
+    await page().getByRole("button", { name: "Go to time" }).click();
+    await page().keyboard.press("Escape");
+    await until(() => !document.querySelector("input.time-field"), null, "Escape did not close the time field");
+    return "00:01:500 → 1500 ms";
+  });
+
   await step("Place a hit with a click", async () => {
     if (!silent) return needsSilence();
     // An empty spot on the first lane, on the beat grid, away from the map's objects.
