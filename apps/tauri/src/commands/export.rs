@@ -58,9 +58,18 @@ pub(crate) fn export_title(view: &Value) -> String {
     )
 }
 
+/// Only the standalone Export window takes the map's title; the Export modal inside main
+/// asks for the same view and must leave the editor's title bar alone.
+pub(crate) fn sets_export_title(label: &str) -> bool {
+    label == "export"
+}
+
 #[tauri::command]
 pub(crate) fn export_view(window: tauri::WebviewWindow, state: State<'_, Editor>) -> Result<Value, String> {
     let view = ask(&state, Request::ExportView)??;
+    if !sets_export_title(window.label()) {
+        return Ok(view);
+    }
     // The title follows the map the editor has open, also after a switch while Export is open.
     let title = export_title(&view);
     if window.title().ok().as_deref() != Some(title.as_str()) {

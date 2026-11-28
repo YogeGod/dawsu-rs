@@ -82,7 +82,10 @@
 
   /* Transport */
   --transport-seg: #1c1c1f; --transport-seg-on: var(--editor-selected);
-  --transport-rec-on: #4a1c1a; --readout-value: var(--editor-text);
+  --transport-rec-on: #4a1c1a; --readout-value: var(--ink-on-dark);
+
+  /* Fixed light ink for text on fixed dark surfaces; themed --editor-text turns dark on bright schemes. */
+  --ink-on-dark: #f5f5f7;
 
   /* osu! star-rating colour stops (osu-web), interpolate in gamma 2.2 */
   --sr-0_1: #4290fb; --sr-1_25: #4fc0ff; --sr-2: #4fffd5; --sr-2_5: #7cff4f; --sr-3_3: #f6f05c;

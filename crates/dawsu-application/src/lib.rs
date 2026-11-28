@@ -59,9 +59,7 @@ pub use document::{
 use app_save_io::{problem_description, recorded_pending};
 #[cfg(test)]
 use app_save_io::{load, project_hits, restore_project_hits};
-use document::{Pass, PreparedSave, compile_pass, last_written, reproduces_saved};
-#[cfg(test)]
-use document::compile_snapshot;
+use document::{Pass, PreparedSave, compile_pass, compile_snapshot, last_written};
 #[cfg(test)]
 use document::{PrepareSaveInput, compile_for_save, prepare_save, unfinished_record};
 pub use base_layer::{
@@ -940,7 +938,7 @@ impl Application {
             external_osu_changed: self.external_osu_changed,
             has_original_snapshot: self.has_original_snapshot(),
             can_undo_revert: self.can_undo_revert(),
-            tap_recording_armed: self.tap_recording_armed,
+            tap_recording_armed: self.tap_recording_armed(),
             tap_recorded_count: self.tap_recorded_hits.len(),
             output_problems_len: self.output_problems.len(),
             output_problem_revision: self.output_problem_revision,

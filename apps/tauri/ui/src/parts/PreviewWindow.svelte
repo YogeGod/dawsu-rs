@@ -51,7 +51,7 @@
     height: 100vh;
     overflow: hidden;
     background: #0b0b0f;
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
     font: 12px/1.4 var(--font-ui);
     color-scheme: dark;
   }
@@ -62,6 +62,6 @@
     margin: 0;
     padding: 24px;
     text-align: center;
-    color: var(--editor-muted);
+    color: #98989f;
   }
 </style>

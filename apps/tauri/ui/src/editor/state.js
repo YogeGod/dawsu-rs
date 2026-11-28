@@ -20,6 +20,7 @@ export function createState() {
     markedRange: null,
     drawStrokePreview: null,
     pendingDrawHits: [],
+    drawHitSeq: 0,
 
     browserMap: "",
     browserFolder: "",
@@ -96,6 +97,8 @@ export function createState() {
     volumeHoverTime: null,
     rulerPointer: null,
 
+    // The key preset the shortcuts were last fetched for; null before the first view.
+    lastShortcutPreset: null,
     modalKind: "",
     modalClose: null,
     outputProblemIndex: -1,

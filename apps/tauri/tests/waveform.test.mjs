@@ -166,6 +166,7 @@ test("ipc fetches binary editor_waveform once per (path, previewKey), stores Flo
       __TAURI__: {
         core: {
           invoke: async (name) => {
+            if (name === "editor_shortcuts") return null;
             calls.push(name);
             if (name === "editor_waveform") return waveformReply.slice(0);
             return { busy: false, hasDocument: false };
@@ -224,6 +225,7 @@ test("ipc re-fetches binary editor_waveform when stem toggle changes waveformRev
       __TAURI__: {
         core: {
           invoke: async (name) => {
+            if (name === "editor_shortcuts") return null;
             calls.push(name);
             if (name === "editor_waveform") return waveformReply.slice(0);
             return { busy: false, hasDocument: false };
@@ -381,6 +383,7 @@ test("ipc decodes DWFP pyramid, preserves base Float32Array, selects coarser lev
       __TAURI__: {
         core: {
           invoke: async (name) => {
+            if (name === "editor_shortcuts") return null;
             calls.push(name);
             if (name === "editor_waveform") return dwfp.slice(0);
             return { busy: false, hasDocument: false };
@@ -432,6 +435,7 @@ test("subscribe_telemetry stays gated without Channel, parses 64-byte 0x01 frame
       __TAURI__: {
         core: {
           invoke: async (name) => {
+            if (name === "editor_shortcuts") return null;
             gatedCalls.push(name);
             return { busy: false, hasDocument: false };
           },
@@ -476,6 +480,7 @@ test("subscribe_telemetry stays gated without Channel, parses 64-byte 0x01 frame
         core: {
           Channel: FakeChannel,
           invoke: async (name) => {
+            if (name === "editor_shortcuts") return null;
             calls.push(name);
             if (name === "editor_view") {
               return {

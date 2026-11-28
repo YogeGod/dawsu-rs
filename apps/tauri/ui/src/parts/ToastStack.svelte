@@ -182,7 +182,7 @@
     border: 1px solid var(--editor-border);
     border-radius: 8px;
     background: linear-gradient(180deg, #1e1e21 0%, #151517 100%);
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.52);
   }
   .toast-bar {
@@ -218,14 +218,14 @@
     padding: 0;
     border: 0;
     background: transparent;
-    color: var(--editor-muted);
+    color: #98989f;
     font-size: 15px;
   }
   .toast-body {
     margin: 0;
     font-size: 12px;
     line-height: 1.4;
-    color: var(--editor-secondary);
+    color: #c7c7cc;
   }
   .toast-actions {
     display: flex;

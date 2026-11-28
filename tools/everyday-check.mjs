@@ -613,6 +613,23 @@ try {
     silent = true;
   });
 
+  await step("Playback › Speed lists six speeds and 75% sticks", async () => {
+    await openMenu("Playback");
+    const speeds = page().locator('#editor-menu [role=group][aria-label="Speed · pitch stays the same"] button');
+    const labels = await speeds.allTextContents();
+    expect(labels.length === 6, `the Speed submenu lists ${labels.length} rows: ${JSON.stringify(labels)}`);
+    await speeds.filter({ hasText: /^\s*75\s*$/ }).click({ timeout: 5000 });
+    await until(() => window.view.speed === 0.75, null, "picking 75% did not change the playback speed", 4000);
+    await page().keyboard.press("Escape");
+    await until(() => document.getElementById("editor-menu").hidden, null, "Escape did not close the Playback menu", 3000);
+    await until(() => document.querySelector("#playback-rates button[aria-pressed=true]")?.dataset.playbackSpeed === "0.75",
+      null, "the status bar's pressed speed is not 75%", 4000);
+    // Back to 100% so the later steps play at normal speed.
+    await page().locator('#playback-rates button[data-playback-speed="1"]').click({ timeout: 5000 });
+    await until(() => window.view.speed === 1, null, "the speed did not go back to 100%", 4000);
+    return `${labels.join(" | ")}; 75% pressed`;
+  });
+
   await step("Pick each of the seven tools", async () => {
     for (const tool of ["Draw", "Erase", "Mute", "Grab", "Range", "Ramp", "Select"]) await pickTool(tool);
   });
@@ -922,6 +939,12 @@ try {
       await dialog.locator(".osu-diff-body").first().waitFor({ state: "visible", timeout: 5000 });
       expect(await dialog.locator(".listen-btn").first().isEnabled(), "Listen button must stay usable with diff open");
       await page().screenshot({ path: join(shots, "26-export-review-verified.png") });
+      // Space inside the modal plays and stops the editor, as it does over the timeline.
+      await dialog.locator("h1").click();
+      await page().keyboard.press("Space");
+      await until(() => window.dawsuUi.bridge.latestView?.playing === true, null, "Space in the Export modal did not start playback", 5000);
+      await page().keyboard.press("Space");
+      await until(() => window.dawsuUi.bridge.latestView?.playing === false, null, "Space in the Export modal did not stop playback", 5000);
     } finally {
       for (const sw of toggledOff) {
         if ((await sw.getAttribute("aria-checked").catch(() => null)) === "false") {
@@ -940,6 +963,27 @@ try {
     const window = await windowOpened("drum.html");
     await window.getByRole("button", { name: "Cancel" }).click();
     await windowClosed(window, "drum");
+  });
+
+  await step("The inline map preview draws", async () => {
+    if (await read(() => document.getElementById("view-inspector").getAttribute("aria-pressed") !== "true")) await page().click("#view-inspector");
+    if (await read(() => !window.dawsuUi?.bridge?.mapPreview)) await fromMenu("View", "Map preview");
+    const size = await until(() => {
+      const canvas = document.querySelector("#inspector-preview-body canvas");
+      return canvas && { width: canvas.clientWidth, height: canvas.clientHeight, backing: canvas.width };
+    }, null, "the Inspector shows no map preview canvas", 5000);
+    // A preview squeezed to nothing draws a black box: wait for layout, then report what it got.
+    const drawn = ({ width, height, backing }) => width >= 100 && height >= 75 && backing > 0;
+    let seen = size;
+    for (let i = 0; i < 20 && !drawn(seen); i++) {
+      await sleep(100);
+      seen = await read(() => {
+        const canvas = document.querySelector("#inspector-preview-body canvas");
+        return { width: canvas.clientWidth, height: canvas.clientHeight, backing: canvas.width };
+      });
+    }
+    expect(drawn(seen), `the inline map preview is ${seen.width} × ${seen.height} px (backing width ${seen.backing}), not at least 100 × 75`);
+    return `${seen.width} × ${seen.height} px, backing width ${seen.backing}`;
   });
 
   await step("Open and close the map preview window", async () => {

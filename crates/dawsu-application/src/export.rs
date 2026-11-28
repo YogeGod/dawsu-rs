@@ -218,6 +218,8 @@ pub(crate) struct Slot {
     pub(crate) pending_manifest: Option<PendingManifestCommit>,
     /// The id of the last Export write started; `written` and `write_error` belong to it.
     write_id: Option<u64>,
+    /// Where the last hitsound-only Export wrote, for Open folder. Kept when Export closes.
+    last_hitsound_only_dir: Option<PathBuf>,
     /// The last Export write's result: files written, or why nothing was.
     written: Option<usize>,
     write_error: Option<String>,
@@ -466,6 +468,11 @@ impl Application {
         self.export.clear();
     }
 
+    /// The folder the last hitsound-only Export wrote, if one has run this session.
+    pub fn last_hitsound_only_export(&self) -> Option<&Path> {
+        self.export.last_hitsound_only_dir.as_deref()
+    }
+
     fn preview_is_current(&self, preview: &ExportPreview) -> bool {
         self.staleness(preview).is_none()
     }
@@ -624,6 +631,7 @@ impl Application {
             self.export.write_error = None;
             let id = self.export.write_id.map_or(1, |last| last + 1);
             self.export.write_id = Some(id);
+            self.export.last_hitsound_only_dir = Some(result.output_dir.clone());
             self.status = format!(
                 "Exported {count} hitsound-only file(s) to {} (mapset untouched).",
                 result.output_dir.display()
@@ -2143,6 +2151,44 @@ mod tests {
             tgt_with_audio,
             "real mapset target must stay byte-identical in HitsoundOnly mode"
         );
+    }
+
+    #[test]
+    fn hitsound_only_export_is_the_last_export_open_folders_shows() {
+        let map = mapset("export-last-export-folder");
+        let out_dir = map.scratch.path("last-hs-only");
+        let mut app = opened(&map.source);
+        assert_eq!(app.last_hitsound_only_export(), None, "nothing exported yet");
+        let opts = ExportOptions {
+            targets: vec![map.target.clone()],
+            write_mode: ExportWriteMode::HitsoundOnly,
+            hitsound_only_dir: Some(out_dir.clone()),
+            ..ExportOptions::default()
+        };
+        let id = app.request_export_preview(opts.clone()).unwrap();
+        wait_preview(&mut app);
+        app.run_export(id).unwrap();
+        assert_eq!(app.last_hitsound_only_export(), Some(out_dir.as_path()));
+        // Closing Export (ExportClose) forgets the preview, never where the files went.
+        app.cancel_export_preview();
+        assert_eq!(app.last_hitsound_only_export(), Some(out_dir.as_path()));
+        // A Direct preview afterwards keeps it too.
+        app.request_export_preview(ExportOptions { write_mode: ExportWriteMode::Direct, ..opts }).unwrap();
+        assert_eq!(app.last_hitsound_only_export(), Some(out_dir.as_path()));
+    }
+
+    #[test]
+    fn export_choices_sent_just_before_close_are_kept() {
+        // The Export window's close sends a pending preview, then ExportClose at once:
+        // request_export_preview stores the choices before it starts the background preview.
+        let map = mapset("export-choices-before-close");
+        let mut app = opened(&map.source);
+        let opts = ExportOptions { targets: vec![map.target.clone()], base: true, ..ExportOptions::default() };
+        app.request_export_preview(opts).unwrap();
+        app.cancel_export_preview();
+        let choices = app.document().unwrap().export_choices().unwrap();
+        assert!(choices.base);
+        assert!(choices.left_out.is_empty());
     }
 
     #[test]

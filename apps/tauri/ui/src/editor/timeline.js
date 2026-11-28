@@ -6,6 +6,7 @@ import {
   minZoom, nameOf, objectReach, objectSize, rulerBandHeight, sampleFolderNames, snapTimeInScene,
   snapToActiveGridInScene, visibleVolumeLanes,
 } from "./helpers.js";
+import { wheelIntent } from "../lib/controls.js";
 import { chordMarkTitle } from "../lib/rollPaint.js";
 import { volumeBubbleAtMoment } from "../lib/volumeBubble.js";
 
@@ -977,7 +978,10 @@ export function attachTimeline(ctx) {
               steps: [],
               newSteps: [],
             };
+            const seq = ++state.drawHitSeq;
+            state.drag.optimisticDrawSeq = seq;
             state.pendingDrawHits.push({
+              seq,
               row: state.drag.firstPoint.row,
               time: snappedStart,
               volume: state.scene.insertVolume ?? 100,
@@ -1104,6 +1108,12 @@ export function attachTimeline(ctx) {
             state.drawStrokePreview = null;
             ctx.paintSoon();
           }
+          if (!released && state.drag.optimisticDrawSeq != null && state.pendingDrawHits?.length) {
+            const cancelledSeq = state.drag.optimisticDrawSeq;
+            const beforeLen = state.pendingDrawHits.length;
+            state.pendingDrawHits = state.pendingDrawHits.filter(hit => hit.seq !== cancelledSeq);
+            if (state.pendingDrawHits.length !== beforeLen) ctx.paintSoon();
+          }
           if (released && dp?.active) {
             const { steps, newSteps } = computeDrawStrokeSteps(
               state.scene,
@@ -1112,11 +1122,16 @@ export function attachTimeline(ctx) {
               drumMemberSet(dp.row) ?? dp.row,
             );
             if (steps.length > 1) {
+              ctx.act({ ...end, phase: "cancel" }, false);
               for (const stepTime of newSteps) {
-                state.pendingDrawHits.push({ row: dp.row, time: stepTime, volume: state.scene.insertVolume ?? 100 });
+                state.pendingDrawHits.push({
+                  seq: ++state.drawHitSeq,
+                  row: dp.row,
+                  time: stepTime,
+                  volume: state.scene.insertVolume ?? 100,
+                });
               }
               ctx.paintSoon();
-              ctx.act({ ...end, phase: "cancel" }, false);
               ctx.act({
                 kind: "paint_draw_stroke",
                 row: dp.row,
@@ -1383,12 +1398,9 @@ export function attachTimeline(ctx) {
         }
         return;
       }
-      const rows = ctrlKey && shiftKey;
-      const horizontal = deltaX && !deltaY;
-      const snap = !horizontal && (osu ? ctrlKey : altKey && !ctrlKey);
-      const zoomTime = !horizontal && (osu ? altKey && !ctrlKey : ctrlKey);
-      const pan = horizontal || (!osu && shiftKey);
-      const seek = osu && (shiftKey || x >= 0);
+      const { rows, snap, zoom: zoomTime, pan, seek } = wheelIntent({
+        osu, ctrl: ctrlKey, shift: shiftKey, alt: altKey, horizontal: Boolean(deltaX && !deltaY), overGrid: x >= 0,
+      });
       if (!(rows || snap || zoomTime || pan || seek) || (!deltaX && !deltaY)) return;
       event.preventDefault();
       if (state.view.busy || state.drag) return;

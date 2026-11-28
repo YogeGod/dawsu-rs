@@ -17,6 +17,8 @@ function makeScene(overrides = {}) {
     divisor: 4,
     insertVolume: 85,
     laneRevision: 1,
+    difficulties: ["PerfMap.osu"],
+    waveform: [],
     sections: [[0, 500, 4]],
     orphanedHits: [],
     bookmarks: [],
@@ -41,6 +43,7 @@ function makeScene(overrides = {}) {
       canAddLayer: false,
     })),
     laneOrder: [3, 4, 9, 10],
+    laneLayout: { folder_order: ["soft", "normal", "drum"] },
     ...overrides,
   };
 }
@@ -49,6 +52,7 @@ async function setupHarness({ deferInvoke = false } = {}) {
   const controls = new Map();
   const calls = [];
   const resolvers = [];
+  let failNextInvoke = null;
   let paintSoonCount = 0;
   function element() {
     return {
@@ -87,13 +91,35 @@ async function setupHarness({ deferInvoke = false } = {}) {
       __TAURI__: {
         core: {
           invoke: (_name, args) => {
-            calls.push(JSON.parse(JSON.stringify(args)));
+            if (_name === "editor_waveform") return Promise.resolve(new Float32Array(0));
+            // The first view fetches the shortcuts (Slice 6); not a pointer or scene IPC.
+            if (_name === "editor_shortcuts") return Promise.resolve(null);
+            calls.push(args ? JSON.parse(JSON.stringify(args)) : undefined);
+            const buildReply = () => ({
+              busy: false,
+              hasDocument: true,
+              tool: editor.state.view.tool,
+              duration: 10_000,
+              playing: false,
+              position: 0,
+              ...(args?.scene ? {
+                scene: makeScene({
+                  viewStart: editor.state.scene?.viewStart ?? 0,
+                  zoom: editor.state.scene?.zoom ?? 0.5,
+                }),
+              } : {}),
+            });
+            if (failNextInvoke) {
+              const err = failNextInvoke;
+              failNextInvoke = null;
+              return Promise.reject(err);
+            }
             if (deferInvoke) {
-              return new Promise((resolve) => {
-                resolvers.push(() => resolve({ busy: false, hasDocument: true, tool: editor.state.view.tool, duration: 10_000, playing: false, position: 0 }));
+              return new Promise((resolve, reject) => {
+                resolvers.push({ resolve: () => resolve(buildReply()), reject });
               });
             }
-            return Promise.resolve({ busy: false, hasDocument: true, tool: editor.state.view.tool, duration: 10_000, playing: false, position: 0 });
+            return Promise.resolve(buildReply());
           },
         },
         event: { listen() {} },
@@ -125,10 +151,26 @@ async function setupHarness({ deferInvoke = false } = {}) {
     scroll: get("scroll"),
     calls,
     resolvers,
-    flushOne: () => resolvers.shift()?.(),
+    flushOne: async () => {
+      for (let i = 0; i < 10 && resolvers.length === 0; i++) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+      assert.ok(resolvers.length > 0, "expected a pending invoke to flush");
+      resolvers.shift().resolve();
+      await new Promise(r => setTimeout(r, 0));
+    },
+    rejectOne: async (err = new Error("ipc failed")) => {
+      for (let i = 0; i < 10 && resolvers.length === 0; i++) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+      assert.ok(resolvers.length > 0, "expected a pending invoke to reject");
+      resolvers.shift().reject(err);
+      await new Promise(r => setTimeout(r, 0));
+    },
+    setFailNextInvoke: (err) => { failNextInvoke = err; },
     flushAll: async () => {
       for (let i = 0; i < 200 && (resolvers.length > 0 || editor.state.requests > 0); i++) {
-        while (resolvers.length) resolvers.shift()();
+        while (resolvers.length) resolvers.shift().resolve();
         await new Promise(r => setTimeout(r, 0));
       }
       await editor.state.pending;
@@ -198,6 +240,95 @@ test("Draw single-click previews optimistically, sends slim pointerdown + full p
   assert.equal(fullSceneCalls.length, 1, "only the final queued pointerup should request a full scene");
   assert.equal(calls.at(-1).scene, true);
   assert.equal(editor.state.pendingDrawHits?.length ?? 0, 0, "optimistic draw hits clear once scene settles");
+});
+
+test("Draw optimistic hit persists across slim pointerdown, idle polls, and overlapping clicks until authoritative scene arrives", async () => {
+  const { editor, grid, calls, resolvers, flushOne, rejectOne, flushAll } = await setupHarness({ deferInvoke: true });
+  editor.state.view.tool = "Draw";
+
+  // 1. Normal click timing: pointerdown (scene: false) completes BEFORE pointerup fires.
+  //    x = 100 -> 200 ms -> snaps to 250 ms; row 9 is visual row 1 -> y = 45.
+  grid.events.get("pointerdown")(pt(100, 45, 51));
+  assert.equal(editor.state.pendingDrawHits.length, 1);
+  assert.equal(editor.state.pendingDrawHits[0].time, 250);
+
+  // Flush slim pointerdown while mouse button is still held down.
+  await flushOne();
+  await editor.state.pending;
+  assert.equal(editor.state.requests, 0);
+  assert.equal(calls.at(-1).scene, false);
+  assert.equal(
+    editor.state.pendingDrawHits.length,
+    1,
+    "optimistic draw hit must NOT disappear when slim pointerdown (scene: false) finishes",
+  );
+
+  // Interleaved scene: false background poll while mouse is held / before scene arrives.
+  const pollPromise = editor.act(null, false);
+  await flushOne();
+  await pollPromise;
+  assert.equal(
+    editor.state.pendingDrawHits.length,
+    1,
+    "interleaved scene: false poll must NOT clear optimistic draw hit",
+  );
+
+  // Release pointer -> sends scene: true; hit remains visible while IPC is in flight, clears on arrival.
+  grid.events.get("pointerup")(pt(100, 45, 51));
+  assert.equal(editor.state.pendingDrawHits.length, 1, "hit stays queued while pointerup scene is in flight");
+  await flushOne();
+  await editor.state.pending;
+  assert.equal(calls.at(-1).scene, true);
+  assert.equal(editor.state.pendingDrawHits.length, 0, "hit clears when authoritative scene arrives");
+
+  // 2. Overlapping rapid clicks: click #1's scene arrival must prune ONLY click #1, keeping click #2 alive.
+  grid.events.get("pointerdown")(pt(100, 45, 52)); // 250 ms
+  grid.events.get("pointerup")(pt(100, 45, 52));
+  await flushOne(); // resolve down1 (scene: false)
+  assert.equal(resolvers.length, 1, "up1 (scene: true) should now be in flight");
+
+  // Click #2 starts BEFORE up1 finishes: x = 250 -> 500 ms.
+  grid.events.get("pointerdown")(pt(250, 45, 53));
+  assert.deepEqual(editor.state.pendingDrawHits.map(h => h.time), [250, 500]);
+
+  // up1's scene arrives: only click #1 (250 ms) is covered by up1's enqueue seq; click #2 (500 ms) must stay!
+  await flushOne();
+  assert.deepEqual(
+    editor.state.pendingDrawHits.map(h => h.time),
+    [500],
+    "earlier click scene arrival must preserve newer in-flight click's optimistic hit",
+  );
+
+  grid.events.get("pointerup")(pt(250, 45, 53));
+  await flushAll();
+  assert.equal(editor.state.pendingDrawHits.length, 0);
+
+  // 3. pointercancel removes only the cancelled stroke's hit while keeping earlier committed pending hits.
+  grid.events.get("pointerdown")(pt(100, 45, 54)); // 250 ms
+  grid.events.get("pointerup")(pt(100, 45, 54));
+  await flushOne(); // resolve down (scene: false), keep up (scene: true) in flight
+
+  grid.events.get("pointerdown")(pt(250, 45, 55)); // 500 ms
+  assert.deepEqual(editor.state.pendingDrawHits.map(h => h.time), [250, 500]);
+  grid.events.get("pointercancel")(pt(250, 45, 55));
+  assert.deepEqual(
+    editor.state.pendingDrawHits.map(h => h.time),
+    [250],
+    "pointercancel removes only the cancelled stroke's optimistic hit",
+  );
+  await flushAll();
+  assert.equal(editor.state.pendingDrawHits.length, 0);
+
+  // 4. IPC failure cleanup: rejecting pointerup clears orphaned optimistic hits once idle with no active drag.
+  grid.events.get("pointerdown")(pt(100, 45, 56));
+  grid.events.get("pointerup")(pt(100, 45, 56));
+  assert.equal(editor.state.pendingDrawHits.length, 1);
+  await flushOne(); // down succeeds
+  await rejectOne(new Error("simulated ipc failure")); // up rejects
+  await editor.state.pending;
+  assert.equal(editor.state.requests, 0);
+  assert.equal(editor.state.drag, null);
+  assert.equal(editor.state.pendingDrawHits.length, 0, "failed IPC cleans up pendingDrawHits when idle");
 });
 
 test("problemStripData keeps stable object identity across hitsound edits on standard maps", async () => {

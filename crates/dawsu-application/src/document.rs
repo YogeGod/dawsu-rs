@@ -254,11 +254,14 @@ pub struct SaveReport {
     pub added_greenlines: usize,
     pub(crate) written: Hitsounds,
     pub(crate) drawn: Hitsounds,
+    pub(crate) mixed: Option<Hitsounds>,
     pub(crate) left_out: Vec<roll_back::LeftOut>,
     pub(crate) hs_circle_ownership: Option<project::HsCircleOwnership>,
     pub(crate) gain_recovery_warning: Option<String>,
     /// What the failed project write after the `.osu` write held, for the status line.
     pub(crate) unfinished_record: String,
+    /// The sample mix files this Save wrote or reused in the mapset.
+    pub(crate) published_mixes: Vec<String>,
     /// The pending files this Save wrote into the mapset.
     pub(crate) published_pending: Vec<String>,
     /// The pending files the project keeps because the drawn hits play them.
@@ -389,79 +392,6 @@ pub(crate) fn compile_snapshot(
     )
     .map(|(file, problems, _)| (file, problems))
 }
-/// Whether `hits`, the hits a Save wrote, compile back into `saved`, the difficulty that Save
-/// wrote. Recovery checks the last save with it. A Save that rendered sample mixes compiled the
-/// mixed moments a second time with the mix files in their place (`prepare_save`); those moments
-/// are read back from `saved` and compiled the same way, so a Save with mixes is reproduced too.
-pub(crate) fn reproduces_saved(
-    document: &Document,
-    hits: &Hitsounds,
-    hs: bool,
-    loose_hits_saved_in_project: bool,
-    files: &[String],
-    cancel: &dyn Fn() -> bool,
-) -> Result<bool, String> {
-    let saved = document.file.original_bytes();
-    let (out, problems) = compile_snapshot(document, hits, hs, loose_hits_saved_in_project, cancel)?;
-    if problems.is_empty() {
-        return Ok(out.to_bytes() == saved);
-    }
-    if !problems.iter().all(|problem| mixes::can_render(problem, Placement::GreenLines)) {
-        return Ok(false);
-    }
-    let (Decompiled::Done(mut target), Decompiled::Done(played)) = (
-        decompile(&out, files, cancel, &mut |_, _| {}),
-        decompile(&document.file, files, cancel, &mut |_, _| {}),
-    ) else {
-        return Ok(false);
-    };
-    // Lines added by compile have other ids than the same lines read back from disk, so a moment
-    // is found in `saved` by its time, its kind of place and its order among moments like it.
-    fn shape(place: dawsu_hitsounding::Place) -> (u8, usize) {
-        match place {
-            dawsu_hitsounding::Place::Circle(_) => (0, 0),
-            dawsu_hitsounding::Place::SpinnerEnd(_) => (1, 0),
-            dawsu_hitsounding::Place::SliderNode { node, .. } => (2, node),
-            dawsu_hitsounding::Place::NoObject => (3, 0),
-        }
-    }
-    let key = |hits: &Hitsounds, id: usize| {
-        let moment = &hits.moments()[id];
-        (moment.time().ms().to_bits(), shape(moment.place()))
-    };
-    let nth = |hits: &Hitsounds, id: usize| (0..id).filter(|other| key(hits, *other) == key(hits, id)).count();
-    for problem in &problems {
-        let Some(id) = target.moments().iter().position(|moment| moment.place() == problem.place) else {
-            return Ok(false);
-        };
-        let (want, order) = (key(&target, id), nth(&target, id));
-        let Some(read) = (0..played.moments().len()).filter(|other| key(&played, *other) == want).nth(order) else {
-            return Ok(false);
-        };
-        let moment = &played.moments()[read];
-        // The mix files a role-by-role mix wrote play the additions the copy's hits hold, no more
-        // and no fewer; a file sample may go into any role. Otherwise the copy is not this Save's.
-        let addition = |lane: &SampleIdentity| match lane {
-            SampleIdentity::Standard { sound: Sound::Hit(role), .. } if *role != dawsu_foundation::Hitsound::Normal => Some(*role),
-            _ => None,
-        };
-        let dawsu_hitsounding::ProblemKind::NeedsSampleMix(drawn) = &problem.kind else {
-            return Ok(false);
-        };
-        let want: BTreeSet<_> = drawn.iter().filter_map(|(lane, _)| addition(lane)).collect();
-        let have: BTreeSet<_> = moment.hits().filter_map(addition).collect();
-        let files = drawn.iter().any(|(lane, _)| matches!(lane, SampleIdentity::File(_)));
-        if !want.is_subset(&have) || !(files || have.is_subset(&want)) {
-            return Ok(false);
-        }
-        let layers: Vec<_> = moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect();
-        target.set_moment_state(dawsu_hitsounding::MomentId(id), moment.volume(), layers);
-    }
-    Ok(match compile(&out, &target, Placement::GreenLines, cancel, &mut |_, _| {}) {
-        Compiled::Done { file, problems } => problems.is_empty() && file.to_bytes() == saved,
-        Compiled::Cancelled => return Err("Save cancelled".into()),
-    })
-}
 pub(crate) struct PrepareSaveInput<'a> {
     pub(crate) file: OsuFile,
     pub(crate) hits: &'a Hitsounds,
@@ -476,6 +406,14 @@ pub(crate) struct PrepareSaveInput<'a> {
     pub(crate) project: Option<&'a project::Project>,
     pub(crate) review: bool,
     pub(crate) clean_redundant_greenlines: bool,
+}
+
+fn gain_recovery_without_project(hits: &Hitsounds, pending: &pending::Pending) -> String {
+    // A new sample the gains mix from would be left out with nothing to keep it.
+    if let Some(file) = pending::needed(hits, pending, &[]).first() {
+        return pending::left_out_without_project(&file.name);
+    }
+    "Editable hit gains need a writable editor project to save safely.".into()
 }
 
 pub(crate) fn prepare_save(
@@ -521,12 +459,11 @@ pub(crate) fn prepare_save(
     if project.is_none() && !hits.placements().is_empty() {
         return Err("Sound set links need a writable editor project to save safely.".into());
     }
-    if project.is_none() && gain_recovery::Captured::read(hits, root, pending, defaults, &BTreeSet::new())?.needs_recovery() {
-        // A new sample the gains mix from would be left out with nothing to keep it.
-        if let Some(file) = pending::needed(hits, pending, &[]).first() {
-            return Err(pending::left_out_without_project(&file.name));
-        }
-        return Err("Editable hit gains need a writable editor project to save safely.".into());
+    if project.is_none()
+        && (gain_recovery::Captured::read(hits, root, pending, defaults, &BTreeSet::new())?.needs_recovery()
+            || hs && gain_recovery::Captured::needs_hs_no_object_recovery(hits, &file))
+    {
+        return Err(gain_recovery_without_project(hits, pending));
     }
     // Save adds the green lines a hit needs in HS mode too (Yoge 2026-11-28), as `compile_pass` does.
     let placement = Placement::GreenLines;
@@ -634,6 +571,9 @@ pub(crate) fn prepare_save(
     if cancel() {
         return Err("Save cancelled before writing".into());
     }
+    if project.is_none() && recovery.needs_recovery() {
+        return Err(gain_recovery_without_project(&effective, pending));
+    }
     let recovery_revision = if recovery.needs_recovery() || project
         .and_then(|project| project.settings.gain_recovery.as_ref())
         .is_some_and(|record| record.has_authored_for(&expected))
@@ -646,6 +586,7 @@ pub(crate) fn prepare_save(
                 pending,
                 defaults,
                 staged: &mix_files.staged,
+                hs_circles,
             },
             cancel,
         )?)
@@ -690,6 +631,7 @@ pub(crate) fn prepare_save(
     let plan = PreparedSave {
         path: path.to_path_buf(), backups, expected, out, cleaned_greenlines, added_greenlines, mix_files, recovery_revision,
         ownership, inputs, map_changed, left_out, written, unwritten, sound_sets, loose, drawn: hits.clone(),
+        mixed: final_mix_target,
         pending_writes, pending_kept, ledger: pending.ledger(),
         verify_expected, verify_folder_files: editor,
     };
@@ -861,6 +803,8 @@ pub(crate) struct PreparedSave {
     pub(crate) written: Hitsounds,
     /// The hits as drawn when this Save was prepared.
     pub(crate) drawn: Hitsounds,
+    /// The decompiled post-mix target compiled into `out`, when this Save rendered mixes.
+    pub(crate) mixed: Option<Hitsounds>,
     /// The project record of the left-out parts, when the project needs a new one.
     pub(crate) unwritten: Option<unwritten::Record>,
     /// The project record of the sound set links, when the project needs a new one.
@@ -947,6 +891,8 @@ impl PreparedSave {
         }
 
         // One all-or-nothing write: the mixes, then the pending files the difficulty plays.
+        let published_mixes: Vec<String> = self.mix_files.staged.iter()
+            .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
         let published_pending: Vec<String> = self.pending_writes.iter()
             .filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)).collect();
         let mut writes = std::mem::take(&mut self.mix_files.staged);
@@ -996,10 +942,12 @@ impl PreparedSave {
                     added_greenlines: self.added_greenlines,
                     written: self.written,
                     drawn: self.drawn,
+                    mixed: self.mixed,
                     left_out: self.left_out,
                     hs_circle_ownership: self.ownership,
                     gain_recovery_warning,
                     unfinished_record,
+                    published_mixes,
                     published_pending,
                     pending_kept: self.pending_kept.iter().map(|file| file.name.clone()).collect(),
                 })

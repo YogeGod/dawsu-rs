@@ -352,19 +352,8 @@ fn save_base(path: &Path, layer: &SharedBaseLayer) -> Result<(), String> {
         .map_err(|err| format!("Could not create Shared Base folder: {err}"))?;
     let bytes = serde_json::to_vec_pretty(layer)
         .map_err(|err| format!("Could not encode Shared Base data: {err}"))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &bytes).map_err(|err| format!("Could not write Shared Base file: {err}"))?;
-    if let Err(rename_err) = fs::rename(&tmp, path) {
-        // On Windows, fs::rename may fail if the destination already exists.
-        let _ = fs::remove_file(path);
-        if let Err(retry_err) = fs::rename(&tmp, path) {
-            let _ = fs::remove_file(&tmp);
-            return Err(format!(
-                "Could not save Shared Base file: {rename_err} ({retry_err})"
-            ));
-        }
-    }
-    Ok(())
+    dawsu_foundation::safe_write::write_new(path, &bytes)
+        .map_err(|err| format!("Could not save Shared Base file: {err}"))
 }
 
 fn delete_base(path: &Path) -> Result<(), String> {
@@ -2289,5 +2278,63 @@ mod tests {
             !m1000.has_hit(&whistle),
             "farther 1004ms whistle must not overwrite exact 1000ms match"
         );
+    }
+
+    fn temporaries(dir: &Path) -> Vec<String> {
+        folder_entries(dir).into_iter().filter(|n| n.ends_with(".tmp")).collect()
+    }
+
+    #[test]
+    fn save_base_overwrites_existing_file_and_leaves_no_temporaries() {
+        let scratch = Scratch::new("shared-base-overwrite");
+        let dir = scratch.path("data");
+        let path = dir.join("shared-base.json");
+        save_base(&path, &SharedBaseLayer::default()).unwrap();
+        let updated = SharedBaseLayer { enabled: true, source_difficulty: Some("Hard".into()), ..Default::default() };
+        save_base(&path, &updated).unwrap();
+        assert_eq!(load_base(&path).unwrap(), Some(updated));
+        assert!(temporaries(&dir).is_empty(), "{:?}", folder_entries(&dir));
+    }
+
+    /// Another program (antivirus, sync client) briefly holds the live file open without
+    /// delete sharing: the save waits and succeeds instead of failing or deleting the file.
+    #[cfg(windows)]
+    #[test]
+    fn save_base_waits_out_a_brief_windows_share_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let scratch = Scratch::new("shared-base-brief-lock");
+        let dir = scratch.path("data");
+        let path = dir.join("shared-base.json");
+        save_base(&path, &SharedBaseLayer::default()).unwrap();
+        let holder = fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(holder);
+        });
+        let updated = SharedBaseLayer { enabled: true, ..Default::default() };
+        let result = save_base(&path, &updated);
+        release.join().unwrap();
+        result.unwrap();
+        assert_eq!(load_base(&path).unwrap(), Some(updated));
+        assert!(temporaries(&dir).is_empty(), "{:?}", folder_entries(&dir));
+    }
+
+    /// A lock that never lets go: the save fails, the live Shared Base keeps its old bytes,
+    /// and no temporary file is left behind.
+    #[cfg(windows)]
+    #[test]
+    fn save_base_keeps_live_file_when_windows_share_lock_persists() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let scratch = Scratch::new("shared-base-held-lock");
+        let dir = scratch.path("data");
+        let path = dir.join("shared-base.json");
+        save_base(&path, &SharedBaseLayer::default()).unwrap();
+        let original = fs::read(&path).unwrap();
+        let holder = fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+        let result = save_base(&path, &SharedBaseLayer { enabled: true, ..Default::default() });
+        drop(holder);
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(temporaries(&dir).is_empty(), "{:?}", folder_entries(&dir));
     }
 }

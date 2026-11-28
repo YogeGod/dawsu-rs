@@ -104,3 +104,16 @@ fn reopen(app: &Application, map: &Path) -> Application {
     open(&mut reopened, map.to_path_buf());
     reopened
 }
+
+#[test]
+fn asio_audio_output_without_a_driver_is_refused_and_keeps_the_old_engine() {
+    let mut app = Application::headless();
+    let before = app.preferences.clone();
+    for device in [None, Some(String::new()), Some("   ".to_string())] {
+        let result = app.set_output_settings(OutputBackend::Asio, device.clone(), None);
+        assert_eq!(result, Err("Choose an ASIO driver first.".to_string()), "device {device:?}");
+        assert!(app.audio.is_none(), "the old engine stays in place for {device:?}");
+        assert_eq!(app.preferences.audio_backend, before.audio_backend);
+        assert_eq!(app.preferences.audio_device_id, before.audio_device_id);
+    }
+}

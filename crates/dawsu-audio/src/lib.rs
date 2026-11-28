@@ -2911,13 +2911,17 @@ mod callback_benchmark {
         let seen_stop_reader = Arc::clone(&seen_stop);
         let reader = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(5));
-            while let Some(cmd) = rx.try_pop() {
-                if let Command::Play(false, 99) = cmd {
-                    seen_stop_reader.store(true, Ordering::Release);
-                    break;
-                }
-                if rx.is_empty() {
-                    std::thread::sleep(Duration::from_millis(1));
+            // Keep draining until the stop arrives: the sender's retry can land after the ring
+            // empties, so stopping at the first empty pop made this test flaky under load.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                match rx.try_pop() {
+                    Some(Command::Play(false, 99)) => {
+                        seen_stop_reader.store(true, Ordering::Release);
+                        break;
+                    }
+                    Some(_) => {}
+                    None => std::thread::sleep(Duration::from_millis(1)),
                 }
             }
         });

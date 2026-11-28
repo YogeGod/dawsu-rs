@@ -28,11 +28,13 @@ async function frontend() {
   get("scroll").scrollTop = 100;
   for (let row = 0; row < 20; row++) get("lanes").children.push(element());
   const status = { busy: false, hasDocument: false, duration: 10_000, playing: false, position: 0 };
+  let reload = async () => ({ status: "reloaded_stable", message: "Sent Ctrl+L to osu! to reload the saved difficulty." });
   const context = createContext({
     document: { documentElement: { dataset: {} }, getElementById: get, createElement: element, querySelectorAll: () => [],
       addEventListener(name, handler) { documentEvents.set(name, handler); } },
     window: { __TAURI__: {
-      core: { invoke: async (_name, args) => {
+      core: { invoke: async (name, args) => {
+        if (name === "reload_osu_editor") return reload();
         calls.push(JSON.parse(JSON.stringify(args)));
         if (args.action?.kind === "follow") status.follow = args.action.on;
         if (args.action?.kind === "return_on_stop") status.returnOnStop = args.action.on;
@@ -55,7 +57,8 @@ async function frontend() {
   status.hasDocument = true;
   const evaluate = (code) => runInContext(code, context);
   evaluate('view = { busy: false, hasDocument: true, duration: 10_000 }; scene = { path: "fixture.osu", viewStart: 1000, zoom: 1, rowHeight: 30 }');
-  return { calls, ctx, documentEvents, evaluate, get, state: ctx.state, status, settle: () => evaluate("pending") };
+  return { calls, ctx, documentEvents, evaluate, get, state: ctx.state, status, settle: () => evaluate("pending"),
+    setReload: answer => { reload = answer; } };
 }
 
 // The snap part of the Svelte bundle (ui/src/main.js and bridge.svelte.js), on the real ui/src/lib/snap.js.
@@ -810,6 +813,38 @@ test("Follow holds off for a moment after a wheel scroll during playback", async
   ctx.followPlayhead();
   await settle();
   assert.equal(calls.at(-1)?.action.kind, "view", "Follow takes over again");
+});
+
+test("Save with osu! reload on shows Saved at once, then warns only when osu! was not reloaded", async () => {
+  const { ctx, evaluate, status, setReload } = await frontend();
+  const toasts = [];
+  evaluate("window").showToast = toast => toasts.push([toast.tone, toast.title, toast.body]);
+  const answer = async fields => { Object.assign(status, fields); await ctx.act(null); };
+  const save = async () => {
+    await answer({ dirty: true, status: "Moved 1 hit" });
+    await answer({ dirty: false, status: "Saved with backup" });
+  };
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+  status.reloadOsuAfterSave = true;
+
+  let answerReload;
+  setReload(() => new Promise(resolve => { answerReload = resolve; }));
+  await save();
+  assert.deepEqual(toasts, [["success", "Saved", "Saved with backup"]], "Saved shows before osu! answers");
+  answerReload({ status: "title_mismatch", message: "osu! has another map open: Other - Song [Insane]. Nothing was sent." });
+  await tick();
+  assert.deepEqual(toasts.at(-1),
+    ["warning", "osu! was not reloaded", "osu! has another map open: Other - Song [Insane]. Nothing was sent."]);
+
+  setReload(async () => ({ status: "reloaded_stable", message: "Sent Ctrl+L to osu! to reload the saved difficulty." }));
+  await save();
+  await tick();
+  assert.deepEqual(toasts.slice(2), [["success", "Saved", "Saved with backup"]], "a reload that worked adds no second toast");
+
+  setReload(() => Promise.reject(new Error("IPC down")));
+  await save();
+  await tick();
+  assert.deepEqual(toasts.slice(3), [["success", "Saved", "Saved with backup"], ["warning", "osu! was not reloaded", "IPC down"]]);
 });
 
 test("a finished Save or Export write says so in a toast once, and a failed one does not", async () => {

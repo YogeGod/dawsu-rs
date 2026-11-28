@@ -25,15 +25,14 @@
   let copyTimer;
   const toggles = clickGate();
   // MIDI Record: armed listens on the port Preferences › MIDI Input & VST3 picked; disarming
-  // commits the recorded notes as hits (Rust's midi_record_toggle).
-  let armed = $state(false);
+  // commits the recorded notes as hits (Rust's midi_record_toggle). Armed state is the view's alone.
   let arming = $state(false);
 
   const view = $derived(bridge.view);
   const scene = $derived(bridge.scene);
   const playing = $derived(!!view?.playing);
   const cycle = $derived(!!view?.cycle);
-  const recordArmed = $derived(armed || !!view?.tapRecordingArmed);
+  const recordArmed = $derived(!!view?.tapRecordingArmed);
   const disabled = $derived(segmentsDisabled(view, scene));
   const shown = $derived(readout(bridge.playhead, scene));
   const time = $derived(shown.time);
@@ -61,10 +60,9 @@
       const status = await invoke("midi_action", {
         action: { kind: "record_toggle", ...recordArgs(readPort(storage()), bridge.scene) },
       });
-      armed = !!status?.armed;
       const toast = tapAwareRecordToast(status);
       if (toast) bridge.showToast(toast);
-      await act(null, !armed && !!status?.committedNotes);
+      await act(null, !status?.armed && !!status?.committedNotes);
     } catch (error) {
       bridge.showToast({ tone: "error", title: "MIDI Record", body: String(error) });
     } finally {
@@ -197,7 +195,10 @@
   .tab {
     width: 18px;
     background: #1e1e1e;
-    color: var(--editor-muted);
+    color: #98989f;
+  }
+  .tab:hover:not(:disabled) {
+    color: var(--editor-text);
   }
   .tab :global(svg) {
     width: 12px;
@@ -210,6 +211,7 @@
     border-radius: 7px;
     background: var(--editor-ink);
     box-shadow: var(--shadow-readout);
+    color: var(--ink-on-dark);
     white-space: nowrap;
   }
   .time {
@@ -237,7 +239,7 @@
   }
   small {
     font-size: 11px;
-    color: var(--editor-muted);
+    color: #98989f;
   }
   .selection {
     display: flex;
@@ -255,7 +257,8 @@
     cursor: pointer;
   }
   .selection:hover:not(:disabled) {
-    background: var(--editor-panel);
+    background: var(--dark-panel);
+    color: var(--ink-on-dark);
   }
   .selection:disabled {
     cursor: default;
@@ -270,7 +273,7 @@
   }
   .copy {
     display: grid;
-    color: var(--editor-muted);
+    color: #98989f;
   }
   .copy.copied {
     color: var(--editor-play);

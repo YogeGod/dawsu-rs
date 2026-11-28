@@ -150,6 +150,11 @@ impl Application {
             return Err("Stop playback and finish the current job before changing audio output.".into());
         }
         if preferences.audio_backend == OutputBackend::Asio
+            && preferences.audio_device_id.as_deref().map(str::trim).is_none_or(str::is_empty)
+        {
+            return Err("Choose an ASIO driver first.".into());
+        }
+        if preferences.audio_backend == OutputBackend::Asio
             && self.active_output_backend() == Some(OutputBackend::Asio)
         {
             if preferences.audio_device_id == self.preferences.audio_device_id
@@ -449,8 +454,8 @@ impl Application {
                 self.monitor_stem = true;
                 self.waveform_revision += 1;
                 self.sync_audio();
-                let name = self.drum_stem_name().unwrap_or_else(|| "stem".into());
-                self.status = format!("Monitoring drum stem ({name})");
+                // Set once the WAV has decoded, so nothing reports "ready" before it is.
+                self.status = "Drum stem ready. Press T to flip between Song and Drums.".into();
             } else if self.status == "Loading drum stem…" {
                 self.status = "Drum stem ready (press T to toggle)".into();
             }

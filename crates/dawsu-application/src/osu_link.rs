@@ -300,10 +300,40 @@ fn match_window_title_in_songs(title: &str, songs_folder: Option<&Path>) -> Opti
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OsuReloadResult {
-    /// One of `"reloaded_stable"`, `"lazer_external_edit"`, `"no_matching_window"`,
-    /// `"focus_blocked"`, or `"unsupported_platform"`.
+    /// One of `"reloaded_stable"`, `"lazer_external_edit"`, `"no_matching_window"`, `"ambiguous"`,
+    /// `"title_mismatch"`, `"focus_blocked"`, or `"unsupported_platform"`.
     pub status: &'static str,
     pub message: String,
+}
+
+fn reload_result(status: &'static str, message: impl Into<String>) -> OsuReloadResult {
+    OsuReloadResult {
+        status,
+        message: message.into(),
+    }
+}
+
+/// The saved difficulty's `[Metadata]` fields an osu!stable window title is matched against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedMapIdentity {
+    pub artist: String,
+    pub title: String,
+    pub artist_unicode: String,
+    pub title_unicode: String,
+    pub version: String,
+}
+
+impl SavedMapIdentity {
+    pub fn from_document(document: &crate::Document) -> Self {
+        let value = |key| document.file.value("Metadata", key).unwrap_or_default();
+        Self {
+            artist: value("Artist"),
+            title: value("Title"),
+            artist_unicode: value("ArtistUnicode"),
+            title_unicode: value("TitleUnicode"),
+            version: value("Version"),
+        }
+    }
 }
 
 /// True when `path` sits inside an osu!lazer `File → Edit externally` mounted temp folder
@@ -334,138 +364,235 @@ pub fn is_lazer_external_edit_in_temp(path: &Path, temp_dir: &Path) -> bool {
     false
 }
 
-/// Extracts the difficulty name inside the last `[...]` of a `.osu` filename.
-pub fn difficulty_name_from_path(path: &Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?;
-    let open = stem.rfind('[')?;
-    let close = stem.rfind(']')?;
-    if close <= open + 1 {
-        return None;
-    }
-    Some(stem[open + 1..close].trim().to_string())
+/// Lower case, without the characters Windows forbids in file names, runs of spaces collapsed:
+/// an osu!stable window title and the `.osu` file name it came from then compare equal.
+fn normalize_title_part(text: &str) -> String {
+    let kept: String = text
+        .chars()
+        .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        .collect();
+    kept.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-/// True when an osu!stable window title (`osu!  - Artist - Title [Diff]`) matches the saved `.osu`.
-pub fn window_title_matches_saved_map(title: &str, saved_path: &Path) -> bool {
-    let Some(rest) = title
+fn strip_osu_window_prefix(title: &str) -> Option<&str> {
+    title
         .strip_prefix("osu!  - ")
         .or_else(|| title.strip_prefix("osu! - "))
-    else {
-        return false;
-    };
-    let Some(open) = rest.rfind('[') else {
-        return false;
-    };
-    let Some(close) = rest.rfind(']') else {
-        return false;
-    };
-    if close <= open + 1 {
+}
+
+/// True when an osu!stable window title (`osu!  - Artist - Title [Diff]`, or
+/// `Artist - Title (Creator) [Diff].osu` after the prefix) names the saved difficulty: the final
+/// `[...]` equals `Version`, and the text before it is `Artist - Title` in its romanised or Unicode
+/// form, optionally followed by one `(creator)` group.
+pub fn window_title_matches_identity(window_title: &str, id: &SavedMapIdentity) -> bool {
+    let version = normalize_title_part(&id.version);
+    let artist = normalize_title_part(&id.artist);
+    let title = normalize_title_part(&id.title);
+    if version.is_empty() || (artist.is_empty() && title.is_empty()) {
         return false;
     }
-    let window_diff = rest[open + 1..close].trim();
-    let Some(saved_diff) = difficulty_name_from_path(saved_path) else {
+    let Some(rest) = strip_osu_window_prefix(window_title) else {
         return false;
     };
-    window_diff.eq_ignore_ascii_case(&saved_diff)
+    let rest = rest.trim_end();
+    let rest = match rest.len().checked_sub(4) {
+        Some(cut) if rest.is_char_boundary(cut) && rest[cut..].eq_ignore_ascii_case(".osu") => {
+            &rest[..cut]
+        }
+        _ => rest,
+    };
+    let (Some(open), Some(close)) = (rest.rfind('['), rest.rfind(']')) else {
+        return false;
+    };
+    if close < open || !rest[close + 1..].trim().is_empty() {
+        return false;
+    }
+    if normalize_title_part(&rest[open + 1..close]) != version {
+        return false;
+    }
+    let song = normalize_title_part(&rest[..open]);
+    // Each missing Unicode field falls back to its romanised one on its own.
+    let or_romanised = |unicode: &str, romanised: &str| {
+        let unicode = normalize_title_part(unicode);
+        if unicode.is_empty() {
+            romanised.to_string()
+        } else {
+            unicode
+        }
+    };
+    let pairs = [
+        (artist.clone(), title.clone()),
+        (
+            or_romanised(&id.artist_unicode, &artist),
+            or_romanised(&id.title_unicode, &title),
+        ),
+    ];
+    pairs.iter().any(|(artist, title)| {
+        let expected = normalize_title_part(&format!("{artist} - {title}"));
+        song.strip_prefix(expected.as_str()).is_some_and(|tail| {
+            let tail = tail.trim();
+            tail.is_empty()
+                || tail
+                    .strip_prefix('(')
+                    .and_then(|t| t.strip_suffix(')'))
+                    .is_some_and(|creator| !creator.contains(['(', ')']))
+        })
+    })
 }
 
 /// Asks a running osu! client to reload `saved_path`:
 /// - For osu!lazer `File → Edit externally` mounts, reminds the mapper to click Finish in osu!lazer
 ///   (lazer's `ExternalEditOperation` has no external IPC to trigger Finish).
-/// - On Windows, finds a visible osu!stable window whose title matches the saved difficulty and
-///   sends the v3.1.4 `OsuKeys.cs` reload sequence (bring forward, Ctrl+L × 10, Enter).
+/// - On Windows, finds the one visible osu!stable window whose title names `identity` and sends
+///   the v3.1.4 `OsuKeys.cs` reload sequence (bring forward, Ctrl+L × 10, Enter), checking the
+///   foreground window and its title again before any key and before Enter.
 /// - On macOS/Linux, returns a clear cross-platform message without failing.
-pub fn reload_osu_editor(saved_path: &Path) -> OsuReloadResult {
+pub fn reload_osu_editor(saved_path: &Path, identity: &SavedMapIdentity) -> OsuReloadResult {
     if is_lazer_external_edit_path(saved_path) {
-        return OsuReloadResult {
-            status: "lazer_external_edit",
-            message: "Saved into osu!lazer's external edit folder. Click Finish in osu!lazer to apply."
-                .into(),
-        };
+        return reload_result(
+            "lazer_external_edit",
+            "Saved into osu!lazer's external edit folder. Click Finish in osu!lazer to apply.",
+        );
     }
 
     #[cfg(windows)]
     {
-        let Some(hwnd) = find_matching_osu_window(saved_path) else {
-            return OsuReloadResult {
-                status: "no_matching_window",
-                message: "No osu! editor window with this difficulty was found.".into(),
-            };
-        };
-        if send_osu_stable_reload(hwnd) {
-            OsuReloadResult {
-                status: "reloaded_stable",
-                message: "Sent Ctrl+L to osu! to reload the saved difficulty.".into(),
-            }
-        } else {
-            OsuReloadResult {
-                status: "focus_blocked",
-                message: "Could not bring osu! forward. Switch to osu! and press Ctrl+L to reload."
-                    .into(),
-            }
-        }
+        reload_stable_with(&mut Win32Windows, identity)
     }
 
     #[cfg(not(windows))]
     {
-        OsuReloadResult {
-            status: "unsupported_platform",
-            message: "Automatic editor reload is only available for osu!stable on Windows. In osu!lazer, use File → Edit externally and click Finish."
-                .into(),
-        }
+        let _ = identity;
+        reload_result(
+            "unsupported_platform",
+            "Automatic editor reload is only available for osu!stable on Windows. In osu!lazer, use File → Edit externally and click Finish.",
+        )
     }
 }
 
-#[cfg(windows)]
-fn find_matching_osu_window(saved_path: &Path) -> Option<isize> {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
+const VK_CONTROL: u16 = 0x11;
+const VK_L: u16 = 0x4C;
+const VK_RETURN: u16 = 0x0D;
 
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn EnumWindows(
-            cb: unsafe extern "system" fn(isize, isize) -> i32,
-            lparam: isize,
-        ) -> i32;
-        fn GetWindowTextW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
-        fn IsWindowVisible(hwnd: isize) -> i32;
+/// The window reads and key sends the osu!stable reload needs, so tests can fake them.
+#[cfg_attr(not(windows), allow(dead_code))]
+trait OsuWindowSystem {
+    /// Visible top-level windows with their titles.
+    fn windows(&mut self) -> Vec<(isize, String)>;
+    fn foreground(&mut self) -> isize;
+    fn title(&mut self, hwnd: isize) -> Option<String>;
+    /// Restores a minimised window and asks to bring it forward; false when refused.
+    fn bring_forward(&mut self, hwnd: isize) -> bool;
+    fn sleep_ms(&mut self, ms: u64);
+    fn key(&mut self, vk: u16, up: bool);
+}
+
+/// Holds Ctrl down while alive and releases it on drop, so no exit path (focus loss, panic)
+/// leaves Ctrl stuck.
+#[cfg_attr(not(windows), allow(dead_code))]
+struct CtrlGuard<'a, S: OsuWindowSystem>(&'a mut S);
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl<'a, S: OsuWindowSystem> CtrlGuard<'a, S> {
+    fn press(sys: &'a mut S) -> Self {
+        let guard = Self(sys);
+        guard.0.key(VK_CONTROL, false);
+        guard
     }
+}
 
-    struct Search<'a> {
-        saved_path: &'a Path,
-        found: Option<isize>,
+impl<S: OsuWindowSystem> Drop for CtrlGuard<'_, S> {
+    fn drop(&mut self) {
+        self.0.key(VK_CONTROL, true);
     }
+}
 
-    unsafe extern "system" fn callback(hwnd: isize, lparam: isize) -> i32 {
-        unsafe {
-            if IsWindowVisible(hwnd) == 0 {
-                return 1;
+/// `Some` when the foreground window is no longer `hwnd` or its title no longer names the map.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn recheck_osu_window<S: OsuWindowSystem>(
+    sys: &mut S,
+    hwnd: isize,
+    id: &SavedMapIdentity,
+    unsent: &str,
+) -> Option<OsuReloadResult> {
+    if sys.foreground() != hwnd {
+        return Some(reload_result(
+            "focus_blocked",
+            format!("Could not bring osu! forward. Switch to osu! and press Ctrl+L to reload. {unsent}"),
+        ));
+    }
+    let title = sys.title(hwnd).unwrap_or_default();
+    if window_title_matches_identity(&title, id) {
+        return None;
+    }
+    let shown = strip_osu_window_prefix(&title).unwrap_or(&title).trim();
+    Some(reload_result(
+        "title_mismatch",
+        format!("osu! has another map open: {shown}. {unsent}"),
+    ))
+}
+
+/// Faithful port of v3.1.4 `OsuKeys.cs`: brings osu!stable forward, presses Ctrl+L repeatedly
+/// (osu! reads hardware scan codes and may drop the first keystroke), then confirms with Enter.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn reload_stable_with<S: OsuWindowSystem>(sys: &mut S, id: &SavedMapIdentity) -> OsuReloadResult {
+    let matching: Vec<isize> = sys
+        .windows()
+        .into_iter()
+        .filter(|(hwnd, title)| *hwnd != 0 && window_title_matches_identity(title, id))
+        .map(|(hwnd, _)| hwnd)
+        .collect();
+    let hwnd = match matching.as_slice() {
+        [] => {
+            return reload_result(
+                "no_matching_window",
+                "No osu! editor window has this map open. Nothing was sent.",
+            );
+        }
+        [one] => *one,
+        _ => {
+            return reload_result(
+                "ambiguous",
+                "More than one osu! window shows this difficulty. Switch to the right one and press Ctrl+L. Nothing was sent.",
+            );
+        }
+    };
+    if sys.foreground() != hwnd && !sys.bring_forward(hwnd) {
+        return reload_result(
+            "focus_blocked",
+            "Could not bring osu! forward. Switch to osu! and press Ctrl+L to reload. Nothing was sent.",
+        );
+    }
+    sys.sleep_ms(300);
+    if let Some(refused) = recheck_osu_window(sys, hwnd, id, "Nothing was sent.") {
+        return refused;
+    }
+    {
+        let ctrl = CtrlGuard::press(sys);
+        for _ in 0..10 {
+            if ctrl.0.foreground() != hwnd {
+                return reload_result(
+                    "focus_blocked",
+                    "osu! lost focus during the reload. Switch to osu! and press Ctrl+L to reload.",
+                );
             }
-            let mut buf = [0u16; 512];
-            let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
-            if len <= 0 {
-                return 1;
-            }
-            let title = OsString::from_wide(&buf[..len as usize])
-                .to_string_lossy()
-                .into_owned();
-            let search = &mut *(lparam as *mut Search<'_>);
-            if window_title_matches_saved_map(&title, search.saved_path) {
-                search.found = Some(hwnd);
-                return 0;
-            }
-            1
+            ctrl.0.key(VK_L, false);
+            ctrl.0.key(VK_L, true);
         }
     }
-
-    let mut search = Search {
-        saved_path,
-        found: None,
-    };
-    unsafe {
-        EnumWindows(callback, (&mut search as *mut Search<'_>) as isize);
+    sys.sleep_ms(100);
+    if let Some(refused) = recheck_osu_window(sys, hwnd, id, "Ctrl+L was sent, Enter was not.") {
+        return refused;
     }
-    search.found
+    sys.key(VK_RETURN, false);
+    sys.key(VK_RETURN, true);
+    reload_result(
+        "reloaded_stable",
+        "Sent Ctrl+L to osu! to reload the saved difficulty.",
+    )
 }
 
 #[cfg(windows)]
@@ -503,47 +630,82 @@ struct WinInput {
     u: WinInputUnion,
 }
 
-/// Faithful port of v3.1.4 `OsuKeys.cs`: brings osu!stable forward, presses Ctrl+L repeatedly
-/// (osu! reads hardware scan codes and may drop the first keystroke), then confirms with Enter.
 #[cfg(windows)]
-fn send_osu_stable_reload(hwnd: isize) -> bool {
-    use std::mem::{ManuallyDrop, size_of};
-    use std::thread;
-    use std::time::Duration;
-
-    const VK_CONTROL: u16 = 0x11;
-    const VK_L: u16 = 0x4C;
-    const VK_RETURN: u16 = 0x0D;
-    const KEYEVENTF_KEYUP: u32 = 0x0002;
-    const INPUT_KEYBOARD: u32 = 1;
-    const SW_RESTORE: i32 = 9;
+mod win32 {
+    use super::WinInput;
 
     #[link(name = "user32")]
     unsafe extern "system" {
-        fn GetForegroundWindow() -> isize;
-        fn SetForegroundWindow(hwnd: isize) -> i32;
-        fn IsIconic(hwnd: isize) -> i32;
-        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
-        fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
-        fn SendInput(count: u32, inputs: *const WinInput, size: i32) -> u32;
+        pub fn EnumWindows(cb: unsafe extern "system" fn(isize, isize) -> i32, lparam: isize) -> i32;
+        pub fn GetWindowTextW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
+        pub fn IsWindowVisible(hwnd: isize) -> i32;
+        pub fn GetForegroundWindow() -> isize;
+        pub fn SetForegroundWindow(hwnd: isize) -> i32;
+        pub fn IsIconic(hwnd: isize) -> i32;
+        pub fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        pub fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+        pub fn SendInput(count: u32, inputs: *const WinInput, size: i32) -> u32;
     }
 
-    if hwnd == 0 {
-        return false;
+    pub fn window_text(hwnd: isize) -> Option<String> {
+        let mut buf = [0u16; 512];
+        let len = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        (len > 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
     }
-    unsafe {
-        if GetForegroundWindow() != hwnd {
-            if IsIconic(hwnd) != 0 {
-                ShowWindow(hwnd, SW_RESTORE);
+}
+
+#[cfg(windows)]
+struct Win32Windows;
+
+#[cfg(windows)]
+impl OsuWindowSystem for Win32Windows {
+    fn windows(&mut self) -> Vec<(isize, String)> {
+        // Only collects; matching runs in safe Rust after EnumWindows returns.
+        unsafe extern "system" fn collect(hwnd: isize, lparam: isize) -> i32 {
+            unsafe {
+                if win32::IsWindowVisible(hwnd) != 0
+                    && let Some(title) = win32::window_text(hwnd)
+                {
+                    (*(lparam as *mut Vec<(isize, String)>)).push((hwnd, title));
+                }
             }
-            if SetForegroundWindow(hwnd) == 0 {
-                return false;
-            }
-            thread::sleep(Duration::from_millis(300));
+            1
         }
+        let mut found: Vec<(isize, String)> = Vec::new();
+        unsafe {
+            win32::EnumWindows(collect, (&mut found as *mut Vec<(isize, String)>) as isize);
+        }
+        found
+    }
 
-        let send_key = |vk: u16, up: bool| {
-            let scan = MapVirtualKeyW(u32::from(vk), 0) as u16;
+    fn foreground(&mut self) -> isize {
+        unsafe { win32::GetForegroundWindow() }
+    }
+
+    fn title(&mut self, hwnd: isize) -> Option<String> {
+        win32::window_text(hwnd)
+    }
+
+    fn bring_forward(&mut self, hwnd: isize) -> bool {
+        const SW_RESTORE: i32 = 9;
+        unsafe {
+            if win32::IsIconic(hwnd) != 0 {
+                win32::ShowWindow(hwnd, SW_RESTORE);
+            }
+            win32::SetForegroundWindow(hwnd) != 0
+        }
+    }
+
+    fn sleep_ms(&mut self, ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+
+    fn key(&mut self, vk: u16, up: bool) {
+        use std::mem::{ManuallyDrop, size_of};
+        const KEYEVENTF_KEYUP: u32 = 0x0002;
+        const INPUT_KEYBOARD: u32 = 1;
+        unsafe {
+            let scan = win32::MapVirtualKeyW(u32::from(vk), 0) as u16;
             let input = WinInput {
                 r#type: INPUT_KEYBOARD,
                 u: WinInputUnion {
@@ -556,21 +718,10 @@ fn send_osu_stable_reload(hwnd: isize) -> bool {
                     }),
                 },
             };
-            SendInput(1, &input, size_of::<WinInput>() as i32);
-            thread::sleep(Duration::from_millis(1));
-        };
-
-        send_key(VK_CONTROL, false);
-        for _ in 0..10 {
-            send_key(VK_L, false);
-            send_key(VK_L, true);
+            win32::SendInput(1, &input, size_of::<WinInput>() as i32);
         }
-        send_key(VK_CONTROL, true);
-        thread::sleep(Duration::from_millis(100));
-        send_key(VK_RETURN, false);
-        send_key(VK_RETURN, true);
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    true
 }
 
 #[cfg(test)]
@@ -591,23 +742,247 @@ mod tests {
         assert!(!is_lazer_external_edit_in_temp(regular, temp));
     }
 
+    fn identity(artist: &str, title: &str, version: &str) -> SavedMapIdentity {
+        SavedMapIdentity {
+            artist: artist.into(),
+            title: title.into(),
+            version: version.into(),
+            ..SavedMapIdentity::default()
+        }
+    }
+
     #[test]
-    fn matches_osu_stable_window_title_against_saved_difficulty() {
-        let saved = Path::new("E:/osu!/Songs/12345 Song/Artist - Song (Mapper) [Insane].osu");
-        assert_eq!(difficulty_name_from_path(saved).as_deref(), Some("Insane"));
-        assert!(window_title_matches_saved_map(
-            "osu!  - Artist - Song [Insane]",
-            saved
+    fn osu_link_matches_window_title_on_artist_title_and_difficulty() {
+        let id = identity("Artist", "Song", "Insane");
+        let matches = |t: &str| window_title_matches_identity(t, &id);
+        assert!(matches("osu!  - Artist - Song [Insane]"));
+        assert!(matches("osu! - Artist - Song [insane]"));
+        assert!(matches("osu!  - Artist - Song (Mapper) [Insane].osu"));
+        assert!(matches("osu!  - artist  -  song   [ Insane ]"));
+        assert!(!matches("osu!  - Artist - Song [Hard]"));
+        assert!(!matches("osu!  - Other - Song [Insane]"));
+        assert!(!matches("osu!  - Artist - Other [Insane]"));
+        assert!(!matches("osu!  - Artist - Song extra [Insane]"));
+        assert!(!matches("osu!  - Artist - Song [Insane] - Notepad"));
+        // Only one (creator) group may follow: a second group names another song.
+        assert!(!matches("osu!  - Artist - Song (TV Size) (Mapper) [Insane].osu"));
+        assert!(!matches("osu!  - Artist - Song (a) b (c) [Insane]"));
+        assert!(!matches("Notepad"));
+    }
+
+    #[test]
+    fn osu_link_matches_song_titles_holding_brackets_on_the_final_difficulty_group() {
+        let id = identity("Artist", "Song [TV Size]", "Insane");
+        assert!(window_title_matches_identity(
+            "osu!  - Artist - Song [TV Size] [Insane]",
+            &id
         ));
-        assert!(window_title_matches_saved_map(
-            "osu! - Artist - Song [insane]",
-            saved
+        assert!(window_title_matches_identity(
+            "osu!  - Artist - Song [TV Size] (Mapper) [Insane].osu",
+            &id
         ));
-        assert!(!window_title_matches_saved_map(
-            "osu!  - Artist - Song [Hard]",
-            saved
+        assert!(!window_title_matches_identity(
+            "osu!  - Artist - Song [TV Size]",
+            &id
         ));
-        assert!(!window_title_matches_saved_map("Notepad", saved));
+    }
+
+    #[test]
+    fn osu_link_matches_unicode_and_mixed_romanised_unicode_pairs() {
+        let full = SavedMapIdentity {
+            artist_unicode: "アーティスト".into(),
+            title_unicode: "歌".into(),
+            ..identity("Artist", "Song", "Insane")
+        };
+        assert!(window_title_matches_identity("osu!  - アーティスト - 歌 [Insane]", &full));
+        assert!(window_title_matches_identity("osu!  - Artist - Song [Insane]", &full));
+        // Both Unicode fields are set, so a half-Unicode title names neither pair.
+        assert!(!window_title_matches_identity("osu!  - アーティスト - Song [Insane]", &full));
+
+        let title_only = SavedMapIdentity {
+            title_unicode: "歌".into(),
+            ..identity("Artist", "Song", "Insane")
+        };
+        assert!(window_title_matches_identity("osu!  - Artist - 歌 [Insane]", &title_only));
+        let artist_only = SavedMapIdentity {
+            artist_unicode: "アーティスト".into(),
+            ..identity("Artist", "Song", "Insane")
+        };
+        assert!(window_title_matches_identity("osu!  - アーティスト - Song [Insane]", &artist_only));
+        assert!(!window_title_matches_identity("osu!  - アーティスト - 歌 [Insane]", &artist_only));
+    }
+
+    #[test]
+    fn osu_link_ignores_characters_windows_forbids_in_file_names() {
+        let id = identity("Artist", "Re:Zero? *Start*", "Insane");
+        assert!(window_title_matches_identity(
+            "osu!  - Artist - Re:Zero? *Start* [Insane]",
+            &id
+        ));
+        assert!(window_title_matches_identity(
+            "osu!  - Artist - ReZero Start (Mapper) [Insane].osu",
+            &id
+        ));
+    }
+
+    #[test]
+    fn osu_link_refuses_to_match_empty_metadata() {
+        let any = "osu!  - Artist - Song [Insane]";
+        assert!(!window_title_matches_identity(any, &identity("Artist", "Song", "")));
+        assert!(!window_title_matches_identity(any, &identity("Artist", "Song", "???")));
+        assert!(!window_title_matches_identity(
+            "osu!  -  -  [Insane]",
+            &identity("", "", "Insane")
+        ));
+        assert!(!window_title_matches_identity(any, &identity("", "", "Insane")));
+    }
+
+    const OSU: isize = 7;
+    const OTHER: isize = 9;
+
+    /// A scripted window system: records every key, and can change the foreground window or
+    /// osu!'s title at the first sleep (the 300 ms wait after focus) or after a number of keys.
+    #[derive(Default)]
+    struct FakeWindows {
+        windows: Vec<(isize, String)>,
+        foreground: isize,
+        refuse_focus: bool,
+        at_first_sleep: Option<(isize, Option<String>)>,
+        lose_focus_after_keys: Option<usize>,
+        panic_on_l: bool,
+        keys: Vec<(u16, bool)>,
+    }
+
+    impl FakeWindows {
+        fn with_osu(title: &str) -> Self {
+            Self {
+                windows: vec![(OTHER, "Notepad".into()), (OSU, title.into())],
+                foreground: OTHER,
+                ..Self::default()
+            }
+        }
+        fn count(&self, vk: u16, up: bool) -> usize {
+            self.keys.iter().filter(|k| **k == (vk, up)).count()
+        }
+    }
+
+    impl OsuWindowSystem for FakeWindows {
+        fn windows(&mut self) -> Vec<(isize, String)> {
+            self.windows.clone()
+        }
+        fn foreground(&mut self) -> isize {
+            self.foreground
+        }
+        fn title(&mut self, hwnd: isize) -> Option<String> {
+            self.windows.iter().find(|w| w.0 == hwnd).map(|w| w.1.clone())
+        }
+        fn bring_forward(&mut self, hwnd: isize) -> bool {
+            if self.refuse_focus {
+                return false;
+            }
+            self.foreground = hwnd;
+            true
+        }
+        fn sleep_ms(&mut self, _ms: u64) {
+            if let Some((foreground, title)) = self.at_first_sleep.take() {
+                self.foreground = foreground;
+                if let Some(title) = title {
+                    self.windows.retain(|w| w.0 != OSU);
+                    self.windows.push((OSU, title));
+                }
+            }
+        }
+        fn key(&mut self, vk: u16, up: bool) {
+            if self.panic_on_l && vk == VK_L {
+                panic!("SendInput failed");
+            }
+            self.keys.push((vk, up));
+            if self.lose_focus_after_keys.is_some_and(|n| self.keys.len() >= n) {
+                self.foreground = OTHER;
+            }
+        }
+    }
+
+    #[test]
+    fn osu_link_reload_sends_ctrl_l_ten_times_then_enter_to_the_matching_window() {
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Insane]");
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "reloaded_stable");
+        let mut expected = vec![(VK_CONTROL, false)];
+        for _ in 0..10 {
+            expected.extend([(VK_L, false), (VK_L, true)]);
+        }
+        expected.extend([(VK_CONTROL, true), (VK_RETURN, false), (VK_RETURN, true)]);
+        assert_eq!(sys.keys, expected);
+    }
+
+    #[test]
+    fn osu_link_reload_sends_nothing_when_the_foreground_changes_after_focus() {
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Insane]");
+        sys.at_first_sleep = Some((OTHER, None));
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "focus_blocked");
+        assert!(sys.keys.is_empty(), "keys: {:?}", sys.keys);
+    }
+
+    #[test]
+    fn osu_link_reload_sends_nothing_when_osu_shows_another_map_after_focus() {
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Insane]");
+        sys.at_first_sleep = Some((OSU, Some("osu!  - Someone - Else [Insane]".into())));
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "title_mismatch");
+        assert_eq!(
+            res.message,
+            "osu! has another map open: Someone - Else [Insane]. Nothing was sent."
+        );
+        assert!(sys.keys.is_empty(), "keys: {:?}", sys.keys);
+    }
+
+    #[test]
+    fn osu_link_reload_refuses_two_matching_windows_and_reports_no_match() {
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Insane]");
+        sys.windows.push((11, "osu! - Artist - Song (Mapper) [Insane].osu".into()));
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "ambiguous");
+        assert!(sys.keys.is_empty());
+
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Hard]");
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "no_matching_window");
+        assert!(sys.keys.is_empty());
+    }
+
+    #[test]
+    fn osu_link_reload_sends_nothing_when_focus_is_refused() {
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Insane]");
+        sys.refuse_focus = true;
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "focus_blocked");
+        assert!(sys.keys.is_empty());
+    }
+
+    #[test]
+    fn osu_link_reload_releases_ctrl_and_skips_enter_when_focus_is_lost_mid_sequence() {
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Insane]");
+        sys.lose_focus_after_keys = Some(4);
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "focus_blocked");
+        assert_eq!(sys.count(VK_CONTROL, false), 1);
+        assert_eq!(sys.count(VK_CONTROL, true), 1);
+        assert_eq!(sys.keys.last(), Some(&(VK_CONTROL, true)));
+        assert_eq!(sys.count(VK_RETURN, false), 0);
+    }
+
+    #[test]
+    fn osu_link_reload_releases_ctrl_when_a_key_send_panics() {
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song [Insane]");
+        sys.panic_on_l = true;
+        let id = identity("Artist", "Song", "Insane");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reload_stable_with(&mut sys, &id)
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(sys.keys, vec![(VK_CONTROL, false), (VK_CONTROL, true)]);
     }
 
     #[test]
@@ -616,7 +991,7 @@ mod tests {
         let path = std::env::temp_dir()
             .join(hex64)
             .join("Artist - Song (Mapper) [Hard].osu");
-        let res = reload_osu_editor(&path);
+        let res = reload_osu_editor(&path, &identity("Artist", "Song", "Hard"));
         assert_eq!(res.status, "lazer_external_edit");
         assert!(res.message.contains("Finish"));
     }

@@ -1,22 +1,31 @@
 <script>
   import { playbackStartChoices } from "../../editor/helpers.js";
+  import { ASIO_DRIVER_HINT, asioDriverMissing, bufferError, canApply } from "../../lib/audioPrefs.js";
 
   let {
     audioConfig,
     selectedBackend = $bindable(""),
     selectedDevice = $bindable(""),
     bufferMs = $bindable(""),
-    audioError = "",
+    loadError = "",
+    applyError = "",
     audioLocked = false,
     view,
     onloadaudio,
     onapplyaudio,
     onsendaction,
+    onaudioedit = () => {},
   } = $props();
 
   const minBufferMs = $derived(
     selectedBackend === "mme" || selectedBackend === "direct_sound" ? 10 : 2
   );
+  // Worked out on every keystroke; it turns off Apply only.
+  const bufferProblem = $derived(bufferError(selectedBackend, bufferMs));
+  const needsAsioDriver = $derived(asioDriverMissing(selectedBackend, selectedDevice));
+  const applyOn = $derived(canApply({
+    locked: audioLocked, loadError, backend: selectedBackend, device: selectedDevice, bufferMs,
+  }));
 </script>
 
 <div class="pref-group">
@@ -27,7 +36,7 @@
   <div class="pref-grid">
     <label class="pref-field">
       <span>Backend</span>
-      <select bind:value={selectedBackend} disabled={audioLocked} onchange={() => onloadaudio(selectedBackend)}>
+      <select bind:value={selectedBackend} disabled={audioLocked} onchange={() => { onaudioedit(); onloadaudio(selectedBackend); }}>
         {#each audioConfig?.available ?? [] as b (b.id)}
           <option value={b.id}>{b.label}</option>
         {/each}
@@ -35,7 +44,7 @@
     </label>
     <label class="pref-field">
       <span>Device</span>
-      <select bind:value={selectedDevice} disabled={audioLocked || Boolean(audioError)}>
+      <select bind:value={selectedDevice} disabled={audioLocked || Boolean(loadError)} onchange={onaudioedit}>
         <option value="">{selectedBackend === "asio" ? "Choose an ASIO driver" : "Device default"}</option>
         {#each audioConfig?.devices ?? [] as d (d.id)}
           <option value={d.id}>{d.name}</option>
@@ -44,17 +53,20 @@
     </label>
     <label class="pref-field">
       <span>Buffer (ms)</span>
-      <input type="number" min={minBufferMs} max="500" placeholder="Device default" bind:value={bufferMs} disabled={audioLocked} />
+      <input type="number" min={minBufferMs} max="500" placeholder="Device default" bind:value={bufferMs} disabled={audioLocked} oninput={onaudioedit} />
     </label>
   </div>
   {#if selectedBackend === "mme"}
     <p class="pref-hint">MME enforces a 60 ms (3 × 20 ms) minimum hardware queue.</p>
   {/if}
-  {#if audioError}
-    <p class="pref-error">{audioError}</p>
+  {#each [loadError, bufferProblem, applyError].filter(Boolean) as message}
+    <p class="pref-error">{message}</p>
+  {/each}
+  {#if needsAsioDriver && !loadError}
+    <p class="pref-hint">{ASIO_DRIVER_HINT}</p>
   {/if}
   <div class="pref-actions-inline">
-    <button type="button" disabled={audioLocked || Boolean(audioError)} onclick={onapplyaudio}>Apply output</button>
+    <button type="button" disabled={!applyOn} onclick={onapplyaudio}>Apply output</button>
     {#if view.playing}
       <span class="pref-hint">Stop playback to switch output device.</span>
     {/if}

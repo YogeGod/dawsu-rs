@@ -21,7 +21,7 @@ Switch the ribbon from **Hitsounds** to **Drums** (or use **View → Open drum m
 To make dense tracks easier to hear when mapping drums or percussion:
 
 - Click **+ Stem** on the `Song · objects` row or open **Playback → Separate drums (AI)…**.
-- On first use, dawsu! downloads the verified HT-Demucs model (~166 MB) and ONNX Runtime into `%LOCALAPPDATA%\dawsu-rs` (always checked against pinned SHA-256 hashes) and splits the drums locally on your CPU. **Nothing is uploaded.**
+- On first use, dawsu! downloads the verified HT-Demucs model (166 MB) and ONNX Runtime package (121 MB), about 287 MB once, into `%LOCALAPPDATA%\dawsu-rs` (always checked against pinned SHA-256 hashes) and splits the drums locally on your CPU. **Nothing is uploaded.**
 - Press `T` anytime in the editor to flip playback between the full **Song** and the isolated **Drum stem**.
 - Already have a drum stem `.wav`/`.mp3`/`.ogg`? Use **Playback → Attach drum stem…** to load your own file, or **Playback → Clear drum stem** / **Remove downloaded model** inside the dialog to free disk space.
 

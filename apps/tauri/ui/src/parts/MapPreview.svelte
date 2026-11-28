@@ -90,20 +90,12 @@
 
 <style>
   .preview-frame {
-    max-height: 132px;
+    max-width: 176px;
+    margin: 0 auto;
     overflow: hidden;
     border-radius: 6px;
     border: 1px solid var(--editor-border);
     background: #08080a;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .preview-frame :global(canvas) {
-    max-height: 132px;
-    width: auto !important;
-    max-width: 100%;
-    object-fit: contain;
   }
   .skin-row {
     display: flex;

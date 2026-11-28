@@ -94,25 +94,27 @@ impl<'a> Assets<'a> {
             digests: BTreeMap::new() }
     }
 
-    fn voices(&mut self, hits: &Hitsounds, moment: &Moment) -> Result<Vec<Voice>, String> {
-        moment.hits().map(|sample| {
-            let digest = if let Some(digest) = self.digests.get(sample) {
-                digest.clone()
+    fn voice(&mut self, hits: &Hitsounds, sample: &SampleIdentity, volume: i32) -> Result<Voice, String> {
+        let digest = if let Some(digest) = self.digests.get(sample) {
+            digest.clone()
+        } else {
+            let lane = hits.lane(sample).ok_or("Missing sample lane in gain recovery")?;
+            let digest = if let dawsu_hitsounding::LaneSource::File(name) = &lane.source
+                && let Some(staged) = self.staged.iter().find(|mix| mix.path.file_name().is_some_and(|base| base == name.as_str()))
+            {
+                staged.digest()
             } else {
-                let lane = hits.lane(sample).ok_or("Missing sample lane in gain recovery")?;
-                let digest = if let dawsu_hitsounding::LaneSource::File(name) = &lane.source
-                    && let Some(staged) = self.staged.iter().find(|mix| mix.path.file_name().is_some_and(|base| base == name.as_str()))
-                {
-                    staged.digest()
-                } else {
-                    let path = sample_path(lane, self.root, self.pending, self.defaults, &self.default_files)?;
-                    sha256_hex(&fs::read(&path).map_err(|error| format!("Reading {}: {error}", path.display()))?)
-                };
-                self.digests.insert(sample.clone(), digest.clone());
-                digest
+                let path = sample_path(lane, self.root, self.pending, self.defaults, &self.default_files)?;
+                sha256_hex(&fs::read(&path).map_err(|error| format!("Reading {}: {error}", path.display()))?)
             };
-            Ok(Voice { lane: lane_key(sample), volume: moment.hit_volume(sample), digest })
-        }).collect()
+            self.digests.insert(sample.clone(), digest.clone());
+            digest
+        };
+        Ok(Voice { lane: lane_key(sample), volume, digest })
+    }
+
+    fn voices(&mut self, hits: &Hitsounds, moment: &Moment) -> Result<Vec<Voice>, String> {
+        moment.hits().map(|sample| self.voice(hits, sample, moment.hit_volume(sample))).collect()
     }
 }
 
@@ -130,12 +132,14 @@ pub(super) struct RevisionInput<'a> {
     pub pending: &'a Pending,
     pub defaults: &'a Path,
     pub staged: &'a [StagedMix],
+    pub hs_circles: Option<(&'a OsuFile, &'a BTreeMap<i64, LineId>)>,
 }
 
 impl Captured {
     /// The moments whose gains a Save must record: those with their own hit volumes, and each
     /// sound set placement's moment that this Save writes as a mix (`mixed`), so the set reopens
     /// with its sounds (M4). A set written natively needs no record.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn read(hits: &Hitsounds, root: &Path, pending: &Pending, defaults: &Path, mixed: &Locations) -> Result<Self, String> {
         Self::read_with_hs(hits, root, pending, defaults, mixed, None)
     }
@@ -145,6 +149,43 @@ impl Captured {
     fn has_differing_hit_volumes(moment: &dawsu_hitsounding::Moment) -> bool {
         let mut vols = moment.hits().map(|lane| moment.hit_volume(lane));
         vols.next().is_some_and(|first| vols.any(|v| v != first))
+    }
+
+    /// Aggregates `(lane -> hit_volume)` across all non-empty moments in an HS group, returning
+    /// `None` if any lane appears more than once (a reopened circle cannot hold duplicate lanes).
+    fn hs_group_gains(hits: &Hitsounds, group_indices: &[usize]) -> Option<BTreeMap<SampleIdentity, i32>> {
+        let mut grouped = BTreeMap::new();
+        for &idx in group_indices {
+            let moment = hits.moment(MomentId(idx));
+            for lane in moment.hits() {
+                if grouped.insert(lane.clone(), moment.hit_volume(lane)).is_some() {
+                    return None;
+                }
+            }
+        }
+        (!grouped.is_empty()).then_some(grouped)
+    }
+
+    fn hs_group_has_differing(hits: &Hitsounds, group_indices: &[usize]) -> bool {
+        group_indices
+            .iter()
+            .any(|&idx| Self::has_differing_hit_volumes(hits.moment(MomentId(idx))))
+    }
+
+    /// Checks before compile whether HS-mode `Place::NoObject` groups would require gain recovery
+    /// so projectless Saves refuse early instead of panicking during `PreparedSave::apply`.
+    pub(super) fn needs_hs_no_object_recovery(hits: &Hitsounds, base: &OsuFile) -> bool {
+        let mut groups: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+        for (i, moment) in hits.moments().iter().enumerate() {
+            if moment.place() == Place::NoObject && moment.hits().next().is_some() {
+                let time = dawsu_hitsounding::hs::hs_group_time(base, moment.time());
+                groups.entry(time).or_default().push(i);
+            }
+        }
+        groups.into_values().any(|indices| {
+            Self::hs_group_has_differing(hits, &indices)
+                && Self::hs_group_gains(hits, &indices).is_some()
+        })
     }
 
     pub(super) fn read_with_hs(
@@ -157,17 +198,39 @@ impl Captured {
     ) -> Result<Self, String> {
         let mut assets = Assets::new(root, pending, defaults, &[]);
         let mut voices = BTreeMap::new();
+        let mut no_object_groups: BTreeMap<(LineId, Option<usize>), Vec<usize>> = BTreeMap::new();
         let placed: std::collections::BTreeSet<_> = hits.placements().iter().map(|p| p.moment.0).collect();
         for (i, moment) in hits.moments().iter().enumerate() {
-            let loc = location(moment.place()).or_else(|| {
-                let (base, circles) = hs_circles?;
-                circles
-                    .get(&dawsu_hitsounding::hs::hs_group_time(base, moment.time()))
-                    .map(|line| (*line, None))
-            });
-            let Some(location) = loc else { continue };
-            if Self::has_differing_hit_volumes(moment) || placed.contains(&i) && mixed.contains(&location) {
-                voices.insert(location, (moment.volume(), assets.voices(hits, moment)?));
+            if let Some(location) = location(moment.place()) {
+                if Self::has_differing_hit_volumes(moment) || placed.contains(&i) && mixed.contains(&location) {
+                    voices.insert(location, (moment.volume(), assets.voices(hits, moment)?));
+                }
+            } else if let Some((base, circles)) = hs_circles
+                && moment.hits().next().is_some()
+                && let Some(line) = circles.get(&dawsu_hitsounding::hs::hs_group_time(base, moment.time()))
+            {
+                no_object_groups.entry((*line, None)).or_default().push(i);
+            }
+        }
+        for (location, group_indices) in no_object_groups {
+            // A single reopened Circle moment cannot hold duplicate lanes cleanly.
+            let Some(grouped) = Self::hs_group_gains(hits, &group_indices) else {
+                continue;
+            };
+            let has_differing = Self::hs_group_has_differing(hits, &group_indices);
+            let has_mixed_placement =
+                group_indices.iter().any(|idx| placed.contains(idx)) && mixed.contains(&location);
+            if has_differing || has_mixed_placement {
+                let default_volume = if group_indices.len() == 1 {
+                    hits.moment(MomentId(group_indices[0])).volume()
+                } else {
+                    grouped.values().copied().max().unwrap_or(100)
+                };
+                let group_voices = grouped
+                    .into_iter()
+                    .map(|(sample, volume)| assets.voice(hits, &sample, volume))
+                    .collect::<Result<Vec<_>, String>>()?;
+                voices.insert(location, (default_volume, group_voices));
             }
         }
         Ok(Self { voices, mixed: mixed.clone() })
@@ -180,20 +243,14 @@ impl Captured {
     pub(super) fn revision(
         self, input: &RevisionInput<'_>, cancel: &dyn Fn() -> bool,
     ) -> Result<Revision, String> {
-        let RevisionInput { hits, file, root, pending, defaults, staged } = *input;
+        let RevisionInput { hits, file, root, pending, defaults, staged, hs_circles } = *input;
         let map_digest = sha256_hex(&file.to_bytes());
         if self.voices.is_empty() {
             return Ok(Revision { map_digest, moments: Vec::new() });
         }
         // Re-fingerprint source assets after mixing so a stale input cannot certify a saved mix.
-        if self.voices != Self::read_with_hs(hits, root, pending, defaults, &self.mixed, None)?.voices
-            && !self.voices.is_empty()
-        {
-            // HS-mode Place::NoObject entries are validated via their captured circle locations.
-            let non_hs = Self::read(hits, root, pending, defaults, &self.mixed)?.voices;
-            if non_hs.iter().any(|(k, v)| self.voices.get(k) != Some(v)) {
-                return Err("A source sample changed while preparing gain recovery".into());
-            }
+        if self.voices != Self::read_with_hs(hits, root, pending, defaults, &self.mixed, hs_circles)?.voices {
+            return Err("A source sample changed while preparing gain recovery".into());
         }
         let mut listing = listing(root, pending)?;
         listing.extend(staged.iter().filter_map(|mix| mix.path.file_name()?.to_str().map(str::to_owned)));

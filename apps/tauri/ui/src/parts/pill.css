@@ -8,6 +8,7 @@
   border-radius: 6px;
   background: var(--editor-ink);
   box-shadow: var(--shadow-well);
+  color: var(--ink-on-dark);
 }
 .ui-pill {
   display: inline-flex;
@@ -19,7 +20,7 @@
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: var(--editor-text);
+  color: var(--ink-on-dark);
   font: inherit;
   font-size: 13px;
   white-space: nowrap;
@@ -27,6 +28,7 @@
 }
 .ui-pill:hover:not(:disabled) {
   background: var(--editor-border);
+  color: var(--editor-text);
 }
 /* Pressed, or the current off-toolbar tool. The hover rule outranks style.css's
    button[aria-pressed=true]:hover, which would turn the pill accent blue under accent text.

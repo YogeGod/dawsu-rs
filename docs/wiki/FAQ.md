@@ -40,7 +40,7 @@ Before **Export** overwrites any mapset file or writes a **Hitsound-only folder*
 
 ## Does AI drum stem separation upload my music anywhere?
 
-No. **Playback → Separate drums (AI)…** runs 100% locally on your CPU using the HT-Demucs ONNX model. The ~166 MB model and runtime are downloaded from official releases only when you ask for it, verified against pinned SHA-256 hashes, and can be deleted anytime from the same dialog.
+No. **Playback → Separate drums (AI)…** runs 100% locally on your CPU using the HT-Demucs ONNX model. The model and runtime (about 287 MB together: 166 MB model, 121 MB runtime package) are downloaded once from official releases only when you ask for it, verified against pinned SHA-256 hashes, and can be deleted anytime from the same dialog.
 
 ## Why did Windows SmartScreen warn when launching the installer or EXE?
 

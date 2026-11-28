@@ -39,6 +39,7 @@
   function shownRowHex(row) {
     const hsb = colorConfig.rows?.[row.id];
     if (!hsb) return null;
+    if (row.noBrightness) return hsbToHex({ ...hsb, b: rowStartHsb(row, colorConfig.scheme).b });
     if (row.hasHue) return hsbToHex(hsb);
     const schemeHue = colorConfig.rows?.scheme?.h ?? hexToHsb(resolvePalette({ scheme: colorConfig.scheme, rows: {} }).panel).h;
     return hsbToHex({ h: schemeHue, s: hsb.s, b: hsb.b });
@@ -97,12 +98,14 @@
               oninput={(e) => setColorRowChannel(row, "s", Number(e.currentTarget.value) / 100)} />
             <span class="colour-val">{Math.round(current.s * 100)}</span>
           </label>
-          <label class="colour-slider-row">
-            <span>Brightness</span>
-            <input type="range" min="0" max="100" step="1" value={Math.round(current.b * 100)}
-              oninput={(e) => setColorRowChannel(row, "b", Number(e.currentTarget.value) / 100)} />
-            <span class="colour-val">{Math.round(current.b * 100)}</span>
-          </label>
+          {#if !row.noBrightness}
+            <label class="colour-slider-row">
+              <span>Brightness</span>
+              <input type="range" min="0" max="100" step="1" value={Math.round(current.b * 100)}
+                oninput={(e) => setColorRowChannel(row, "b", Number(e.currentTarget.value) / 100)} />
+              <span class="colour-val">{Math.round(current.b * 100)}</span>
+            </label>
+          {/if}
         </div>
       {/if}
     {/each}

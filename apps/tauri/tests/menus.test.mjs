@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { createContext, runInContext } from "node:vm";
 import { initMenus } from "../ui/src/editor/menus.js";
+import { bootEditor } from "./editor-runtime.mjs";
 
 import * as commandList from "../ui/src/lib/commands.js";
 
@@ -97,9 +99,6 @@ function fixture() {
   get("editor-menus").append(...["file", "edit", "playback", "map", "view", "help"].map(name => get("menu-" + name)));
   get("editor-menu").offsetWidth = 330;
   get("editor-menu").offsetHeight = 220;
-  const speedButtons = [.25, .5, .75, 1, 1.25, 1.5].map(value => ({
-    dataset: { playbackSpeed: String(value) }, textContent: (value * 100) + "%",
-  }));
   const view = { speed: 1, playbackStart: "cursor", follow: false, activeLane: 0 };
   const scene = { path: "Test.osu", selection: {count:1}, lanes: [
     {sourceKey:"first", canDelete:false}, {sourceKey:"second", canDelete:true, canReplace:true, canAddLayer:true, colourKey:"second"},
@@ -109,7 +108,7 @@ function fixture() {
   const window = { innerWidth: 900, innerHeight: 640, addEventListener() {},
     dawsuUi: { commands: commandList, menu: drawMenu } };
   const context = {
-    $: get, document, window, view, scene, speedButtons, drag: null, dialog: {},
+    $: get, document, window, view, scene, drag: null, dialog: {},
     lanePositions: new Map([[0,0],[1,1]]),
     // app.js: the active lane when it can be deleted, and the Delete lane dialog.
     deletableLane: () => scene.lanes[view.activeLane]?.canDelete ? scene.lanes[view.activeLane] : null,
@@ -256,6 +255,9 @@ test("Playback keeps its segmented choices and switches open, Map keeps Generate
   follow.click();
   assert.equal(follow.attributes["aria-checked"], "true");
   assert.equal(choices("Speed · pitch stays the same").length, 6);
+  // The list comes from the status bar's own speeds, with the current one marked.
+  assert.deepEqual(choices("Speed · pitch stays the same")
+    .filter(button => button.attributes["aria-checked"] === "true").map(button => button.textContent), ["100"]);
   choices("Speed · pitch stays the same").at(-1).click();
   assert.deepEqual(calls, [
     { kind: "playback_start", value: "left" }, { kind: "follow", on: true }, { kind: "speed", value: 1.5 },
@@ -365,6 +367,27 @@ function editItem(get, label) {
   get("menu-edit").click();
   return menuButtons(get("editor-menu")).find(item => item.textContent === label);
 }
+
+test("File › Reload in osu! raises the same toasts as Save: success, or a warning on any refusal or a failed call", async () => {
+  const { get, window, responses, menusApi } = fixture();
+  const toasts = [];
+  window.showToast = toast => toasts.push([toast.tone, toast.title, toast.body]);
+  responses.reload_osu_editor = { status: "reloaded_stable", message: "Sent Ctrl+L" };
+  await menusApi.menuCalls.reloadInOsu();
+  for (const status of ["no_matching_window", "focus_blocked", "title_mismatch", "ambiguous"]) {
+    responses.reload_osu_editor = { status, message: `why ${status}` };
+    await menusApi.menuCalls.reloadInOsu();
+  }
+  responses.reload_osu_editor = () => Promise.reject(new Error("boom"));
+  await menusApi.menuCalls.reloadInOsu();
+  assert.deepEqual(toasts, [
+    ["success", "Reloaded in osu!", "Sent Ctrl+L"],
+    ...["no_matching_window", "focus_blocked", "title_mismatch", "ambiguous"]
+      .map(status => ["warning", "osu! was not reloaded", `why ${status}`]),
+    ["warning", "osu! was not reloaded", "boom"],
+  ]);
+  assert.match(get("status").textContent, /boom/);
+});
 
 test("Place sound set lists this map's sets, then the library, and places one by its id", async () => {
   const { get, calls, modals, responses } = fixture();
@@ -1197,4 +1220,84 @@ test("in Keysounds mode File's two hitsound imports leave the mode before they w
   get("menu-file").click();
   row("Import MIDI…").click();
   assert.deepEqual(calls, [{ openMidiImport: "drums" }]);
+});
+
+test("+ Stem with no stem opens a two-row stem menu built from the Playback commands", () => {
+  const { get, calls, context } = fixture();
+  assert.deepEqual(commandList.menus.stem, ["separateDrumsAi", "attachDrumStem"]);
+  assert.ok(!commandList.menuBar.includes("stem"), "the stem menu has no menu-bar button");
+  const popup = get("editor-menu"), stem = get("song-stem");
+  context.openStemSeparation = () => calls.push("openStemSeparation");
+  context.pickDrumStem = () => calls.push("pickDrumStem");
+  context.window.openEditorMenu("stem", false, { x: 30, y: 60, trigger: stem, label: "Add a drum stem" });
+  assert.equal(popup.attributes["aria-label"], "Add a drum stem");
+  assert.deepEqual(popup.children.map(button => button.textContent), ["Separate drums (AI)…", "Attach drum stem…"]);
+  popup.children[0].click();
+  context.window.openEditorMenu("stem", false, { x: 30, y: 60, trigger: stem, label: "Add a drum stem" });
+  popup.children[1].click();
+  assert.deepEqual(calls, ["openStemSeparation", "pickDrumStem"]);
+
+  const button = html.match(/<button id="song-stem"[^>]*>/)[0];
+  assert.match(button, /aria-haspopup="menu"/);
+  assert.match(button, /title="Add a drum stem: separate with AI or attach a file"/);
+});
+
+test("#song-stem opens the stem menu only while no stem is loaded or loading; then it toggles Song and Stem", async () => {
+  const calls = [];
+  const element = () => ({
+    events: new Map(), children: [], dataset: {}, style: {}, attributes: {}, clientWidth: 200, clientHeight: 80,
+    addEventListener(name, callback) { this.events.set(name, callback); },
+    append(...children) { this.children.push(...children); },
+    prepend(child) { this.children.unshift(child); },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    removeAttribute(name) { delete this.attributes[name]; },
+    getBoundingClientRect: () => ({ left: 30, bottom: 60 }),
+    getContext: () => new Proxy({}, { get: () => () => {} }),
+  });
+  const elements = new Map();
+  const get = id => (elements.has(id) ? elements : elements.set(id, element())).get(id);
+  const context = createContext({
+    document: { getElementById: get, createElement: element, querySelectorAll: () => [], addEventListener() {} },
+    window: { devicePixelRatio: 1, __TAURI__: {
+      core: { invoke: async (name, args) => { calls.push({ name, args }); return { busy: false, hasDocument: false }; } },
+      event: { listen() {} },
+    } },
+    ResizeObserver: class { observe() {} },
+    requestAnimationFrame() {},
+    setInterval() {},
+    console,
+  });
+  bootEditor(context, { autoStart: false });
+  const opened = [];
+  context.window.openEditorMenu = (name, last, point) => opened.push([name, point.label, point.trigger === get("song-stem")]);
+  runInContext(`
+    renderScene = () => {};
+    renderSelection = () => {};
+    paintSoon = () => {};
+    act = (action) => globalThis.__acted.push(action);
+    globalThis.__acted = [];
+    const s = { path: "Map.osu", previewKey: 3, viewStart: 0, zoom: 0.2, rowHeight: 30, lanes: [], moments: [], sections: [[0, 500, 4]] };
+    show({ busy: false, hasDocument: true, songLoading: false, waveformRevision: 1, stemLoaded: false, stemLoading: false, duration: 4000, scene: { ...s } });
+  `, context);
+  const stem = get("song-stem");
+  assert.equal(stem.attributes["aria-haspopup"], "menu");
+  assert.equal(stem.textContent, "+ Stem");
+  assert.equal(stem.title, "Add a drum stem: separate with AI or attach a file");
+  stem.events.get("click")();
+  assert.deepEqual(opened, [["stem", "Add a drum stem", true]]);
+  stem.setAttribute("aria-expanded", "false");
+
+  runInContext(`show({ busy: false, hasDocument: true, songLoading: false, waveformRevision: 1, stemLoaded: false, stemLoading: true, stemName: "drums.wav", duration: 4000 });`, context);
+  assert.equal(stem.attributes["aria-haspopup"], undefined);
+  assert.equal(stem.attributes["aria-expanded"], undefined);
+  stem.events.get("click")();
+  assert.equal(opened.length, 1, "a loading stem opens nothing");
+
+  stem.setAttribute("aria-expanded", "false");
+  runInContext(`show({ busy: false, hasDocument: true, songLoading: false, waveformRevision: 2, stemLoaded: true, stemLoading: false, stemActive: false, stemName: "drums.wav", duration: 4000 });`, context);
+  assert.equal(stem.attributes["aria-haspopup"], undefined);
+  assert.equal(stem.attributes["aria-expanded"], undefined);
+  stem.events.get("click")();
+  assert.equal(opened.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(runInContext("globalThis.__acted", context))), [{ kind: "toggle_stem_monitor" }]);
 });

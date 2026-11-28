@@ -1,6 +1,6 @@
 //! Working hits and lanes that can be reopened without compiling or writing the difficulty.
 
-use super::{Document, reproduces_saved};
+use super::{Document, compile_snapshot};
 use dawsu_editor::EditHistory;
 use dawsu_foundation::{
     CustomIndex, Hitsound, SampleIdentity, SampleSet, SliderSound, SongTime, Sound,
@@ -134,6 +134,14 @@ struct WorkingSnapshot {
 }
 
 #[derive(Serialize, Deserialize)]
+struct MixedMoment {
+    index: usize,
+    time_bits: u64,
+    volume: i32,
+    hits: Vec<Sample>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct LastSave {
     // Save can add lines or objects. Undo still uses the file the session opened.
     original: Option<Vec<u8>>,
@@ -143,6 +151,12 @@ struct LastSave {
     // after restoring keeps them. Copies from earlier builds have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     drawn: Option<WorkingHits>,
+    // Moments rewritten by sample mixing in that Save; absent when Save wrote natively.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mixed: Vec<MixedMoment>,
+    // True when that Save removed redundant green lines after compiling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cleaned_greenlines: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -285,14 +299,37 @@ impl Checkpoint {
         }
     }
 
-    pub(super) fn after_save(document: &Document, hits: &Hitsounds, drawn: &Hitsounds, hs_mode: bool) -> Self {
+    pub(super) fn after_save(
+        document: &Document,
+        hits: &Hitsounds,
+        drawn: &Hitsounds,
+        mixed: Option<&Hitsounds>,
+        cleaned_greenlines: bool,
+        hs_mode: bool,
+    ) -> Self {
         let mut checkpoint = Self::new(document);
         let original = document.compile_base.original_bytes();
+        let mixed = mixed.map(|target| {
+            target
+                .moments()
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.is_changed())
+                .map(|(index, m)| MixedMoment {
+                    index,
+                    time_bits: m.time().ms().to_bits(),
+                    volume: m.volume(),
+                    hits: m.hits().cloned().map(Sample).collect(),
+                })
+                .collect()
+        }).unwrap_or_default();
         checkpoint.last_save = Some(Arc::new(LastSave {
             original: (original != document.file.original_bytes()).then(|| original.to_vec()),
             hits: WorkingHits::capture(hits),
             hs_mode,
             drawn: (drawn != hits).then(|| WorkingHits::capture(drawn)),
+            mixed,
+            cleaned_greenlines,
         }));
         checkpoint
     }
@@ -537,18 +574,108 @@ impl RecoveryCopy {
         let base = document.composer.hitsounds();
         let restored = working.hits.apply(base.clone(), cancel)?;
         let saved = if let Some(last_save) = &self.checkpoint.last_save {
+            let reproduce_err = || -> Result<(), String> {
+                Err("The recovery copy could not reproduce the last saved difficulty.".into())
+            };
             let hits = last_save.hits.apply(base.clone(), cancel)?;
-            if !reproduces_saved(
+            let (mut file, problems) = compile_snapshot(
                 document,
                 &hits,
                 last_save.hs_mode,
                 loose_hits_saved_in_project,
-                self.files(),
                 &|| cancel.load(Ordering::Relaxed),
-            )? {
-                return Err(
-                    "The recovery copy could not reproduce the last saved difficulty.".into(),
-                );
+            )?;
+            // Save places mixes on green lines in both modes.
+            let placement = dawsu_hitsounding::Placement::GreenLines;
+            if last_save.mixed.is_empty() {
+                if !problems.is_empty() {
+                    reproduce_err()?;
+                }
+            } else {
+                if problems
+                    .iter()
+                    .any(|p| !crate::mixes::can_render(p, placement))
+                {
+                    reproduce_err()?;
+                }
+                let problem_places: std::collections::BTreeSet<_> = problems
+                    .iter()
+                    .filter_map(|p| crate::mixes::mix_place(p.place))
+                    .collect();
+                if problem_places.is_empty() {
+                    reproduce_err()?;
+                }
+                let mut target_files = self.checkpoint.files.clone();
+                target_files.extend(self.checkpoint.pending.iter().map(|p| p.name.clone()));
+                target_files.sort();
+                target_files.dedup();
+                let mut target = match dawsu_hitsounding::decompile(
+                    &file,
+                    &target_files,
+                    &|| cancel.load(Ordering::Relaxed),
+                    &mut |_, _| {},
+                ) {
+                    dawsu_hitsounding::Decompiled::Done(target) => target,
+                    dawsu_hitsounding::Decompiled::Cancelled => {
+                        return Err("Restore cancelled.".into());
+                    }
+                    dawsu_hitsounding::Decompiled::UnsupportedMode { .. } => {
+                        reproduce_err()?;
+                        unreachable!();
+                    }
+                };
+                let mut applied_places = std::collections::BTreeSet::new();
+                for m in &last_save.mixed {
+                    if m.index >= target.moments().len() {
+                        reproduce_err()?;
+                    }
+                    let current = target.moment(MomentId(m.index));
+                    if current.time().ms().to_bits() != m.time_bits {
+                        reproduce_err()?;
+                    }
+                    let Some(place) = crate::mixes::mix_place(current.place()) else {
+                        reproduce_err()?;
+                        unreachable!();
+                    };
+                    if !problem_places.contains(&place) || !applied_places.insert(place) {
+                        reproduce_err()?;
+                    }
+                    crate::mixes::replace_moment_with_volume(
+                        &mut target,
+                        MomentId(m.index),
+                        m.hits.iter().map(|s| s.0.clone()),
+                        m.volume,
+                    );
+                }
+                if applied_places.len() != problem_places.len() {
+                    reproduce_err()?;
+                }
+                file = match dawsu_hitsounding::compile(
+                    &file,
+                    &target,
+                    placement,
+                    &|| cancel.load(Ordering::Relaxed),
+                    &mut |_, _| {},
+                ) {
+                    dawsu_hitsounding::Compiled::Done { file, problems }
+                        if problems.is_empty() =>
+                    {
+                        file
+                    }
+                    dawsu_hitsounding::Compiled::Done { .. } => {
+                        reproduce_err()?;
+                        unreachable!();
+                    }
+                    dawsu_hitsounding::Compiled::Cancelled => {
+                        return Err("Restore cancelled.".into());
+                    }
+                };
+            }
+            if last_save.cleaned_greenlines {
+                file = dawsu_hitsounding::cleanup::clean_up_green_lines(&file).file;
+            }
+            if file.to_bytes() != document.file.original_bytes() {
+                reproduce_err()?;
             }
             // The hits the copy's last Save wrote are what a part Save leaves out goes back to.
             document.written = super::last_written(&hits, last_save.hs_mode);
@@ -739,7 +866,12 @@ pub(super) fn copies_play(data_root: &Path, mapset: &Path) -> Result<Vec<SampleI
     let mut out = Vec::new();
     for copy in mapset_copies(data_root, mapset)? {
         let data = &copy.checkpoint;
-        let saved = data.last_save.iter().flat_map(|save| save.hits.samples().chain(save.drawn.iter().flat_map(WorkingHits::samples)));
+        let saved = data.last_save.iter().flat_map(|save| {
+            save.hits
+                .samples()
+                .chain(save.drawn.iter().flat_map(WorkingHits::samples))
+                .chain(save.mixed.iter().flat_map(|m| m.hits.iter().map(|s| &s.0)))
+        });
         out.extend(data.working.hits.samples().chain(saved).cloned());
         out.extend(data.pending.iter().map(|file| SampleIdentity::File(file.name.clone())));
     }
@@ -811,6 +943,13 @@ mod tests {
                             }).collect(),
                         }).collect(),
                     }),
+                    mixed: save.mixed.iter().map(|m| MixedMoment {
+                        index: m.index,
+                        time_bits: m.time_bits,
+                        volume: m.volume,
+                        hits: m.hits.iter().map(|s| Sample(s.0.clone())).collect(),
+                    }).collect(),
+                    cleaned_greenlines: save.cleaned_greenlines,
                 }),
                 working: Working {
                     hits: WorkingHits::capture(document.composer.hitsounds()),
@@ -861,13 +1000,24 @@ mod tests {
         let compiled = document.composer.hitsounds().clone();
         let mut drawn = compiled.clone();
         drawn.set_volume(MomentId(0), 40);
-        let mut after_save = Checkpoint::after_save(&document, &compiled, &drawn, document.hs_mode);
+        let mut after_save = Checkpoint::after_save(&document, &compiled, &drawn, None, false, document.hs_mode);
         document.pending.release("snare.wav");
         after_save.refresh(&document);
 
         let offer = after_save.write(&data_root).unwrap();
         let written = fs::read(pending_path(&data_root, &offer.id).unwrap()).unwrap();
         assert_eq!(written, eager_record_bytes(&document, &after_save, &offer));
+
+        // And check after_save with mixed target + cleaned_greenlines populated.
+        let mut mixed_target = compiled.clone();
+        mixed_target.set_volume(MomentId(0), 85);
+        let mut mixed_after_save =
+            Checkpoint::after_save(&document, &compiled, &drawn, Some(&mixed_target), true, document.hs_mode);
+        mixed_after_save.refresh(&document);
+
+        let offer = mixed_after_save.write(&data_root).unwrap();
+        let written = fs::read(pending_path(&data_root, &offer.id).unwrap()).unwrap();
+        assert_eq!(written, eager_record_bytes(&document, &mixed_after_save, &offer));
     }
 
     #[test]
