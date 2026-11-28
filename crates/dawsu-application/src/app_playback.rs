@@ -483,6 +483,7 @@ impl Application {
         }
         if self.is_playing() {
             self.stop();
+            self.commit_tap_take();
             return;
         }
         if self.song_loading {

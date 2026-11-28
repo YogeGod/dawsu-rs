@@ -78,7 +78,7 @@ const exportedMethods = [
   "refreshRulerCursor", "trackRulerPointer", "refreshRulerWarningTooltip",
   "waveformTarget", "bookmarkNearFlag", "locatorFlags", "rulerGestureAt",
   "locatorPreview", "locatorDragTo", "endRulerDrag", "drainOverviewNavigation",
-  "panOverview", "timelineStart", "followPlayhead", "queueFollow", "resizeLaneHeaders",
+  "panOverview", "timelineStart", "followPlayhead", "queueFollow", "revealTime", "resizeLaneHeaders",
   "refreshLaneToolbar", "changeView", "stepWheelSnap", "fitTimeline",
   "modal", "closeModal", "confirm", "showOutputProblem", "renderDialogs",
   "openMergeSettings", "openGenerate", "openNewDifficulty", "openCopy",

@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import { act, bridge } from "../lib/bridge.svelte.js";
   import {
-    clickGate, copyText, readout, segmentsDisabled, selectionValue, transportActions,
+    clickGate, copyText, parseTime, readout, segmentsDisabled, selectionValue, transportActions,
   } from "../lib/transport.js";
   import { invoke } from "../lib/ipc.js";
   import { readPort, recordArgs } from "../lib/midi.js";
@@ -40,6 +40,20 @@
   const meter = $derived(shown.meter);
   const selection = $derived(selectionValue(scene));
   const send = name => act(transportActions(bridge.view)[name]);
+  // Go to time: the readout turns into a field; Enter seeks there, Escape or leaving it cancels.
+  let typing = $state(false);
+  let typed = $state("");
+  function timeKey(event) {
+    event.stopPropagation();
+    if (event.key === "Escape") typing = false;
+    if (event.key !== "Enter") return;
+    const ms = parseTime(typed);
+    if (ms === null) return;
+    typing = false;
+    act({ kind: "seek", ms });
+    // The timeline pages to the new time, so the jump lands where you can see it.
+    bridge.callAction("revealTime", ms);
+  }
   const toggle = name => toggles(bridge.latestView) && send(name);
 
   async function copy() {
@@ -93,7 +107,14 @@
       disabled={disabled.playback || arming} onclick={toggleRecord}>{@html Circle}</button>
   </div>
   <div class="readout">
-    <span class="time">{time}</span>
+    {#if typing}
+      <!-- svelte-ignore a11y_autofocus -->
+      <input class="time time-field" aria-label="Go to time" spellcheck="false" autofocus bind:value={typed}
+        onfocus={event => event.currentTarget.select()} onkeydown={timeKey} onblur={() => (typing = false)}>
+    {:else}
+      <button type="button" class="time" aria-label="Go to time" title="Click and type a time, such as 01:54:385, to go there"
+        disabled={disabled.jump} onclick={() => { typed = time; typing = true; }}>{time}</button>
+    {/if}
     <span class="divider music"></span>
     <span class="cell music" title="Tempo at the playhead"><span class="value">{bpm}</span> <small>BPM</small></span>
     <span class="divider music"></span>
@@ -219,6 +240,34 @@
     font-size: 18px;
     font-weight: 600;
     color: var(--readout-value);
+  }
+  /* The time reads as before; a click types a time to go to. */
+  button.time {
+    min-height: 0;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+    cursor: text;
+  }
+  button.time:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05);
+  }
+  button.time:disabled {
+    cursor: default;
+  }
+  .time-field {
+    width: 112px;
+    height: 26px;
+    margin: 0 8px 0 6px;
+    padding: 0 6px;
+    border: 1px solid var(--editor-accent);
+    border-radius: 5px;
+    background: var(--editor-ink);
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
   }
   .divider {
     flex: none;

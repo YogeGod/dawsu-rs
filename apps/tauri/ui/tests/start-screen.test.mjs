@@ -342,3 +342,12 @@ test("sameUiView detects an autosave interval change and treats a missing one as
   assert.equal(sameUiView({ ...base, autosaveIntervalSecs: 30 }, { ...base, autosaveIntervalSecs: 15 }), false);
   assert.equal(sameUiView({ ...base, autosaveIntervalSecs: 0 }, base), false);
 });
+
+test("a Songs card's difficulty chip wraps a long name instead of cutting off what tells two copies apart", async () => {
+  // "... (copy)" and "... (copy) (1)" both showed as "Echoes Through Eternal Time (co...".
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/StartScreen.svelte", import.meta.url), "utf8").split("<style>")[1];
+  const rule = css.match(/\.home-song-diff > span:first-child\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.doesNotMatch(rule, /nowrap|ellipsis/);
+  assert.match(rule, /overflow-wrap:\s*anywhere;/);
+});

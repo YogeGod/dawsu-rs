@@ -275,6 +275,20 @@ impl OsuFile {
         Read { file, warnings }
     }
 
+    /// This file as it reads back once written: what `read(self.to_bytes())` gives, but each line keeps
+    /// its id, so ids taken from this file (an editor's references to its objects) still name the same
+    /// lines after a save that inserted or removed lines. Ids are fresh only if the lines don't pair up.
+    pub fn as_written(&self) -> OsuFile {
+        let mut file = OsuFile::read(self.to_bytes()).file;
+        if file.lines.len() == self.lines.len() {
+            for (line, before) in file.lines.iter_mut().zip(&self.lines) {
+                line.id = before.id;
+            }
+            file.next_id = self.next_id;
+        }
+        file
+    }
+
     fn scan_warnings(&self) -> Vec<ReadWarning> {
         let mut out = Vec::new();
         for (n, (line, section)) in self.lines.iter().zip(self.sections()).enumerate() {

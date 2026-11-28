@@ -359,3 +359,10 @@ test("History's steps cannot be picked in Keysounds mode, where the hits they ch
     bridge.mode = "hitsounds";
   }
 });
+
+test("an Inspector row's select is wide enough for its longest choice, Selected lanes", () => {
+  // 92 px cut "Applies to: Selected hits" to "Selected hi"; the row has ~195 px beside a ~70 px label.
+  const css = readFileSync(new URL("../src/parts/inspector.css", import.meta.url), "utf8");
+  const width = Number(css.match(/\.insp-row select\s*\{[^}]*max-width:\s*(\d+)px/)?.[1]);
+  assert.ok(width >= 120 && width <= 124, `max-width ${width}px`);
+});

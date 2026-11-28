@@ -20,5 +20,11 @@ export function folderChip({ count, used, collapsed }) {
     : { text: String(count), title: lanes(count) };
 }
 
+// "Whistle 2" → ["Whistle", " 2"]: a layer's number is drawn apart so the ellipsis never hides it.
+export function splitLayerNumber(name) {
+  const match = /^(.*\S)(\s+\d+)$/.exec(name ?? "");
+  return match ? [match[1], match[2].replace(/^\s+/, " ")] : [name ?? "", ""];
+}
+
 // Folders move by dragging their header, as before.
 export const folderDragType = "application/x-dawsu-sample-set";

@@ -66,3 +66,10 @@ test("osuReloadToast warns that osu! was not reloaded for every other status and
   assert.equal(rejected.title, "osu! was not reloaded");
   assert.match(rejected.body, /IPC down/);
 });
+
+test("arming Tap record from the Playback menu closes the menu, so the Space and A–L that follow reach the editor", async () => {
+  // The menu stayed open as for other switches and swallowed Space, so the take never started.
+  const { items } = await import("../src/lib/commands.js");
+  const item = items.find(entry => entry.id === "tapRecord");
+  assert.equal(item?.close, true);
+});

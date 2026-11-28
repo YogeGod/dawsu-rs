@@ -842,6 +842,26 @@ impl Application {
         true
     }
 
+    /// Ends a keyboard tap-record pass, as stopping playback does: its taps land on the timeline as
+    /// one Undo step and recording stays armed for the next pass. Armed MIDI keeps committing on disarm.
+    pub fn commit_tap_take(&mut self) {
+        if !self.tap_recording_armed || self.midi_recorder.armed || self.tap_recorded_hits.is_empty() {
+            return;
+        }
+        let taps = std::mem::take(&mut self.tap_recorded_hits);
+        match self.commit_captured_midi_and_taps(Vec::new(), taps, None, None, false) {
+            Ok(summary) => {
+                let n = summary.committed_hits;
+                self.status = format!(
+                    "Recorded {n} tap{}. Still armed: play again for another pass, Ctrl+Z to undo this one.",
+                    if n == 1 { "" } else { "s" }
+                );
+            }
+            Err(error) => self.error = Some(error),
+        }
+        self.bump_view_revision();
+    }
+
     /// Arms or disarms live keyboard tap-recording on the timeline; disarming commits all
     /// buffered taps (and any armed MIDI notes) cleanly.
     pub fn toggle_tap_recording(&mut self) -> Result<midi_record::TapRecordStatus, String> {
@@ -2386,6 +2406,9 @@ impl Application {
                 }
             })
             .ok_or("Could not find a free Hitsounds difficulty name in this mapset.")?;
+        // It opens in HS mode, which writes on objects only: its lines must name the skin samples.
+        let mut planned = planned;
+        dawsu_hitsounding::generate::skin_index_timing(&mut planned);
 
         let target = folder.join(&file_name);
         dawsu_foundation::safe_write::create(&target, &planned.to_bytes())

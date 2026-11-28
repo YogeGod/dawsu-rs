@@ -485,6 +485,8 @@
   }
   .intake-ref select {
     flex: 1 1 auto;
+    /* Without this the longest difficulty name sets the width and the picker runs past the card. */
+    min-width: 0;
     min-height: 28px;
     padding: 0 8px;
     border-radius: 6px;

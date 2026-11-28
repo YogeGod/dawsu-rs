@@ -196,7 +196,8 @@
     flex: 1;
     min-width: 0;
     display: flex;
-    align-items: flex-start;
+    /* Strips take the panel's height; their faders give way so the names at the bottom show. */
+    align-items: stretch;
     gap: 2px;
     overflow-x: auto;
     overflow-y: hidden;

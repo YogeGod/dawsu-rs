@@ -62,6 +62,12 @@
   .strip.pick {
     cursor: pointer;
   }
+  /* The fader takes the strip's spare height (150 px when there is room) and shrinks first. */
+  .strip :global(.fader) {
+    flex: 1 1 150px;
+    height: auto;
+    min-height: 60px;
+  }
   .strip.selected {
     background: var(--strip-selected);
     box-shadow: inset 0 0 0 1px var(--strip-colour), var(--shadow-card);

@@ -649,6 +649,14 @@ export function attachTimeline(ctx) {
     if (paged(state.scene.zoom) !== state.scene.viewStart) queueFollow(paged);
   }
 
+  // A jump to a time (Go to time) brings it on screen, paging as Follow does, whether or not Follow is on.
+  function revealTime(ms) {
+    if (!state.scene || !Number.isFinite(ms) || !grid.clientWidth) return Promise.resolve();
+    const visible = grid.clientWidth / state.scene.zoom;
+    if (ms >= state.scene.viewStart && ms <= state.scene.viewStart + visible * 0.98) return Promise.resolve();
+    return changeView(zoom => timelineStart(ms - grid.clientWidth / zoom * 0.02, zoom));
+  }
+
   // One Follow view change at a time, until its answer is shown; frames in between ask for no more.
   function queueFollow(start) {
     state.followQueued = true;
@@ -1458,7 +1466,7 @@ export function attachTimeline(ctx) {
     refreshRulerCursor, trackRulerPointer, refreshRulerWarningTooltip,
     waveformTarget, bookmarkNearFlag, locatorFlags, rulerGestureAt,
     locatorPreview, locatorDragTo, endRulerDrag, drainOverviewNavigation,
-    panOverview, timelineStart, followPlayhead, queueFollow, resizeLaneHeaders,
+    panOverview, timelineStart, followPlayhead, queueFollow, revealTime, resizeLaneHeaders,
     refreshLaneToolbar, changeView, stepWheelSnap, queueWheel, flushWheel, fitTimeline, bindTimeline,
     stopMarqueeAutoScroll,
   });
