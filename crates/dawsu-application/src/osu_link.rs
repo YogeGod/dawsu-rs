@@ -244,6 +244,15 @@ fn find_osu_window_title() -> Option<String> {
     found
 }
 
+/// A window title is another process's text: never let it name a path outside one set folder.
+#[cfg(windows)]
+fn is_plain_osu_file_name(name: &str) -> bool {
+    name.len() > 4
+        && !name.contains(['/', '\\', ':'])
+        && name.is_char_boundary(name.len() - 4)
+        && name[name.len() - 4..].eq_ignore_ascii_case(".osu")
+}
+
 #[cfg(windows)]
 fn match_window_title_in_songs(title: &str, songs_folder: Option<&Path>) -> Option<PathBuf> {
     // osu! window titles look like: "osu!  - Artist - Title [Difficulty]"
@@ -253,12 +262,7 @@ fn match_window_title_in_songs(title: &str, songs_folder: Option<&Path>) -> Opti
     // The editor's title is the .osu file name itself ("Artist - Title (Creator) [Diff].osu"):
     // look for that exact file first, since the folder name need not hold the creator.
     let file_name = rest.trim();
-    // A window title is another process's text: never let it name a path outside one set folder.
-    if file_name.len() > 4
-        && !file_name.contains(['/', '\\'])
-        && file_name.is_char_boundary(file_name.len() - 4)
-        && file_name[file_name.len() - 4..].eq_ignore_ascii_case(".osu")
-    {
+    if is_plain_osu_file_name(file_name) {
         for songs in candidate_songs_folders(songs_folder) {
             let Ok(dirs) = fs::read_dir(&songs) else {
                 continue;
@@ -798,6 +802,22 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&songs);
         assert_eq!(found, Some(wanted));
+    }
+
+    /// `set.join("C:x.osu")` drops the set folder on Windows (a drive-relative name replaces the
+    /// base), and "a:x.osu" names a stream of file "a": a title must not reach either.
+    #[cfg(windows)]
+    #[test]
+    fn open_from_osu_takes_only_a_plain_file_name_from_the_window_title() {
+        assert_eq!(
+            Path::new("D:/Songs/set").join("C:x.osu"),
+            Path::new("C:x.osu")
+        );
+        assert!(is_plain_osu_file_name("Artist - Song (Mapper) [Insane].osu"));
+        let refused = ["C:x.osu", "ab:x.osu", "../x.osu", "set\\x.osu", "/x.osu", ".osu", "x.txt"];
+        for name in refused {
+            assert!(!is_plain_osu_file_name(name), "{name}");
+        }
     }
 
     #[test]
