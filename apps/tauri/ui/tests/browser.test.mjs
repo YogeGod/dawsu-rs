@@ -115,6 +115,17 @@ test("the preview shows the file name, its real length and its outline with a pl
   assert.doesNotMatch(none, /browser-preview-name/);
 });
 
+test("Use in <lane>, whose label grows with the lane name, gets the full-width row and its whole name as a tooltip", () => {
+  const preview = { name: "drum-hitclap.wav", title: "drum-hitclap.wav", ms: 210, peaks: [1] };
+  const html = shown(model({ preview, canAssign: true, canAddAsLane: true, target: "Soft Normal" }), BrowserPreview);
+  const actions = buttons(html.slice(html.indexOf('class="browser-actions"')));
+  // The stylesheet spans the last button across both columns; a fixed half-width cell cut it to "Use in Soft Nor…".
+  assert.deepEqual(actions.map(item => item.text), ["+ Add as lane", "Browse…", "Use in Soft Normal"]);
+  assert.match(actions[2].tag, /title="Use in Soft Normal"/);
+  const css = readFileSync(new URL("../src/parts/browser.css", import.meta.url), "utf8");
+  assert.match(css, /\.browser-actions button:last-child\s*\{\s*grid-column: 1 \/ -1;/);
+});
+
 test("before the first hand-over every control is greyed out", () => {
   bridge.set(null, null);
   bridge.browser = null;

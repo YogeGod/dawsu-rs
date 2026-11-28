@@ -9,6 +9,7 @@
   // The outline is the sample's own loudness, decoded by the backend; without it no bars are drawn.
   const bars = $derived(outlineBars(preview?.peaks));
   const send = (...args) => bridge.callAction("sampleBrowserAction", ...args);
+  const useLabel = $derived(model.target ? "Use in " + model.target : "Use in active lane");
 </script>
 
 {#if preview}
@@ -31,8 +32,9 @@
     </div>
   </div>
 {/if}
+<!-- Use in <lane> is last, so it takes the full-width row: its label grows with the lane's name. -->
 <div class="browser-actions">
   <button type="button" id="browser-add-lane" disabled={off || !model.canAddAsLane} onclick={() => send("addLane")}>+ Add as lane</button>
-  <button type="button" disabled={off || !model.canAssign} onclick={() => send("assign")}>{model.target ? "Use in " + model.target : "Use in active lane"}</button>
   <button type="button" disabled={off || !(model.canPick || model.canBrowseAdd)} onclick={() => send("browse")}>Browse…</button>
+  <button type="button" disabled={off || !model.canAssign} title={useLabel} onclick={() => send("assign")}>{useLabel}</button>
 </div>
