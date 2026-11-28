@@ -182,6 +182,8 @@ export function attachLanes(ctx) {
       paragraph("Leave blank to restore the sample name.")],
       [["Cancel", () => ctx.closeModal()], ["Rename", apply, true]]);
     field.focus();
+    // A lane renamed before opens with its name selected: typing replaces it.
+    field.select();
   }
 
   function refreshLanePresentation() {
