@@ -250,6 +250,7 @@ impl Application {
         self.external_osu_changed = false;
         self.tap_recording_armed = false;
         self.tap_recorded_hits.clear();
+        self.selection_volume_scope = crate::SelectionVolumeScope::SelectedHits;
         keysound_session::reset_for_map(self, None);
         self.bump_view_revision();
     }
@@ -301,6 +302,7 @@ impl Application {
         self.external_osu_changed = false;
         self.tap_recording_armed = false;
         self.tap_recorded_hits.clear();
+        self.selection_volume_scope = crate::SelectionVolumeScope::SelectedHits;
         keysound_session::reset_for_map(self, None);
         self.bump_view_revision();
     }
@@ -1494,7 +1496,9 @@ impl Application {
                     self.export.clear();
                     self.pending_save_review = None;
                     self.last_endpoint_jump = None;
-                    self.selection_lane_scope = None;
+                    if preserve.is_none() {
+                        self.selection_volume_scope = crate::SelectionVolumeScope::SelectedHits;
+                    }
                     self.output_problems.clear();
                     self.output_problem_revision = None;
                     self.save_problem_review = false;
@@ -2769,9 +2773,9 @@ pub(crate) fn load(
             }
         }
     }
-    if let Some(recovery) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
-        && let Err(error) = gain_recovery::restore(&mut document, recovery, defaults)
-
+    if recovery.is_none()
+        && let Some(gain_rec) = project.as_ref().and_then(|p| p.settings.gain_recovery.as_ref())
+        && let Err(error) = gain_recovery::restore(&mut document, gain_rec, defaults)
     {
         warnings.push(format!("Editable hit gains could not be restored: {error}"));
     }

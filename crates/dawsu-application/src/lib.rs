@@ -491,6 +491,31 @@ impl JobProgress {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SelectionVolumeScope {
+    #[default]
+    SelectedHits,
+    AllLanes,
+    SelectedLanes(BTreeSet<SampleIdentity>),
+}
+
+impl SelectionVolumeScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SelectedHits => "hits",
+            Self::AllLanes => "all",
+            Self::SelectedLanes(_) => "selected",
+        }
+    }
+
+    pub fn lane_scope(&self) -> Option<&BTreeSet<SampleIdentity>> {
+        match self {
+            Self::SelectedLanes(lanes) => Some(lanes),
+            Self::SelectedHits | Self::AllLanes => None,
+        }
+    }
+}
+
 pub struct Application {
     sample_watch: sample_watch::Watch,
     osu_watch: osu_watch::OsuWatch,
@@ -577,7 +602,7 @@ pub struct Application {
     pub(crate) cycle: bool,
     pub(crate) song_offset: f64,
     pub(crate) active_lane: usize,
-    selection_lane_scope: Option<BTreeSet<SampleIdentity>>,
+    selection_volume_scope: SelectionVolumeScope,
     playback_start: f64,
     return_position: f64,
     last_endpoint_jump: Option<(bool, std::time::Instant)>,
@@ -803,7 +828,7 @@ impl Application {
             cycle: false,
             song_offset: DEFAULT_SONG_OFFSET_MS,
             active_lane: 0,
-            selection_lane_scope: None,
+            selection_volume_scope: SelectionVolumeScope::SelectedHits,
             playback_start: 0.0,
             return_position: 0.0,
             last_endpoint_jump: None,

@@ -476,6 +476,7 @@ pub(crate) struct ViewSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tick_rev: Option<u64>,
     pub(crate) tool: String,
+    pub(crate) volume_scope: &'static str,
     pub(crate) warnings: Vec<String>,
     pub(crate) waveform_revision: u64,
 }
@@ -571,7 +572,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
             let mut hit_entries = Vec::with_capacity(source_moments.len());
             for (i, moment) in source_moments.iter().enumerate() {
                 let hits_start = hit_entries.len();
-                let moment_vol = moment.volume();
+                let moment_vol = moment.reference_volume();
                 for lane in moment.hits() {
                     let Some(&row) = row_by_lane.get(lane) else { continue };
                     let is_selected = has_selected && selected.contains(&(i, lane));
@@ -870,6 +871,7 @@ pub(crate) fn snapshot_with_static(app: &Application, include_scene: bool, inclu
         tab_routes,
         tick_rev: None,
         tool: format!("{:?}", app.tool()),
+        volume_scope: app.selection_volume_scope_str(),
         warnings: app.warnings().to_vec(),
         waveform_revision: app.waveform_revision(),
     }

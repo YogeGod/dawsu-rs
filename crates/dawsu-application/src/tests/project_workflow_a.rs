@@ -1980,3 +1980,76 @@ fn hs_save_adds_the_green_line_a_skin_sound_needs_and_says_so() {
     wait(&mut restored);
     assert!(restored.error.is_none(), "{:?}", restored.error);
 }
+
+#[test]
+fn recovery_copy_with_project_gain_recovery_preserves_working_edits_without_warning() {
+    let fixture = Scratch::new("recovery-copy-gain-recovery");
+    let path = fixture.path("map.osu");
+    let map = b"osu file format v14\n[General]\nMode:0\n[TimingPoints]\n0,500,4,1,1,70,1,0\n[HitObjects]\n256,192,1000,1,8,1:1:1:70:\n128,192,1000,1,0,1:1:1:70:\n";
+    std::fs::write(&path, map).unwrap();
+    let wav_head = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0";
+    for (name, sample) in [("normal-hitnormal.wav", 8192_i16), ("normal-hitclap.wav", 16384)] {
+        let mut wav = wav_head.to_vec();
+        wav.extend(sample.to_le_bytes());
+        std::fs::write(fixture.path(name), wav).unwrap();
+    }
+
+    let data = fixture.path("app-data");
+    let sessions = fixture.path("sessions");
+    let mut app = Application::with_data_root(data.clone());
+    app.clear_error();
+    app.audio = None;
+    app.project_root = Some(sessions.clone());
+    open(&mut app, path.clone());
+
+    let lanes: Vec<_> = app.document().unwrap().composer.hitsounds().moments()[0].hits().cloned().collect();
+    let normal = lanes.iter().find(|lane| matches!(lane,
+        SampleIdentity::Standard { sound: Sound::Hit(Hitsound::Normal), .. })).unwrap().clone();
+    let clap = lanes.iter().find(|lane| *lane != &normal).unwrap().clone();
+
+    // Save once with mixed per-hit volumes so project.settings.gain_recovery is populated.
+    app.select_hit(HitKey { moment: 0, lane: normal.clone() }, false);
+    app.selection_volume(35, false);
+    app.save_with_backups(fixture.path("backups"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.busy {
+        app.poll();
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.error.is_none(), "{:?}", app.error);
+
+    // Reopen cleanly with project gain_recovery active, then edit and capture a crash recovery copy.
+    drop(app);
+    let mut session2 = Application::with_data_root(data.clone());
+    session2.clear_error();
+    session2.audio = None;
+    session2.project_root = Some(sessions.clone());
+    open(&mut session2, path.clone());
+    session2.select_hit(HitKey { moment: 0, lane: normal.clone() }, false);
+    session2.selection_volume(90, false);
+    session2.refresh_recovery_edit();
+    let offer = session2.write_recovery_copy().unwrap().unwrap();
+    drop(session2);
+
+    let mut reopened = Application::with_data_root(data);
+    reopened.clear_error();
+    reopened.audio = None;
+    reopened.project_root = Some(sessions);
+    reopened.restore_recovery(&offer.id).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while reopened.busy {
+        reopened.poll();
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert!(
+        reopened.warnings().iter().all(|w| !w.contains("Editable hit gains could not be restored")),
+        "unexpected gain recovery warning during crash recovery: {:?}",
+        reopened.warnings()
+    );
+    let moment = &reopened.document().unwrap().composer.hitsounds().moments()[0];
+    assert_eq!((moment.hit_volume(&normal), moment.hit_volume(&clap)), (90, 70));
+}
+

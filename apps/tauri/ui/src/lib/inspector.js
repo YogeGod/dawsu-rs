@@ -3,7 +3,7 @@ import { clock } from "./transport.js";
 
 // What the Inspector shows before app.js hands over its first model (inspectorModel()): everything waits.
 export const emptyInspector = Object.freeze({
-  busy: false, doc: false, selection: null, scope: "all", hint: "", range: false,
+  busy: false, doc: false, selection: null, scope: "hits", hint: "", range: false,
   insertVolume: 100, protect: false, audition: false, hs: false, lane: null,
   bookmarks: [], bookmark: null, history: [], historyPosition: 0, problemStrip: null,
 });
