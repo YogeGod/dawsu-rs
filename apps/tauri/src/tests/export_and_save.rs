@@ -474,7 +474,9 @@ fn home_save_with_left_out_moments_goes_home_after_the_summarys_save() {
 
     let fixture = Fixture::new("home-left-out");
     let map = fixture.0.join("a.osu");
-    fs::write(&map, "osu file format v14\r\n\r\n[General]\r\nMode: 0\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,8,2:0:0:0:\r\n256,192,1500,1,8,3:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n").unwrap();
+    // The green line 3 ms after the slider tail sits inside the 6 ms a tail green line needs (ADR 0042
+    // point 4), so Save cannot place the tail's two claps and leaves that moment out, in HS mode too.
+    fs::write(&map, "osu file format v14\r\n\r\n[General]\r\nMode: 0\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n2503,-100,4,1,0,70,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,8,2:0:0:0:\r\n256,192,1500,1,8,3:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n").unwrap();
     // A data folder of its own gives the difficulty an editor project to keep left-out moments.
     let mut app = Application::with_data_root(fixture.0.join("data"));
     app.clear_error();
