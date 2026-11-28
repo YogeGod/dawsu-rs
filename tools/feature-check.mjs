@@ -622,14 +622,17 @@ function defineSteps(robot, picked) {
     const head = edited.find(m => m.node === "head");
     if (!head || !lastSaved) return { skip: "no saved slider edit" };
     const bank = head.samples.find(s => s.name === "hitnormal")?.bank ?? "normal";
-    const row = await laneRow(`${bank}-hitclap`, 0);
-    expect(row >= 0, `no ${bank}-hitclap lane`);
+    // A sound the head does not play yet: one object plays one clap, so a second would be a mix.
+    const sound = ["hitclap", "hitfinish"].find(name => !head.samples.some(s => s.name === name));
+    if (!sound) return { skip: "the slider head already plays a clap and a finish" };
+    const row = await laneRow(`${bank}-${sound}`, 0);
+    expect(row >= 0, `no ${bank}-${sound} lane`);
     await read(() => window.act({ kind: "snap", on: true, mode: "objects", beats: window.scene.beats, divisor: window.scene.divisor }));
     await draw(head.time, row);
     await read(() => window.act({ kind: "snap", on: true, mode: "grid", beats: window.scene.beats, divisor: window.scene.divisor }));
     await save();
     const saved = soundMoments(readFileSync(copy)).find(s => Math.abs(s.time - head.time) <= 1);
-    expect(saved?.samples.some(s => s.name === "hitclap") && saved.samples.some(s => s.name === "hitwhistle"),
+    expect(saved?.samples.some(s => s.name === sound) && saved.samples.some(s => s.name === "hitwhistle"),
       `the slider head at ${Math.round(head.time)} ms plays ${saved?.samples.map(s => s.name).join("+")}`);
     lastSaved = readFileSync(copy);
   });
@@ -645,7 +648,12 @@ function defineSteps(robot, picked) {
     const after = await until(n => !window.view.dirty && !window.view.busy
       && window.scene.moments.reduce((s, m) => s + m[3].length, 0) !== n + 1 && window.scene.moments.reduce((s, m) => s + m[3].length, 0),
       saved.length, "Revert did not reload the file", 15000);
-    expect(after === saved.length, `Revert shows ${after} hits, the saved difficulty had ${saved.length}`);
+    // A Save that wrote a mix file (a new numbered sample, e.g. soft-hitclap4.wav) reopens the mixed
+    // sounds as one hit, so fewer hits are fine then; more never are.
+    const mixes = readdirSync(mapFolder).filter(name => !copyBefore.has(name) && /^(normal|soft|drum)-hit\w+\d+\.(wav|ogg|mp3)$/i.test(name));
+    expect(after === saved.length || (mixes.length && after < saved.length),
+      `Revert shows ${after} hits, the saved difficulty had ${saved.length}`);
+    if (after !== saved.length) return `${after} hits (${saved.length} drawn; Save mixed them into ${mixes.join(", ")})`;
     // The reloaded file can show a mix Save wrote on lanes of its own (e.g. a numbered index), so the
     // lane names may differ from what was drawn; that is reported, not failed.
     const now = await namedHits();
