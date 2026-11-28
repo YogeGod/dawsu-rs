@@ -1857,14 +1857,19 @@ impl Application {
                             let added = report.added_greenlines;
                             self.status = if archive_error.is_some() {
                                 "Difficulty saved. Recovery copy is still pending.".into()
-                            } else if left_out > 0 {
-                                format!("Saved with backup. {left_out} part{} left out.", if left_out == 1 { "" } else { "s" })
-                            } else if added > 0 {
-                                format!("Saved with backup. Added {added} green line{} so every hit plays as drawn.", if added == 1 { "" } else { "s" })
-                            } else if cleaned > 0 {
-                                format!("Saved with backup. Removed {cleaned} redundant greenline{}.", if cleaned == 1 { "" } else { "s" })
                             } else {
-                                "Saved with backup".into()
+                                let plural = |n: usize| if n == 1 { "" } else { "s" };
+                                let mut parts = Vec::new();
+                                if left_out > 0 {
+                                    parts.push(format!("{left_out} part{} left out.", plural(left_out)));
+                                }
+                                if added > 0 {
+                                    parts.push(format!("Added {added} green line{} so every hit plays as drawn.", plural(added)));
+                                }
+                                if cleaned > 0 {
+                                    parts.push(format!("Removed {cleaned} redundant greenline{}.", plural(cleaned)));
+                                }
+                                if parts.is_empty() { "Saved with backup".into() } else { format!("Saved with backup. {}", parts.join(" ")) }
                             };
                             if let Some(path) = self.pending_open.take() {
                                 self.open_now(OpenSource::Map(path));

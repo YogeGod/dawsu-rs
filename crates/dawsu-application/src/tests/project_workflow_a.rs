@@ -1917,6 +1917,16 @@ fn a_recovery_copy_after_a_save_with_a_mix_on_a_slider_node_restores() {
         save_through_summary(&mut app, scratch.path("backups"));
         assert!(app.document().unwrap().left_out.is_empty(), "hs {hs}");
         assert!(app.status.contains("Added 2 green lines"), "hs {hs}: {}", app.status);
+        // The check reads the mixed tail back from the file only when the copy's hits there would
+        // mix into the same additions: a tail with a finish and a whistle more is not this Save's.
+        let doc = app.document().unwrap();
+        let files: Vec<String> = std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(reproduces_saved(doc, &doc.written, hs, true, &files, &|| false).unwrap(), "hs {hs}");
+        let mut other = doc.written.clone();
+        let tail = tail_id(&other);
+        other.add_hit(tail, skin(SampleSet::Drum, Hitsound::Finish));
+        other.add_hit(tail, skin(SampleSet::Normal, Hitsound::Whistle));
+        assert!(!reproduces_saved(doc, &other, hs, true, &files, &|| false).unwrap(), "hs {hs}");
         app.document.as_mut().unwrap().composer.apply("Later edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 33));
         app.poll();
         let offer = app.write_recovery_copy().unwrap().unwrap();
@@ -1956,6 +1966,10 @@ fn hs_save_adds_the_green_line_a_skin_sound_needs_and_says_so() {
     let reopened = reopen(&app, &map);
     let circle = reopened.document().unwrap().composer.hitsounds().moments().iter().find(|m| m.time().ms() == 3000.0).unwrap();
     assert_eq!(circle.hits().count(), 2, "the circle plays the two skin sounds");
+    // The next Save adds nothing, so it says nothing about green lines.
+    app.document.as_mut().unwrap().composer.apply("Quieter", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 60));
+    save_through_summary(&mut app, scratch.path("backups"));
+    assert_eq!(app.status, "Saved with backup");
     // A recovery copy taken after this Save reproduces it.
     app.document.as_mut().unwrap().composer.add(1000.0, skin(SampleSet::Soft, Hitsound::Finish), 80, 0.0);
     app.poll();

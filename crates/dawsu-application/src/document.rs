@@ -439,6 +439,21 @@ pub(crate) fn reproduces_saved(
             return Ok(false);
         };
         let moment = &played.moments()[read];
+        // The mix files a role-by-role mix wrote play the additions the copy's hits hold, no more
+        // and no fewer; a file sample may go into any role. Otherwise the copy is not this Save's.
+        let addition = |lane: &SampleIdentity| match lane {
+            SampleIdentity::Standard { sound: Sound::Hit(role), .. } if *role != dawsu_foundation::Hitsound::Normal => Some(*role),
+            _ => None,
+        };
+        let dawsu_hitsounding::ProblemKind::NeedsSampleMix(drawn) = &problem.kind else {
+            return Ok(false);
+        };
+        let want: BTreeSet<_> = drawn.iter().filter_map(|(lane, _)| addition(lane)).collect();
+        let have: BTreeSet<_> = moment.hits().filter_map(addition).collect();
+        let files = drawn.iter().any(|(lane, _)| matches!(lane, SampleIdentity::File(_)));
+        if !want.is_subset(&have) || !(files || have.is_subset(&want)) {
+            return Ok(false);
+        }
         let layers: Vec<_> = moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect();
         target.set_moment_state(dawsu_hitsounding::MomentId(id), moment.volume(), layers);
     }
@@ -579,6 +594,9 @@ pub(crate) fn prepare_save(
     let (mut out, owned, effective, left_out, circles, removed_circles) = (
         rolled.out, rolled.owned, rolled.effective, rolled.left_out, rolled.circles, rolled.removed_circles,
     );
+    // The green lines this Save adds to the difficulty on disk, before any redundant ones go.
+    let green_lines = |f: &OsuFile| f.timing_points().iter().filter(|tp| !tp.uninherited()).count();
+    let added_greenlines = green_lines(&out).saturating_sub(green_lines(&OsuFile::read(expected.clone()).file));
     let cleaned_greenlines = if clean_redundant_greenlines {
         let cleanup = dawsu_hitsounding::cleanup::clean_up_green_lines(&out);
         out = cleanup.file;
@@ -586,8 +604,6 @@ pub(crate) fn prepare_save(
     } else {
         0
     };
-    let green_lines = |f: &OsuFile| f.timing_points().iter().filter(|tp| !tp.uninherited()).count();
-    let added_greenlines = green_lines(&out).saturating_sub(green_lines(&file));
     let written = effective.clone();
     // The pending files the written difficulty plays go into the mapset with its mixes; the
     // project keeps the others the drawn hits still play.
