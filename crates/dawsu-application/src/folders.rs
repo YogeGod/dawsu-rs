@@ -47,9 +47,9 @@ impl Folder {
         #[cfg(target_os = "windows")]
         let (program, argument) = ("explorer.exe", explorer_path(folder));
         #[cfg(target_os = "macos")]
-        let (program, argument) = ("open", folder.into());
+        let (program, argument): (&str, PathBuf) = ("open", folder.into());
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        let (program, argument) = ("xdg-open", folder.into());
+        let (program, argument): (&str, PathBuf) = ("xdg-open", folder.into());
 
         Command::new(program)
             .arg(argument)
