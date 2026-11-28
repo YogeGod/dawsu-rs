@@ -31,6 +31,8 @@
   let run = $state.raw(null);
   // The id of this window's last write, so only its own result shows.
   let lastRun = $state(null);
+  // The destination of the write in flight, kept when Export is pressed: the picker stays live during it.
+  let runWriteMode = null;
   // The footer's "N warnings", opened into the list of them.
   let showWarnings = $state(false);
   let showAdvanced = $state(false);
@@ -142,6 +144,7 @@
     if (!status.canExport || run) return;
     run = { id: null };
     try {
+      runWriteMode = choices.writeMode;
       const id = await invoke("export_run", { previewId: sent.id });
       run = { id };
       lastRun = id;
@@ -224,7 +227,7 @@
       await closeExport({
         flush: () => (previewTimer !== null ? preview() : undefined),
         invoke,
-        onclose: onclose && (() => onclose({ wroteHitsoundOnly: wrote && choices.writeMode === "hitsound_only" })),
+        onclose: onclose && (() => onclose({ wroteHitsoundOnly: wrote && runWriteMode === "hitsound_only" })),
       });
     } catch (error) {
       closed = false;

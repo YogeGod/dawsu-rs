@@ -203,6 +203,11 @@ test("Cancel, Escape and the backdrop all go through ExportWindow's one close, w
   assert.match(win, /await closeExport\(\{/);
   assert.match(win, /onclick=\{\(\) => close\(\)\}>Cancel</, "Cancel is no write: the click event is not passed as one");
   assert.match(win, /if \(after\.close\) return close\(true\);/, "only the window's own finished write");
+  assert.match(win, /runWriteMode = choices\.writeMode;\s*const id = await invoke\("export_run"/,
+    "the write's mode is kept when Export is pressed");
+  assert.match(win, /wroteHitsoundOnly: wrote && runWriteMode === "hitsound_only"/,
+    "a destination switched during the write does not change what the write was");
+  assert.doesNotMatch(win, /wroteHitsoundOnly: wrote && choices\.writeMode/);
   const modal = read("ExportModal");
   assert.match(modal, /<ExportWindow bind:this=\{exportWindow\} onclose=\{closed\} \/>/);
   assert.match(modal, /function requestClose\(\) \{\s*exportWindow\?\.close\(\);\s*\}/);
