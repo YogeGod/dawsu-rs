@@ -431,3 +431,14 @@ test("the header's map chip keeps the difficulty whole and lets the title take t
   assert.match(shell, /\.map-chip-version\s*\{[^}]*flex:\s*none;/);
   assert.match(shell, /\.map-chip-title\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/);
 });
+
+test("on a wide window the header's map chip grows to fit the song and difficulty instead of a fixed 240 px", async () => {
+  // At 1920 px "Echoes of Memoria [Echoes Through Eternal Time]" showed as "Ec... Echoes Through Ete..."
+  // with 180 px of header still empty beside it.
+  const shell = await readFile(new URL("../ui/src/shell.css", import.meta.url), "utf8");
+  const chip = shell.match(/#editor-header \.map-chip\s*\{([^}]*)\}/)[1];
+  assert.match(chip, /flex:\s*0 1 auto;/);
+  assert.ok(Number(chip.match(/max-width:\s*(\d+)px/)[1]) >= 440, "chip max-width >= 440px");
+  const version = shell.match(/\.map-chip-version\s*\{([^}]*)\}/)[1];
+  assert.ok(Number(version.match(/max-width:\s*(\d+)px/)[1]) >= 240, "difficulty pill max-width >= 240px");
+});

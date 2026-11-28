@@ -266,6 +266,7 @@
     border: 1px solid var(--editor-accent);
     border-radius: 5px;
     background: var(--editor-ink);
+    color: var(--ink-on-dark);
     font-family: inherit;
     font-variant-numeric: tabular-nums;
   }
