@@ -1225,6 +1225,13 @@ fn to_wide_null(s: &str) -> Vec<u16> {
         .collect()
 }
 
+/// Formats a staged installer path for Win32 `ShellExecuteW`, stripping any extended-length
+/// `\\?\` / `\\?\UNC\` prefix produced by `fs::canonicalize`.
+#[cfg(any(target_os = "windows", test))]
+fn installer_shell_execute_path(installer_path: &Path) -> String {
+    strip_unc_prefix(installer_path)
+}
+
 fn spawn_installer(installer_path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -1243,7 +1250,7 @@ fn spawn_installer(installer_path: &Path) -> Result<(), String> {
         }
         const SW_SHOWNORMAL: i32 = 1;
         let verb = to_wide_null("open");
-        let file = to_wide_null(&installer_path.to_string_lossy());
+        let file = to_wide_null(&installer_shell_execute_path(installer_path));
         let params = to_wide_null(&installer_launch_args().join(" "));
         let result = unsafe {
             ShellExecuteW(
@@ -1279,7 +1286,7 @@ fn spawn_installer(installer_path: &Path) -> Result<(), String> {
 }
 
 /// Strips Windows extended-length UNC prefixes (`\\?\` / `\\?\UNC\`) before passing paths to
-/// external shell helpers like PowerShell `Expand-Archive`.
+/// Win32 `ShellExecuteW` or external shell helpers like PowerShell `Expand-Archive`.
 fn strip_unc_prefix(path: &Path) -> String {
     let raw = path.to_string_lossy();
     if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
@@ -1896,5 +1903,37 @@ mod tests {
 
         assert_eq!(strip_unc_prefix(Path::new(r"\\?\C:\Tools\dawsu.exe")), r"C:\Tools\dawsu.exe");
         assert_eq!(strip_unc_prefix(Path::new(r"\\?\UNC\server\share\dawsu.exe")), r"\\server\share\dawsu.exe");
+    }
+
+    #[test]
+    fn installer_shell_execute_path_strips_extended_unc_prefixes() {
+        assert_eq!(
+            installer_shell_execute_path(Path::new(
+                r"\\?\C:\Users\Alice\AppData\Local\Temp\dawsu-setup.exe"
+            )),
+            r"C:\Users\Alice\AppData\Local\Temp\dawsu-setup.exe"
+        );
+        assert_eq!(
+            installer_shell_execute_path(Path::new(r"\\?\UNC\fileserver\updates\dawsu setup.exe")),
+            r"\\fileserver\updates\dawsu setup.exe"
+        );
+        assert_eq!(
+            installer_shell_execute_path(Path::new(r"C:\Users\Alice\dawsu-setup.exe")),
+            r"C:\Users\Alice\dawsu-setup.exe"
+        );
+
+        // End to end: the canonicalized staged path (`\\?\` on Windows) reaches ShellExecuteW plain.
+        let root = temp_test_dir("updater-shell-execute-path");
+        let data_root = root.join("appdata");
+        let staged_dir = updates_dir(&data_root).join("1.1.0");
+        fs::create_dir_all(&staged_dir).unwrap();
+        let staged = staged_dir.join("dawsu-v1.1.0-windows-x64-setup.exe");
+        fs::write(&staged, b"MZ").unwrap();
+        let canon = validate_staged_installer_path(&data_root, &staged).unwrap();
+        let shell_path = installer_shell_execute_path(&canon);
+        assert!(!shell_path.starts_with(r"\\?\"), "{shell_path}");
+        assert!(shell_path.ends_with("dawsu-v1.1.0-windows-x64-setup.exe"), "{shell_path}");
+        assert!(Path::new(&shell_path).is_file(), "{shell_path}");
+        let _ = fs::remove_dir_all(&root);
     }
 }
