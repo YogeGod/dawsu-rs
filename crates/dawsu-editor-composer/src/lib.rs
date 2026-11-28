@@ -52,6 +52,25 @@ pub struct Composer {
 
 type MoveStroke = (Hitsounds, Vec<(HitKey, f64, i32)>, f64, i32);
 
+/// Collapses per-hit volume overrides back into the moment's shared volume once every hit on
+/// that moment plays at the same level, keeping standalone `.osu` saves override-free.
+fn collapse_uniform_moment_volume(hits: &mut dawsu_hitsounding::Hitsounds, id: MomentId) {
+    let uniform = {
+        let moment = hits.moment(id);
+        if !moment.has_hit_volume_overrides() {
+            return;
+        }
+        let mut vols = moment.hits().map(|lane| moment.hit_volume(lane));
+        let Some(first) = vols.next() else {
+            return;
+        };
+        vols.all(|v| v == first).then_some(first)
+    };
+    if let Some(first) = uniform {
+        hits.set_volume(id, first);
+    }
+}
+
 impl Composer {
     pub fn new(hitsounds: Hitsounds) -> Self {
         let mut object_times: Vec<_> = hitsounds
@@ -472,6 +491,41 @@ impl Composer {
         true
     }
 
+    /// Sets or shifts volume for the currently selected hits only, leaving sibling hits untouched.
+    pub fn volume_for_selected_hits(&mut self, value: i32, relative: bool) -> bool {
+        let floor = dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR;
+        let hits = self.hitsounds();
+        let updates: Vec<(MomentId, SampleIdentity, i32)> = self
+            .selected
+            .items()
+            .iter()
+            .filter_map(|key| {
+                let moment = hits.moments().get(key.moment)?;
+                if !moment.has_hit(&key.lane) {
+                    return None;
+                }
+                let before = moment.hit_volume(&key.lane);
+                let desired = if relative { before + value } else { value };
+                let after = desired.clamp(floor, 100);
+                (after != before).then(|| (MomentId(key.moment), key.lane.clone(), after))
+            })
+            .collect();
+        if updates.is_empty() {
+            return false;
+        }
+        self.apply("Change volume", |hits| {
+            let mut touched = BTreeSet::new();
+            for (moment, lane, target) in &updates {
+                hits.set_hit_volume(*moment, lane, *target);
+                touched.insert(moment.0);
+            }
+            for idx in touched {
+                collapse_uniform_moment_volume(hits, MomentId(idx));
+            }
+        });
+        true
+    }
+
     /// Sets the volume of the single moment nearest `ms` (within 5 ms) directly,
     /// without requiring it to be selected first. Respects `lanes` when scoped.
     pub fn set_moment_volume_at(
@@ -515,6 +569,7 @@ impl Composer {
                 for lane in changes {
                     hits.set_hit_volume(id, &lane, target);
                 }
+                collapse_uniform_moment_volume(hits, id);
             });
             return true;
         }
@@ -665,7 +720,7 @@ impl Composer {
                         sound: target_sound,
                         index: chosen_index,
                     };
-                    additions_to_add.push((MomentId(idx), new_lane, moment.volume()));
+                    additions_to_add.push((MomentId(idx), new_lane, moment.reference_volume()));
                 }
             }
         }
@@ -938,7 +993,9 @@ impl Composer {
         if to_place.is_empty() {
             return 0;
         }
-        let volume = self.insert_volume;
+        let volume = self
+            .insert_volume
+            .clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
         let mut placed = 0usize;
         self.history.begin("Paint draw stroke");
         let _ = self.history.edit(true, |h| {
@@ -1134,7 +1191,9 @@ impl ToolTarget for Composer {
     }
     fn insert(&mut self, at: SongTime, row: i32) -> Option<HitKey> {
         let lane = self.lanes.get(row.max(0) as usize)?.clone();
-        let volume = self.insert_volume;
+        let volume = self
+            .insert_volume
+            .clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
         let existing = nearest_moment(self.hitsounds(), at.ms(), 5.0);
         if let Some(id) = existing
             && self.hitsounds().moments()[id.0].has_hit(&lane)
@@ -1144,7 +1203,7 @@ impl ToolTarget for Composer {
         let mut moment = 0;
         let _ = self.history.edit(true, |h| {
             let id = existing.unwrap_or_else(|| h.add_moment(at, volume));
-            h.add_hit(id, lane.clone());
+            h.add_hit_with_volume(id, lane.clone(), volume);
             moment = id.0;
             Ok::<_, Infallible>(())
         });
@@ -1171,6 +1230,23 @@ impl ToolTarget for Composer {
             for (key, v) in values {
                 // Each hit at a moment brings the same value, so moving to it again changes nothing.
                 h.move_volume(MomentId(key.moment), (*v).clamp(0, 100));
+            }
+            Ok::<_, Infallible>(())
+        });
+    }
+
+    fn set_hit_values(&mut self, values: &[(HitKey, i32)]) {
+        let floor = dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR;
+        let _ = self.history.edit(true, |h| {
+            let mut touched = BTreeSet::new();
+            for (key, v) in values {
+                if key.moment < h.moments().len() {
+                    h.set_hit_volume(MomentId(key.moment), &key.lane, (*v).clamp(floor, 100));
+                    touched.insert(key.moment);
+                }
+            }
+            for idx in touched {
+                collapse_uniform_moment_volume(h, MomentId(idx));
             }
             Ok::<_, Infallible>(())
         });

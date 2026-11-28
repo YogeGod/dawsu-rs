@@ -41,7 +41,12 @@ export function placeVolumeBubble({ barX, barTopY, viewportWidth = 1440, margin 
 /**
  * Builds the floating volume bubble model for the moment nearest `ms` (within 5 ms) on `#controller`.
  */
-export function volumeBubbleAtMoment(scene, ms, rect, { editing = false, viewportWidth = 1440 } = {}) {
+export function volumeBubbleAtMoment(scene, ms, rect, {
+  editing = false,
+  viewportWidth = 1440,
+  volumeLanes = null,
+  activeVolumeMembers = null,
+} = {}) {
   if (!scene || !Number.isFinite(ms) || !rect || !(rect.width > 0) || !(rect.height > 0)) return null;
   let best = null;
   let bestDist = 5.0001;
@@ -55,7 +60,16 @@ export function volumeBubbleAtMoment(scene, ms, rect, { editing = false, viewpor
   }
   if (!best) return null;
   const time = best[0];
-  const volume = Math.max(VOLUME_MIN, Math.min(VOLUME_MAX, Math.round(Number(best[1]) || 100)));
+  const lanes = Array.isArray(volumeLanes) && volumeLanes.length ? volumeLanes : null;
+  const laneSet = lanes ? new Set(lanes) : null;
+  const hits = Array.isArray(best[3]) ? best[3] : [];
+  const volumeHits = laneSet ? hits.filter(([row]) => laneSet.has(row)) : hits;
+  const activeSet = activeVolumeMembers instanceof Set ? activeVolumeMembers : null;
+  const primary = volumeHits.length
+    ? (activeSet?.size ? volumeHits.find(([row]) => activeSet.has(row)) ?? volumeHits[0] : volumeHits[0])
+    : null;
+  const rawVolume = primary?.[3] ?? best[1];
+  const volume = Math.max(VOLUME_MIN, Math.min(VOLUME_MAX, Math.round(Number(rawVolume) || 100)));
   const relX = (time - scene.viewStart) * scene.zoom;
   if (relX < -24 || relX > rect.width + 24) return null;
   const barX = rect.left + relX;
@@ -71,5 +85,6 @@ export function volumeBubbleAtMoment(scene, ms, rect, { editing = false, viewpor
     y: pos.y,
     below: pos.below,
     editing: !!editing,
+    ...(lanes ? { volumeLanes: [...lanes] } : {}),
   };
 }

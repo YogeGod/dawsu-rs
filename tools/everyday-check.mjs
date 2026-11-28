@@ -1113,17 +1113,20 @@ try {
     reopened = await namedHits();
     return compare(hit => !mixed(hit), "away from the mixed circle");
   });
-  // Save writes a sound the circle's line cannot hold as a mix of new sample files, and the editor
-  // project keeps no record of the lanes it was drawn on: reopened, the circle plays those files
-  // (as crates/dawsu-application/src/lib.rs hs_save_mix_reopens_without_duplicate_project_hits expects).
-  await step("Reopening shows the mixed circle as the sample files Save wrote", async () => {
+  // Drawing a whistle at default Insert volume (100%) onto the 40% custom-clap circle creates mixed
+  // per-hit volumes on that circle: Save renders mix files for osu!, and reopening inside the editor
+  // project restores both the authored lanes and their distinct (40%, 100%) volumes via gain recovery.
+  await step("Reopening restores the mixed circle's hits and per-hit volumes", async () => {
     expect(reopened, "the reopen did not finish, so there is nothing to compare");
-    const now = reopened.filter(mixed).map(hit => hit.slice("3500 ms ".length));
-    expect(now.length, "the circle at 3500 ms has no hits after reopening");
-    const written = mixFiles.map(name => name.replace(/\.(wav|ogg|mp3)$/i, ""));
-    const other = now.filter(name => !written.includes(name));
-    expect(written.length && !other.length, `at 3500 ms: ${now.join(", ")}; Save wrote: ${mixFiles.join(", ") || "nothing"}`);
-    return now.join(", ");
+    expect(mixFiles.length, "Save wrote no mixed sample files");
+    const summary = compare(mixed, "at the mixed circle");
+    const vols = await read(() => {
+      const m = window.scene.moments.find(([t]) => Math.abs(t - 3500) <= 5);
+      return m ? m[3].map(h => h[3] ?? m[1]).sort((a, b) => a - b) : [];
+    });
+    expect(vols.includes(40) && vols.includes(100),
+      `expected reopened 3500 ms volumes to keep both 40% and 100%, got ${JSON.stringify(vols)}`);
+    return `${summary} (${vols.join("/")}%)`;
   });
   // The Base lives in this run's own data folder (LOCALAPPDATA is the profile), never in the map copy.
   await step("Shared Base: capture shows the moment count, Apply all asks first", async () => {

@@ -874,6 +874,15 @@ export function attachTimeline(ctx) {
       });
     }
 
+    function activeVolumeMemberSet() {
+      const activePrimary = state.view.activeLane != null
+        ? (state.drumRowByMember?.get(state.view.activeLane) ?? state.view.activeLane)
+        : null;
+      return new Set(
+        activePrimary != null ? (state.drumRowMembers?.get(activePrimary) ?? [activePrimary]) : [],
+      );
+    }
+
     controller.addEventListener("dblclick", (event) => {
       if (!state.scene || state.view.busy) return;
       const rect = controller.getBoundingClientRect();
@@ -885,6 +894,8 @@ export function attachTimeline(ctx) {
       const bubble = volumeBubbleAtMoment(state.scene, target, rect, {
         editing: true,
         viewportWidth: env.window?.innerWidth ?? 1440,
+        volumeLanes,
+        activeVolumeMembers: activeVolumeMemberSet(),
       });
       if (bubble) {
         event.preventDefault();
@@ -990,6 +1001,8 @@ export function attachTimeline(ctx) {
             const bubble = hovered != null
               ? volumeBubbleAtMoment(state.scene, hovered, controller.getBoundingClientRect(), {
                 viewportWidth: env.window?.innerWidth ?? 1440,
+                volumeLanes,
+                activeVolumeMembers: activeVolumeMemberSet(),
               })
               : null;
             ctx.ui()?.volumeBubble?.(bubble);

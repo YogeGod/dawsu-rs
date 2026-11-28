@@ -101,6 +101,7 @@ export function sameUiView(a, b) {
     (a.hitsoundLibrary || "") === (b.hitsoundLibrary || "") &&
     Object.is(a.offset ?? 0, b.offset ?? 0) &&
     (a.playbackStart ?? null) === (b.playbackStart ?? null) &&
+    (a.volumeScope || "hits") === (b.volumeScope || "hits") &&
     !!a.classicBrowser === !!b.classicBrowser &&
     sameDrumView(a.drumView, b.drumView) &&
     !!a.drumVst?.loaded === !!b.drumVst?.loaded &&

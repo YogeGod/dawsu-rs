@@ -234,7 +234,7 @@ fn typed_scene_serializes_hit_shapes_and_static_overlay_fields() {
             value: None, volume_lanes: None, visible_rows: None, button: None, shift: false, ctrl: false, alt: false,
         }.run(&mut app);
     }
-    Action::VolumeScope { path: doc_path.clone(), lanes: Some(vec![custom_key]) }.run(&mut app);
+    Action::VolumeScope { path: doc_path.clone(), mode: None, lanes: Some(vec![custom_key]) }.run(&mut app);
     Action::Volume { value: 45, relative: false }.run(&mut app);
 
     // Also add the orphaned clap hit at 1500 ms to the selection (selected, [row, true]).

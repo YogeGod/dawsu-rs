@@ -178,7 +178,7 @@ test("lane selection scopes volume independently of hit selection and skips invi
   `);
   evaluate("inspectorAction('scope', 'selected')");
   await evaluate("pending");
-  assert.deepEqual(calls.pop().action, {kind: "volume_scope", path: "Scope.osu", lanes: []});
+  assert.deepEqual(calls.pop().action, {kind: "volume_scope", path: "Scope.osu", mode: "selected", lanes: []});
   const click = (row, event = {}) => headerAction(evaluate, "select", rowAt(evaluate, row), event);
   click(0);
   await evaluate("pending");
@@ -186,7 +186,7 @@ test("lane selection scopes volume independently of hit selection and skips invi
   click(2, {shiftKey: true});
   await evaluate("pending");
   assert.deepEqual(calls.splice(0).map(call => call.action), [
-    {kind: "volume_scope", path: "Scope.osu", lanes: ["A", "C", "D"]},
+    {kind: "volume_scope", path: "Scope.osu", mode: "selected", lanes: ["A", "C", "D"]},
   ]);
   assert.equal(evaluate("scene.selection.count"), 2);
   assert.ok(headerRows(evaluate)[1].selected);

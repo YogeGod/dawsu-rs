@@ -678,3 +678,194 @@ fn move_rows_in_view_steps_through_empty_visible_lanes_in_visual_order() {
     assert!(c.hitsounds().moments()[k1.moment].has_hit(&lane1));
     assert!(c.hitsounds().moments()[k2.moment].has_hit(&lane1));
 }
+
+#[test]
+fn placing_and_vertical_dragging_new_hit_on_existing_object_preserves_sibling_volumes() {
+    use dawsu_editor::keys::Mods;
+    use dawsu_editor::tempo::{TempoMap, TimingSection};
+    use dawsu_editor::tools::{PointerButton, PointerInput, PointerSurface, ToolBox, ToolKind, ToolTarget};
+    use dawsu_editor_composer::{BatchHit, BatchOptions, HitKey};
+    use std::collections::BTreeSet;
+
+    // 1. Draw single-click on existing 100% object with insert_volume = 60 => (100, 60).
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    let clap_row = c.lanes.iter().position(|l| *l == clap()).unwrap() as i32;
+    c.insert_volume = 60;
+    let mut tools = ToolBox::new();
+    tools.select_tool(ToolKind::Draw, &mut c);
+    let ptr = |ms: f64, y: f64| PointerInput {
+        time: SongTime::from_ms(ms),
+        row: clap_row,
+        row_value: None,
+        surface: PointerSurface::Grid,
+        button: PointerButton::Left,
+        mods: Mods::NONE,
+        click_count: 1,
+        x: 0.0,
+        y,
+    };
+    tools.down(&mut c, ptr(1000.0, 200.0));
+    tools.up(&mut c, ptr(1000.0, 200.0));
+    assert_eq!(normal_and_clap(&c, &normal), (100, 60), "single-click Draw must use insert_volume without touching sibling");
+
+    // Undo removes clap while leaving normal untouched; Redo restores (100, 60).
+    c.undo();
+    assert!(!c.hitsounds().moments()[0].has_hit(&clap()));
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&normal), 100);
+    c.redo();
+    assert_eq!(normal_and_clap(&c, &normal), (100, 60));
+
+    // 2. Vertical drag on a new hit over an existing 100% object adjusts ONLY the new hit.
+    let whistle = SampleIdentity::Standard {
+        set: SampleSet::Normal,
+        sound: Sound::Hit(Hitsound::Whistle),
+        index: CustomIndex::new(0),
+    };
+    let whistle_row = c.lanes.iter().position(|l| *l == whistle).unwrap() as i32;
+    c.insert_volume = 80;
+    let wptr = |ms: f64, y: f64| PointerInput { row: whistle_row, ..ptr(ms, y) };
+    tools.down(&mut c, wptr(1000.0, 200.0));
+    // Drag straight up past 18 px deadzone to change only whistle.
+    tools.moved(&mut c, wptr(1000.0, 110.0));
+    let expected_whistle = c.hitsounds().moments()[0].hit_volume(&whistle);
+    assert_ne!(expected_whistle, 80, "vertical drag should change new hit volume");
+    assert_eq!(normal_and_clap(&c, &normal), (100, 60), "vertical drag must NOT move sibling hits at the same moment");
+    tools.up(&mut c, wptr(1000.0, 110.0));
+    assert_eq!(normal_and_clap(&c, &normal), (100, 60));
+
+    // Escape cancel during vertical drag rolls back only cleanly leaving (100, 60).
+    let finish = SampleIdentity::Standard {
+        set: SampleSet::Normal,
+        sound: Sound::Hit(Hitsound::Finish),
+        index: CustomIndex::new(0),
+    };
+    let finish_row = c.lanes.iter().position(|l| *l == finish).unwrap() as i32;
+    let fptr = |ms: f64, y: f64| PointerInput { row: finish_row, ..ptr(ms, y) };
+    tools.down(&mut c, fptr(1500.0, 200.0));
+    tools.moved(&mut c, fptr(1500.0, 120.0));
+    tools.cancel(&mut c);
+    assert!(!c.hitsounds().moments()[1].has_hit(&finish));
+    assert_eq!(c.hitsounds().moments()[1].hit_volume(&normal), 100);
+
+    // 3. Stroke::Paint skips pre-existing hit within 5 ms (at 1503.0 ms) during horizontal+vertical drag.
+    let mut c2 = composer();
+    c2.tempo = TempoMap::new(vec![TimingSection {
+        beat_length_ms: 500.0,
+        ..TimingSection::DEFAULT
+    }]);
+    let clap_row2 = c2.lanes.iter().position(|l| *l == clap()).unwrap() as i32;
+    let whistle_row2 = c2.lanes.iter().position(|l| *l == whistle).unwrap() as i32;
+    let normal2 = c2.hitsounds().moments()[0].hits().next().unwrap().clone();
+    c2.add(1503.0, clap(), 55, 0.0);
+    assert_eq!(c2.hitsounds().moments().iter().find(|m| (m.time().ms() - 1503.0).abs() < 0.1).unwrap().hit_volume(&clap()), 55);
+    c2.insert_volume = 90;
+    let mut t2 = ToolBox::new();
+    t2.select_tool(ToolKind::Draw, &mut c2);
+    t2.down(&mut c2, PointerInput { row: clap_row2, ..ptr(1000.0, 200.0) });
+    // Drag from 1000 -> 1500 ms (snapped 1500 is 3 ms from pre-existing 1503 ms clap) and move vertically past deadzone.
+    t2.moved(&mut c2, PointerInput { row: clap_row2, ..ptr(1500.0, 100.0) });
+    t2.up(&mut c2, PointerInput { row: clap_row2, ..ptr(1500.0, 100.0) });
+    assert_eq!(
+        c2.hitsounds().moments().iter().find(|m| (m.time().ms() - 1503.0).abs() < 0.1).unwrap().hit_volume(&clap()),
+        55,
+        "Stroke::Paint must not sweep pre-existing hit 3 ms away into vertical-drag created set"
+    );
+    let _ = (whistle_row2, normal2);
+
+    // 4. Move and copy/paste onto an existing 100% object preserve per-hit volume.
+    let mut c3 = composer();
+    c3.insert_volume = 60;
+    let mut t3 = ToolBox::new();
+    t3.select_tool(ToolKind::Draw, &mut c3);
+    t3.down(&mut c3, ptr(1500.0, 200.0)); // adds 60% clap on 1500 ms
+    t3.up(&mut c3, ptr(1500.0, 200.0));
+    let k_1500 = HitKey { moment: 1, lane: clap() };
+    c3.selected.replace([k_1500]);
+    c3.copy();
+    c3.paste(1000.0);
+    assert_eq!((c3.hitsounds().moments()[0].hit_volume(&normal), c3.hitsounds().moments()[0].hit_volume(&clap())), (100, 60));
+
+    // Drag-move via move_by_in_view of 40% whistle onto 100% circle at 1000 ms.
+    c3.add(1500.0, whistle.clone(), 100, 0.0);
+    c3.selected.replace([HitKey { moment: 1, lane: whistle.clone() }]);
+    assert!(c3.volume_for_selected_hits(40, false));
+    assert_eq!(c3.hitsounds().moments()[1].hit_volume(&whistle), 40);
+    let k_w1500 = HitKey { moment: 1, lane: whistle.clone() };
+    c3.begin("Move");
+    c3.move_by_in_view(&[k_w1500], -500.0, 0, None);
+    c3.commit();
+    assert_eq!(c3.hitsounds().moments()[0].hit_volume(&whistle), 40);
+    assert_eq!(c3.hitsounds().moments()[0].hit_volume(&normal), 100);
+
+    // 5. add_batch inherits existing object volume (100%) while empty moments use insert_volume (65%).
+    let mut c4 = composer();
+    c4.insert_volume = 65;
+    c4.add_batch("Batch", &[
+        BatchHit { time: 1000.0, lane: clap(), strength: 1.0, grid: Some(1000.0) },
+        BatchHit { time: 2000.0, lane: clap(), strength: 1.0, grid: Some(2000.0) },
+    ], &BatchOptions::default()).unwrap();
+    assert_eq!(normal_and_clap(&c4, &normal), (100, 100));
+    assert_eq!(c4.hitsounds().moments().last().unwrap().hit_volume(&clap()), 65);
+
+    // 6. alternate_lane_hits preserves per-hit volume over a 100% sibling.
+    let mut c5 = composer();
+    c5.add(1000.0, whistle.clone(), 100, 5.0);
+    c5.add(1500.0, whistle.clone(), 100, 5.0);
+    c5.selected.replace([
+        HitKey { moment: 0, lane: whistle.clone() },
+        HitKey { moment: 1, lane: whistle.clone() },
+    ]);
+    assert!(c5.volume_for_lanes(60, false, Some(&BTreeSet::from([whistle.clone()]))));
+    assert_eq!(c5.alternate_lane_hits(&whistle, &clap()), 1);
+    assert_eq!(c5.hitsounds().moments()[1].hit_volume(&normal), 100);
+    assert_eq!(c5.hitsounds().moments()[1].hit_volume(&clap()), 60);
+}
+
+#[test]
+fn volume_for_selected_hits_edits_only_selected_hits_with_floor_and_bounds_safety() {
+    use dawsu_editor_composer::HitKey;
+
+    let mut c = composer();
+    let normal = c.hitsounds().moments()[0].hits().next().unwrap().clone();
+    c.add(1000.0, clap(), 100, 5.0);
+    c.selected.replace([HitKey { moment: 0, lane: clap() }]);
+    assert!(c.volume_for_selected_hits(60, false));
+    c.add(1500.0, clap(), 100, 5.0);
+    c.selected.replace([HitKey { moment: 1, lane: clap() }]);
+    assert!(c.volume_for_selected_hits(40, false));
+
+    // Selecting only moment 0 clap edits only that hit (leaving moment 0 normal & moment 1 clap intact).
+    c.selected.replace([HitKey { moment: 0, lane: clap() }]);
+    assert!(c.volume_for_selected_hits(30, false));
+    assert_eq!((c.hitsounds().moments()[0].hit_volume(&normal), c.hitsounds().moments()[0].hit_volume(&clap())), (100, 30));
+    assert_eq!(c.hitsounds().moments()[1].hit_volume(&clap()), 40);
+
+    // Relative change + floor clamp (0% -> 5%) + no-op skips undo commit.
+    assert!(c.volume_for_selected_hits(-10, true));
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&clap()), 20);
+    assert!(c.volume_for_selected_hits(0, false));
+    assert_eq!(c.hitsounds().moments()[0].hit_volume(&clap()), 5);
+    assert!(!c.volume_for_selected_hits(5, false));
+
+    // Stale or out-of-range HitKeys are skipped without panicking.
+    c.selected.replace([
+        HitKey { moment: 999, lane: clap() },
+        HitKey { moment: 1, lane: SampleIdentity::File("missing.wav".into()) },
+    ]);
+    assert!(!c.volume_for_selected_hits(50, false));
+
+    // Equalizing all hits at a two-hit moment collapses overrides into moment.volume().
+    c.selected.replace([HitKey { moment: 0, lane: clap() }]);
+    assert!(c.volume_for_selected_hits(100, false));
+    assert_eq!(c.hitsounds().moments()[0].volume(), 100);
+    assert!(!c.hitsounds().moments()[0].has_hit_volume_overrides());
+
+    // Editing a single-hit moment also updates moment.volume() without leaving stale overrides.
+    let mut single = composer();
+    let single_lane = single.hitsounds().moments()[0].hits().next().unwrap().clone();
+    single.selected.replace([HitKey { moment: 0, lane: single_lane }]);
+    assert!(single.volume_for_selected_hits(55, false));
+    assert_eq!(single.hitsounds().moments()[0].volume(), 55);
+    assert!(!single.hitsounds().moments()[0].has_hit_volume_overrides());
+}
