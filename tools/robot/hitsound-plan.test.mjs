@@ -42,10 +42,16 @@ for (const path of maps) {
   });
 }
 
-test("the map's own samples are used when every file of a section is there", () => {
-  const bytes = readFileSync(maps[0]);
-  const files = new Set(["soft-hitnormal.wav", "soft-hitclap.wav", "soft-hitfinish.wav", "soft-hitwhistle.wav"]);
-  const plan = planHitsounds(bytes, files);
-  assert.equal(plan.index.calm, 1);
-  assert.equal(plan.index.kiai, 0);
+test("each moment uses the custom index of the green line in force there", () => {
+  for (const map of maps) {
+    const bytes = readFileSync(map);
+    const lines = controlPoints(readOsu(bytes));
+    for (const moment of planHitsounds(bytes, new Set()).moments) {
+      const want = lines.sampleAt(moment.exact + 5).index ?? 0;
+      for (const layer of moment.layers) {
+        assert.equal(layer.index, want, `${map} ${moment.time} ms`);
+        assert.equal(layer.lane, `${layer.bank}-${layer.sound}${want >= 2 ? want : ""}`);
+      }
+    }
+  }
 });

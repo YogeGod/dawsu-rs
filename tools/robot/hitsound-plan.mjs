@@ -14,8 +14,7 @@
 //     line can hold: ConvertHitObjectParser.cs:197-238);
 //   - volumes by weight: downbeat 80%, other beats 70%, half beats 55%, the rest 40%, kiai +10%,
 //     never under 5% (the project rule; lazer's floor is DrawableHitObject.cs:186);
-//   - the map's own sample files (custom index 1) when the mapset has every file a section uses,
-//     otherwise osu!'s default skin sounds (index 0).
+//   - the custom index the map's green line gives at that moment, so no new green line is needed.
 import { controlPoints, readOsu, soundMoments } from "./osu-sounds.mjs";
 
 export const DIVISORS = [1, 2, 3, 4, 6, 8, 12, 16];
@@ -48,7 +47,6 @@ export function chooseWindow(moments, lines, length = 30000) {
   return { start, end: start + length, kiaiStart: kiai?.time ?? null };
 }
 
-const fileFor = (name, mapFiles) => ["wav", "ogg", "mp3"].some(ext => mapFiles.has(`${name}.${ext}`));
 
 /**
  * The plan for a gameplay difficulty's bytes and the mapset's file names (lower case):
@@ -66,9 +64,12 @@ export function planHitsounds(referenceBytes, mapFiles, { length = 30000, indexe
   };
   const lanesOf = set => [`${set.normal}-hitnormal`, `${set.additions}-hitclap`, `${set.additions}-hitfinish`,
     ...(set.whistle ? [`${set.additions}-hitwhistle`] : [])];
-  // One custom index per section, so every layer of a moment shares it and the circle's own line can hold it.
-  const indexFor = set => lanesOf(set).every(name => fileFor(name, mapFiles)) ? 1 : 0;
-  const index = { calm: indexes.calm ?? indexFor(sets.calm), kiai: indexes.kiai ?? indexFor(sets.kiai) };
+  // The custom index each moment plays: the green line's in force there, so the circle's own line
+  // holds it and Save needs no new green line (index 0 on a circle means "the green line's index",
+  // so a skin sound under a green line with index 1 or 2 would need a line of its own).
+  // indexes: { calm, kiai } forces a section's index instead.
+  const lineIndex = time => lines.sampleAt(time + 5).index ?? 0;
+  const index = { calm: indexes.calm ?? null, kiai: indexes.kiai ?? null };
 
   const byTime = new Map();
   const skipped = [];
@@ -95,7 +96,9 @@ export function planHitsounds(referenceBytes, mapFiles, { length = 30000, indexe
     const section = kiai ? "kiai" : "calm";
     const set = sets[section];
     const why = [];
-    const layer = (sound, bank) => ({ lane: `${bank}-${sound}`, bank, sound, index: index[section] });
+    const at = index[section] ?? lineIndex(entry.exact);
+    // Lanes of index 2 and up carry the number in their name (soft-hitnormal2); index 0 and 1 share it.
+    const layer = (sound, bank) => ({ lane: `${bank}-${sound}${at >= 2 ? at : ""}`, bank, sound, index: at });
     const layers = [layer("hitnormal", set.normal)];
     const meter = 4;
     const backbeat = where.onBeat && (where.barBeat % 2 === 1);

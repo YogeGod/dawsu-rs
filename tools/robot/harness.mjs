@@ -316,6 +316,12 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
     expect(await button.count(), `${menu} has no "${row}" row`);
     expect(await button.isEnabled(), `${menu} › ${row} is disabled`);
     await button.click();
+    // A switch row (Protect hitnormals, Used lanes only) leaves the menu open; close it unless a dialog took over.
+    await sleep(150);
+    if (await read(() => !document.getElementById("editor-menu").hidden && !document.getElementById("dialog").open).catch(() => false)) {
+      await page().keyboard.press("Escape");
+      await sleep(100);
+    }
   }
   /** Run a Ctrl+K command palette entry by its label. */
   async function palette(label) {
@@ -384,9 +390,9 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
     throw new Error(`the action did not finish (dialogs seen: ${seen.join(", ") || "none"})`);
   }
 
-  async function save() {
+  async function save({ refuse = null } = {}) {
     await page().click("#save");
-    const seen = await answerDialogs(() => !window.view.dirty && !window.view.busy);
+    const seen = await answerDialogs(() => !window.view.dirty && !window.view.busy, { refuse });
     expect(!(await read(() => window.view.dirty)), "the editor still shows unsaved changes after Save");
     return seen;
   }

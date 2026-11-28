@@ -126,18 +126,12 @@ try {
     else await palette("Show 12 default lanes");
     await until(() => window.scene.laneOrder.length >= 12, null, "the 12 default lanes did not show");
     let lanes = await sceneLanes();
-    // A section that wants the map's own files (index 1) uses the skin when the editor shows no such lane.
-    const missing = section => plan.moments.filter(m => (m.kiai ? "kiai" : "calm") === section)
-      .some(m => m.layers.some(l => !lanes.some(lane => lane.name === l.lane && lane.index === l.index)));
+    // Each layer plays the custom index of the green line at its moment (hitsound-plan.mjs); the
+    // editor must show a lane for it, or the robot would have to put the hit somewhere else.
     const notes = [];
-    const forced = {};
-    for (const section of ["calm", "kiai"]) {
-      if (plan.index[section] === 1 && missing(section)) {
-        notes.push(`${section}: no index-1 lanes shown, using the skin`);
-        forced[section] = 0;
-      }
-    }
-    if (Object.keys(forced).length) plan = planHitsounds(referenceBytes, mapFiles, { indexes: { ...plan.index, ...forced } });
+    const absent = [...new Set(plan.moments.flatMap(m => m.layers)
+      .filter(l => !lanes.some(lane => lane.name === l.lane && (lane.index ?? 0) === l.index)).map(laneKey))];
+    expect(!absent.length, `the editor shows no lane for ${absent.slice(0, 6).join(", ")}`);
     lanes = await sceneLanes();
     rows = new Map();
     for (const layer of plan.moments.flatMap(m => m.layers)) {
@@ -214,7 +208,15 @@ try {
   }, { covers: ["F049"] });
 
   await step("Save, through the save review", async () => {
-    const seen = await save();
+    // A "Save hitsounds: N problems" box means the file would not hold what the editor shows: fail, never Continue.
+    let seen;
+    try {
+      seen = await save({ refuse: /problems?$/i });
+    } catch (error) {
+      if (!error.refused) throw error;
+      await page().keyboard.press("Escape");
+      throw new Error(`Save found problems: ${error.message.slice(0, 300)}`);
+    }
     savedHits = await hits();
     return seen.join("; ") || "no review shown";
   }, { stops: true, covers: ["F048", "F050"] });
@@ -261,6 +263,7 @@ try {
       const theirs = result.hit_objects.map(o => ({ time: o.start_time, samples: o.samples.map(s => s.kind === "file"
         ? `map:${s.filename}@${s.volume}` : `${playedFile({ name: s.name, bank: s.bank, index: s.custom_sample_bank }, files)}@${s.volume}`).sort() }));
       const mine = soundMoments(readFileSync(hsPath)).map(m => ({ time: m.time, samples: m.samples.map(s => `${playedFile(s, files)}@${s.volume}`).sort() }));
+      expect(theirs.length > 0, "the saved difficulty has no objects for lazer to play");
       expect(theirs.length === mine.length, `lazer has ${theirs.length} objects, the robot ${mine.length}`);
       const differ = mine.filter((m, i) => Math.abs(m.time - theirs[i].time) > 0.5 || JSON.stringify(m.samples) !== JSON.stringify(theirs[i].samples));
       expect(!differ.length, `${differ.length} moments differ, first at ${differ[0]?.time} ms`);

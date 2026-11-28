@@ -116,13 +116,40 @@ function defineSteps(robot, picked) {
     await showTime(time, { zoom: Math.max(0.5, await read(() => window.scene.zoom)) });
     await showRow(row);
     const count = await hitCount();
-    const point = await at(time, row);
-    await page().mouse.click(point.x, point.y);
-    const landed = await until(([count, row]) => {
+    const landedOn = () => until(([count, row]) => {
       if (window.scene.moments.reduce((sum, m) => sum + m[3].length, 0) !== count + 1) return null;
       return window.scene.moments.filter(([, , , list]) => list.some(([r]) => r === row)).map(([t]) => t);
     }, [count, row], `no hit appeared at ${time} ms`, 4000);
-    return landed;
+    // One retry: a click right after a tool or view change can be swallowed.
+    for (let attempt = 0; ; attempt++) {
+      const point = await at(time, row);
+      await page().mouse.click(point.x, point.y);
+      try { return await landedOn(); } catch (error) {
+        if (attempt >= 1 || await hitCount() !== count) throw error;
+        await sleep(300);
+      }
+    }
+  }
+  // Click "Review output" on an output dialog, then wait until the job has really started (busy, or
+  // the next dialog) before answering dialogs: right after the click `view.busy` is still false.
+  async function reviewOutput(from) {
+    await dialogButton("Review output").click();
+    await until(from => window.view.busy || window.view.review
+      || (document.getElementById("dialog").open && document.getElementById("dialog-title").textContent !== from),
+      from, "the output job did not start", 10000).catch(() => {});
+  }
+  // Add lane (the row under the lane list): show a lane with no hits for throwaway hits. Returns its row or -1.
+  async function addScratchLane() {
+    const shownBefore = await read(() => Array.from(document.querySelectorAll("#lanes [data-lane-row]"), el => el.dataset.laneRow));
+    await page().click("#add-lane");
+    await dialogShown("Add lane");
+    if (!(await dialogButton("Add").count())) { await page().keyboard.press("Escape"); return -1; }
+    await dialogButton("Add").click();
+    return until(([n, shown]) => {
+      const rows = Array.from(document.querySelectorAll("#lanes [data-lane-row]"), el => el.dataset.laneRow);
+      const fresh = rows.find(row => !shown.includes(row) && !window.scene.lanes[Number(row)]?.hitCount);
+      return fresh !== undefined ? { row: Number(fresh) } : null;
+    }, [0, shownBefore], "Add lane showed no new empty lane", 6000).then(found => found.row, () => -1);
   }
   async function clickHit(time, row) {
     await showTime(time);
@@ -225,14 +252,15 @@ function defineSteps(robot, picked) {
     }
     // A lane the map does not use, so throwaway hits never touch the map's own sounds.
     // Only a lane with a header on screen can be clicked; slider slide/tick rows have none.
-    const fallback = await read(() => {
+    let fallback = await read(() => {
       const shown = lane => !!document.querySelector(`#lanes [data-lane-row="${lane}"]`);
       const lanes = window.scene.lanes;
       const plain = (lane, row) => lane.hitCount === 0 && shown(row) && !/slider(slide|tick|whistle)/.test(lane.name);
       const whistle = lanes.findIndex((lane, row) => lane.name === "drum-hitwhistle" && (lane.index ?? 0) === 0 && plain(lane, row));
       return whistle >= 0 ? whistle : lanes.findIndex(plain);
     });
-    expect(fallback >= 0, "no empty lane with a header on screen for throwaway hits");
+    if (fallback < 0) fallback = await addScratchLane();
+    expect(fallback >= 0, "no empty lane with a header on screen for throwaway hits, and Add lane made none");
     const objects = soundMoments(osuBefore);
     // A spot away from every object (the widest gap in the middle half of the map), so a drawn hit
     // makes a moment of its own and takes the Insert volume (Composer::add joins a nearby moment).
@@ -417,12 +445,11 @@ function defineSteps(robot, picked) {
     const position = await read(() => window.view.position);
     expect(position > 0, "the playhead did not move from 0");
     const before = await read(() => window.scene.bookmarks.length);
+    // Map › Add bookmark adds one at the playhead straight away, with no dialog and no label.
     await fromMenu("Map", "Add bookmark");
-    await dialogShown("Add bookmark");
-    await page().locator("#dialog-body input").first().fill("robot");
-    await dialogButton("Add").click();
-    await until(([n, at]) => window.scene.bookmarks.length === n + 1 && window.scene.bookmarks.some(b => Math.abs(b.time - at) <= 1 && b.label === "robot"),
+    await until(([n, at]) => window.scene.bookmarks.length === n + 1 && window.scene.bookmarks.some(b => Math.abs(b.time - at) <= 1),
       [before, position], "the bookmark was not added at the playhead");
+    expect(!(await read(() => document.getElementById("dialog").open)), "Add bookmark opened a dialog");
     await fromMenu("Playback", "Go to start");
     await until(() => window.view.position === 0, null, "Go to start did not put the playhead at 0");
     for (let i = 0; i < 20; i++) {
@@ -448,17 +475,29 @@ function defineSteps(robot, picked) {
   });
 
   define("Used lanes only hides empty lanes and shows them again", ["F019"], async () => {
-    const visible = () => read(() => window.scene.laneOrder.map(row => window.scene.lanes[row]));
+    // The lane list on screen (scene.laneOrder keeps every row; the filter hides headers).
+    const visible = () => read(() => Array.from(document.querySelectorAll("#lanes [data-lane-row]"),
+      el => window.scene.lanes[Number(el.dataset.laneRow)]).filter(Boolean));
     const all = await visible();
     if (!all.some(lane => !lane.hitCount)) return { skip: "every lane on screen already has hits, so there is nothing to hide" };
-    await fromMenu("View", "Used lanes only");
-    const used = await until(n => window.scene.laneOrder.length !== n && window.scene.laneOrder.map(row => window.scene.lanes[row]), all.length,
-      "Used lanes only changed nothing");
-    const empty = used.filter(lane => !lane.hitCount);
-    expect(!empty.length, `empty lanes still shown: ${empty.map(l => l.name).join(", ")}`);
-    await fromMenu("View", "Used lanes only");
-    await until(n => window.scene.laneOrder.length === n, all.length, "the hidden lanes did not come back");
-    return `${all.length} → ${used.length} → ${all.length} lanes`;
+    let on = false;
+    try {
+      await fromMenu("View", "Used lanes only");
+      on = true;
+      const used = await until(n => {
+        const shown = Array.from(document.querySelectorAll("#lanes [data-lane-row]"), el => window.scene.lanes[Number(el.dataset.laneRow)]).filter(Boolean);
+        return shown.length !== n && shown;
+      }, all.length, "Used lanes only changed nothing");
+      const empty = used.filter(lane => !lane.hitCount);
+      expect(!empty.length, `empty lanes still shown: ${empty.map(l => l.name).join(", ")}`);
+      await fromMenu("View", "Used lanes only");
+      on = false;
+      await until(n => document.querySelectorAll("#lanes [data-lane-row]").length === n, all.length, "the hidden lanes did not come back");
+      return `${all.length} → ${used.length} → ${all.length} lanes`;
+    } finally {
+      // Never leave the filter on: later steps need the empty lanes.
+      if (on) await fromMenu("View", "Used lanes only").catch(() => {});
+    }
   });
 
   define("Collapse sample layers folds and unfolds without touching hits", ["F018"], async () => {
@@ -596,7 +635,7 @@ function defineSteps(robot, picked) {
     const box = page().locator("#dialog-body label").filter({ hasText: `[${name}]` }).locator('input[type="checkbox"]').first();
     expect(await box.count(), `the Copy dialog does not list ${name}`);
     await box.check();
-    await dialogButton("Review output").click();
+    await reviewOutput("Copy hitsounds");
     // "Editor message" is a refusal (for example sample-mix fixes needed first): report it, never OK it.
     try {
       await answerDialogs(() => !window.view.busy && !window.view.review, { timeout: 60000, refuse: /^Editor message$/ });
@@ -631,7 +670,7 @@ function defineSteps(robot, picked) {
     const before = new Set(readdirSync(mapFolder));
     await fromMenu("Map", "Generate hitsound difficulty…");
     await dialogShown("Generate hitsound difficulty");
-    await dialogButton("Review output").click();
+    await reviewOutput("Generate hitsound difficulty");
     await answerDialogs(() => !window.view.busy && !window.view.review, { timeout: 90000 });
     const added = readdirSync(mapFolder).filter(name => !before.has(name));
     const osu = added.filter(name => /\.osu$/i.test(name));
@@ -653,7 +692,7 @@ function defineSteps(robot, picked) {
     await fromMenu("Map", "New hitsound difficulty…");
     await dialogShown("New difficulty");
     await page().locator("#dialog-body input").first().fill("Robot HS");
-    await dialogButton("Review output").click();
+    await reviewOutput("New difficulty");
     await answerDialogs(() => !window.view.busy && !window.view.review, { timeout: 30000 });
     const added = readdirSync(mapFolder).filter(name => !before.has(name));
     expect(added.length === 1 && /\[Robot HS\]\.osu$/.test(added[0]), `New difficulty added ${JSON.stringify(added)}`);
