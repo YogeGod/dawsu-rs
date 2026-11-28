@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   HOME_ROW_TAP_CODES,
   NUMPAD_TAP_CODES,
+  osuReloadFailedToast,
   osuReloadToast,
   resolveVisibleTapRow,
   tapAwareRecordToast,
@@ -50,6 +51,18 @@ test("tapAwareRecordToast explains keyboard tap recording when no MIDI port is a
 test("osuReloadToast shapes stable, lazer external edit, and fallback outcomes cleanly", () => {
   assert.equal(osuReloadToast({ status: "reloaded_stable", message: "Sent Ctrl+L" }).tone, "success");
   assert.equal(osuReloadToast({ status: "lazer_external_edit", message: "Click Finish" }).title, "osu!lazer external edit");
-  assert.equal(osuReloadToast({ status: "no_matching_window", message: "Not open" }).tone, "info");
   assert.equal(osuReloadToast(null), null);
+});
+
+test("osuReloadToast warns that osu! was not reloaded for every other status and a rejected call", () => {
+  for (const status of ["no_matching_window", "focus_blocked", "title_mismatch", "ambiguous", "unsupported_platform"]) {
+    const toast = osuReloadToast({ status, message: `why ${status}` });
+    assert.equal(toast.tone, "warning", status);
+    assert.equal(toast.title, "osu! was not reloaded", status);
+    assert.equal(toast.body, `why ${status}`, status);
+  }
+  const rejected = osuReloadFailedToast(new Error("IPC down"));
+  assert.equal(rejected.tone, "warning");
+  assert.equal(rejected.title, "osu! was not reloaded");
+  assert.match(rejected.body, /IPC down/);
 });

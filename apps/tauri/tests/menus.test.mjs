@@ -366,6 +366,27 @@ function editItem(get, label) {
   return menuButtons(get("editor-menu")).find(item => item.textContent === label);
 }
 
+test("File › Reload in osu! raises the same toasts as Save: success, or a warning on any refusal or a failed call", async () => {
+  const { get, window, responses, menusApi } = fixture();
+  const toasts = [];
+  window.showToast = toast => toasts.push([toast.tone, toast.title, toast.body]);
+  responses.reload_osu_editor = { status: "reloaded_stable", message: "Sent Ctrl+L" };
+  await menusApi.menuCalls.reloadInOsu();
+  for (const status of ["no_matching_window", "focus_blocked", "title_mismatch", "ambiguous"]) {
+    responses.reload_osu_editor = { status, message: `why ${status}` };
+    await menusApi.menuCalls.reloadInOsu();
+  }
+  responses.reload_osu_editor = () => Promise.reject(new Error("boom"));
+  await menusApi.menuCalls.reloadInOsu();
+  assert.deepEqual(toasts, [
+    ["success", "Reloaded in osu!", "Sent Ctrl+L"],
+    ...["no_matching_window", "focus_blocked", "title_mismatch", "ambiguous"]
+      .map(status => ["warning", "osu! was not reloaded", `why ${status}`]),
+    ["warning", "osu! was not reloaded", "boom"],
+  ]);
+  assert.match(get("status").textContent, /boom/);
+});
+
 test("Place sound set lists this map's sets, then the library, and places one by its id", async () => {
   const { get, calls, modals, responses } = fixture();
   responses.sound_set_action = { configured: true, sets: [

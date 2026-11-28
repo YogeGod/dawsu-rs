@@ -1,5 +1,6 @@
 import * as registry from "../lib/registry.js";
 import { applyAllConfirm, applyToast, askFirst, confirmCaptureFirst } from "../lib/sharedBase.js";
+import { osuReloadFailedToast, osuReloadToast } from "../lib/tapRecord.js";
 
 export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bridgeOverride = registry, session = null } = {}) {
   const doc = env.document;
@@ -203,15 +204,12 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
     openFromOsu: () => openFromOsu(),
     reloadInOsu: () => invoke("reload_osu_editor").then((res) => {
       if (!res) return;
-      const tone = res.status === "reloaded_stable" ? "success" : "info";
-      const title = res.status === "reloaded_stable"
-        ? "Reloaded in osu!"
-        : res.status === "lazer_external_edit"
-          ? "osu!lazer external edit"
-          : "Reload in osu!";
-      notifyToast({ tone, title, body: res.message });
+      notifyToast(osuReloadToast(res));
       $("status").textContent = res.message;
-    }).catch((error) => { $("status").textContent = String(error); }),
+    }, (error) => {
+      notifyToast(osuReloadFailedToast(error));
+      $("status").textContent = String(error);
+    }),
     goHome: () => goHome(),
     openFolders: () => openFolders(),
     openViewSettings: () => openViewSettings(),

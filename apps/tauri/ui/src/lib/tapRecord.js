@@ -55,5 +55,10 @@ export function osuReloadToast(result) {
   if (result.status === "lazer_external_edit") {
     return { tone: "info", title: "osu!lazer external edit", body: result.message };
   }
-  return { tone: "info", title: "Reload in osu!", body: result.message };
+  return { tone: "warning", title: "osu! was not reloaded", body: result.message };
+}
+
+// The same warning when the reload_osu_editor call itself was rejected.
+export function osuReloadFailedToast(error) {
+  return { tone: "warning", title: "osu! was not reloaded", body: String(error?.message ?? error) };
 }
