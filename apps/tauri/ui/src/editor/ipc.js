@@ -48,6 +48,7 @@ export function attachIpc(ctx) {
       }
       // A wheel zoom or pan held back while the editor answered goes now.
       ctx.flushWheel?.();
+      if (state.requests === 0) pullOwedState();
     });
     state.pending = result;
     return result;
@@ -219,7 +220,8 @@ export function attachIpc(ctx) {
         ...before,
         position,
         playing: frame.playing,
-        busy: frame.busy,
+        // busy is left to the pull below: update() and show() read a busy change to refresh the
+        // chrome, so writing it here first made them skip that and left every document button off.
         bpmCenti: frame.bpmCenti,
         meterNum: frame.meterNum,
         meterDen: frame.meterDen,
@@ -246,17 +248,26 @@ export function attachIpc(ctx) {
       try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
     }
 
-    if (needsStatePull && !state.requests && !state.refreshing && !state.telemetryPullPending) {
-      state.telemetryPullPending = true;
-      const drawSeq = state.drawHitSeq ?? 0;
-      ctx.run(() => ctx.update(null, false, drawSeq)).finally(() => {
-        state.telemetryPullPending = false;
-        if (state.quitAfterSave && !state.view.busy && !state.view.saveProblemReview) {
-          state.quitAfterSave = false;
-          if (!state.view.dirty && !state.view.error) ctx.run(() => invoke("close_editor", { discard: false }));
-        }
-      });
-    }
+    // The frame above already wrote busy/playing into view, so a later frame sees no change (and
+    // while stopped none may come): keep a pull this frame could not start owed until one runs, or
+    // the chrome stays as it was (every document button disabled after a Save that finished while
+    // another request was in flight). run() retries it when its last request ends.
+    if (needsStatePull) state.telemetryPullOwed = true;
+    pullOwedState();
+  }
+
+  function pullOwedState() {
+    if (!state.telemetryPullOwed || state.requests || state.refreshing || state.telemetryPullPending) return;
+    state.telemetryPullOwed = false;
+    state.telemetryPullPending = true;
+    const drawSeq = state.drawHitSeq ?? 0;
+    ctx.run(() => ctx.update(null, false, drawSeq)).finally(() => {
+      state.telemetryPullPending = false;
+      if (state.quitAfterSave && !state.view.busy && !state.view.saveProblemReview) {
+        state.quitAfterSave = false;
+        if (!state.view.dirty && !state.view.error) ctx.run(() => invoke("close_editor", { discard: false }));
+      }
+    });
   }
 
   function startTelemetry() {
