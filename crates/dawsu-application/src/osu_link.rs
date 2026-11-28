@@ -509,6 +509,10 @@ trait OsuWindowSystem {
     fn bring_forward(&mut self, hwnd: isize) -> bool;
     fn sleep_ms(&mut self, ms: u64);
     fn key(&mut self, vk: u16, up: bool);
+    /// True when `dialog` is a standard dialog box owned by `owner` (osu!'s own prompts).
+    fn is_dialog_of(&mut self, _dialog: isize, _owner: isize) -> bool {
+        false
+    }
 }
 
 /// Holds Ctrl down while alive and releases it on drop, so no exit path (focus loss, panic)
@@ -594,7 +598,13 @@ fn reload_stable_with<S: OsuWindowSystem>(sys: &mut S, id: &SavedMapIdentity) ->
     {
         let ctrl = CtrlGuard::press(sys);
         for _ in 0..10 {
-            if ctrl.0.foreground() != hwnd {
+            let foreground = ctrl.0.foreground();
+            // osu!stable's editor answers Ctrl+L with its own "Revert file to last saved state?"
+            // dialog: that is the prompt the Enter below answers, not lost focus.
+            if foreground != hwnd && ctrl.0.is_dialog_of(foreground, hwnd) {
+                break;
+            }
+            if foreground != hwnd {
                 return reload_result(
                     "focus_blocked",
                     "osu! lost focus during the reload. Switch to osu! and press Ctrl+L to reload.",
@@ -605,7 +615,11 @@ fn reload_stable_with<S: OsuWindowSystem>(sys: &mut S, id: &SavedMapIdentity) ->
         }
     }
     sys.sleep_ms(100);
-    if let Some(refused) = recheck_osu_window(sys, hwnd, id, "Ctrl+L was sent, Enter was not.") {
+    let foreground = sys.foreground();
+    let revert_prompt = foreground != hwnd && sys.is_dialog_of(foreground, hwnd);
+    if !revert_prompt
+        && let Some(refused) = recheck_osu_window(sys, hwnd, id, "Ctrl+L was sent, Enter was not.")
+    {
         return refused;
     }
     sys.key(VK_RETURN, false);
@@ -666,6 +680,8 @@ mod win32 {
         pub fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
         pub fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
         pub fn SendInput(count: u32, inputs: *const WinInput, size: i32) -> u32;
+        pub fn GetWindow(hwnd: isize, cmd: u32) -> isize;
+        pub fn GetClassNameW(hwnd: isize, buf: *mut u16, max: i32) -> i32;
     }
 
     pub fn window_text(hwnd: isize) -> Option<String> {
@@ -719,6 +735,16 @@ impl OsuWindowSystem for Win32Windows {
 
     fn sleep_ms(&mut self, ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+
+    fn is_dialog_of(&mut self, dialog: isize, owner: isize) -> bool {
+        const GW_OWNER: u32 = 4;
+        let mut class = [0u16; 16];
+        let len = unsafe { win32::GetClassNameW(dialog, class.as_mut_ptr(), class.len() as i32) };
+        // "#32770" is the standard dialog box class osu!stable's MessageBox prompts use.
+        len > 0
+            && String::from_utf16_lossy(&class[..len as usize]) == "#32770"
+            && unsafe { win32::GetWindow(dialog, GW_OWNER) } == owner
     }
 
     fn key(&mut self, vk: u16, up: bool) {
@@ -896,8 +922,12 @@ mod tests {
         at_first_sleep: Option<(isize, Option<String>)>,
         lose_focus_after_keys: Option<usize>,
         panic_on_l: bool,
+        /// osu!stable's editor answers Ctrl+L with its own "Revert file to last saved state?" dialog.
+        revert_dialog_after_l: bool,
         keys: Vec<(u16, bool)>,
     }
+
+    const OSU_DIALOG: isize = 13;
 
     impl FakeWindows {
         fn with_osu(title: &str) -> Self {
@@ -946,7 +976,25 @@ mod tests {
             if self.lose_focus_after_keys.is_some_and(|n| self.keys.len() >= n) {
                 self.foreground = OTHER;
             }
+            if self.revert_dialog_after_l && vk == VK_L && up {
+                self.foreground = OSU_DIALOG;
+            }
         }
+        fn is_dialog_of(&mut self, dialog: isize, owner: isize) -> bool {
+            self.revert_dialog_after_l && dialog == OSU_DIALOG && owner == OSU
+        }
+    }
+
+    #[test]
+    fn osu_link_reload_answers_the_osu_editor_s_own_revert_dialog_with_enter() {
+        // In osu!stable Ctrl+L opens a separate "Revert file to last saved state?" dialog window.
+        // The reload took that for focus loss and stopped: "Ctrl+L was sent, Enter was not."
+        let mut sys = FakeWindows::with_osu("osu!  - Artist - Song (Mapper) [Insane].osu");
+        sys.revert_dialog_after_l = true;
+        let res = reload_stable_with(&mut sys, &identity("Artist", "Song", "Insane"));
+        assert_eq!(res.status, "reloaded_stable", "{}", res.message);
+        assert_eq!(sys.count(VK_RETURN, false), 1);
+        assert_eq!(sys.count(VK_CONTROL, true), 1);
     }
 
     #[test]
