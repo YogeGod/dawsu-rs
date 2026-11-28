@@ -1793,7 +1793,16 @@ impl Application {
                             // the state Undo returns to.
                             let compiled = report.written;
                             let drawn = report.drawn;
+                            let mixed = report.mixed;
+                            let cleaned_greenlines = report.cleaned_greenlines > 0;
                             if self.document.as_ref().is_some_and(|d| d.path == path) {
+                                if let Some(d) = self.document.as_mut()
+                                    && !report.published_mixes.is_empty()
+                                {
+                                    d.files.extend(report.published_mixes);
+                                    d.files.sort();
+                                    d.files.dedup();
+                                }
                                 self.pending_published(&report.published_pending, &report.pending_kept);
                                 // The written difficulty replaces the timed copy, before the sweep.
                                 self.drop_autosave();
@@ -1808,7 +1817,7 @@ impl Application {
                                 d.left_out = report.left_out;
                                 // The difficulty is written, even when a step below returns early.
                                 self.checkpoint = (!crate::practice::is_practice_mapset_path(&path))
-                                    .then(|| recovery::Checkpoint::after_save(d, &compiled, &drawn, hs_mode));
+                                    .then(|| recovery::Checkpoint::after_save(d, &compiled, &drawn, mixed.as_ref(), cleaned_greenlines, hs_mode));
                                 if let Some(id) = &self.restored_recovery {
                                     match recovery::archive(&self.data_root, id) {
                                         Ok(()) => self.restored_recovery = None,
@@ -1855,7 +1864,7 @@ impl Application {
                             let document = self.document.as_mut().unwrap();
                             document.composer.mark_saved();
                             self.checkpoint = (!crate::practice::is_practice_mapset_path(&path))
-                                .then(|| recovery::Checkpoint::after_save(document, &compiled, &drawn, hs_mode));
+                                .then(|| recovery::Checkpoint::after_save(document, &compiled, &drawn, mixed.as_ref(), cleaned_greenlines, hs_mode));
                             let left_out = document.left_out.len();
                             let cleaned = report.cleaned_greenlines;
                             self.status = if archive_error.is_some() {
