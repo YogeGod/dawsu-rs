@@ -1,4 +1,5 @@
 import * as registry from "../lib/registry.js";
+import { PLAYBACK_SPEEDS } from "../lib/statusbar.js";
 import { applyAllConfirm, applyToast, askFirst, confirmCaptureFirst } from "../lib/sharedBase.js";
 import { osuReloadFailedToast, osuReloadToast } from "../lib/tapRecord.js";
 
@@ -17,7 +18,6 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
   const getDrag = () => (session ? session.state.drag : env.drag);
   const getDialog = () => (session ? session.elements.dialog : env.dialog);
   const getLanePositions = () => (session ? session.state.lanePositions : env.lanePositions);
-  const getSpeedButtons = () => (session ? session.elements.speedButtons : env.speedButtons);
   const getPlaybackStartChoices = () => (session ? session.playbackStartChoices : env.playbackStartChoices);
   const getDock = () => (session ? session.dock : env.dock);
   const notifyToast = toast => (env !== globalThis ? win?.showToast?.(toast) : bridgeOverride.showToast(toast));
@@ -142,7 +142,7 @@ export function initMenus(env = globalThis, { ui: uiOverride = null, bridge: bri
       choose: value => act({ kind: "playback_start", value }, false),
     },
     speed: {
-      list: () => getSpeedButtons().map(button => [Number(button.dataset.playbackSpeed), button.textContent.replace("%", "")]),
+      list: () => PLAYBACK_SPEEDS.map(speed => [speed, String(Math.round(speed * 100))]),
       current: () => getView().speed,
       choose: value => act({ kind: "speed", value }),
     },

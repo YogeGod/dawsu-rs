@@ -613,6 +613,23 @@ try {
     silent = true;
   });
 
+  await step("Playback › Speed lists six speeds and 75% sticks", async () => {
+    await openMenu("Playback");
+    const speeds = page().locator('#editor-menu [role=group][aria-label="Speed · pitch stays the same"] button');
+    const labels = await speeds.allTextContents();
+    expect(labels.length === 6, `the Speed submenu lists ${labels.length} rows: ${JSON.stringify(labels)}`);
+    await speeds.filter({ hasText: /^\s*75\s*$/ }).click({ timeout: 5000 });
+    await until(() => window.view.speed === 0.75, null, "picking 75% did not change the playback speed", 4000);
+    await page().keyboard.press("Escape");
+    await until(() => document.getElementById("editor-menu").hidden, null, "Escape did not close the Playback menu", 3000);
+    await until(() => document.querySelector("#playback-rates button[aria-pressed=true]")?.dataset.playbackSpeed === "0.75",
+      null, "the status bar's pressed speed is not 75%", 4000);
+    // Back to 100% so the later steps play at normal speed.
+    await page().locator('#playback-rates button[data-playback-speed="1"]').click({ timeout: 5000 });
+    await until(() => window.view.speed === 1, null, "the speed did not go back to 100%", 4000);
+    return `${labels.join(" | ")}; 75% pressed`;
+  });
+
   await step("Pick each of the seven tools", async () => {
     for (const tool of ["Draw", "Erase", "Mute", "Grab", "Range", "Ramp", "Select"]) await pickTool(tool);
   });

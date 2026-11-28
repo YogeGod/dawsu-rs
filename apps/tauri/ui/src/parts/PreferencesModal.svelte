@@ -4,6 +4,7 @@
   import { invoke } from "../lib/ipc.js";
   import { keyInput } from "../editor/helpers.js";
   import { readPort, writePort } from "../lib/midi.js";
+  import { canApply } from "../lib/audioPrefs.js";
   import {
     applyColorConfig, defaultColorConfig, readColorConfig, writeColorConfig,
   } from "../lib/theme.js";
@@ -57,7 +58,10 @@
   let selectedBackend = $state("");
   let selectedDevice = $state("");
   let bufferMs = $state("");
-  let audioError = $state("");
+  // From audio_outputs: disables the Device select.
+  let loadError = $state("");
+  // From the last Apply: shown until the next edit, disables nothing.
+  let applyError = $state("");
 
   // MIDI Input & VST3 state: the port MIDI Record arms is kept in localStorage (lib/midi.js).
   let midiPorts = $state([]);
@@ -130,15 +134,16 @@
   }
 
   async function loadAudio(backend = null) {
+    applyError = "";
     try {
       const cfg = await invoke("audio_outputs", { backend });
       audioConfig = cfg;
       selectedBackend = cfg?.backend ?? "";
       selectedDevice = cfg?.device ?? "";
       bufferMs = cfg?.bufferMs == null ? "" : String(cfg.bufferMs);
-      audioError = cfg?.error ?? "";
+      loadError = cfg?.error ?? "";
     } catch (err) {
-      audioError = String(err);
+      loadError = String(err);
     }
   }
 
@@ -317,13 +322,11 @@
   }
 
   async function applyAudioOutput() {
-    if (audioLocked || !audioConfig || audioError) return;
-    const minMs = selectedBackend === "mme" || selectedBackend === "direct_sound" ? 10 : 2;
-    const ms = bufferMs === "" ? null : Number(bufferMs);
-    if (ms !== null && (!Number.isInteger(ms) || ms < minMs || ms > 500)) {
-      audioError = `Buffer must be between ${minMs} and 500 ms.`;
-      return;
-    }
+    if (!audioConfig || !canApply({
+      locked: audioLocked, loadError, backend: selectedBackend, device: selectedDevice, bufferMs,
+    })) return;
+    const ms = bufferMs === "" || bufferMs == null ? null : Number(bufferMs);
+    applyError = "";
     try {
       const next = await invoke("editor_view", {
         scene: false,
@@ -331,7 +334,7 @@
       });
       applyReturnedView(next);
       if (next?.error) {
-        audioError = next.error;
+        applyError = next.error;
         bridge.showToast({ tone: "error", title: "Audio output", body: next.error });
         return;
       }
@@ -342,7 +345,7 @@
         body: audioConfig?.current || "Active device applied.",
       });
     } catch (err) {
-      audioError = String(err);
+      applyError = String(err);
     }
   }
 
@@ -572,11 +575,13 @@
               bind:selectedBackend
               bind:selectedDevice
               bind:bufferMs
-              {audioError}
+              {loadError}
+              {applyError}
               {audioLocked}
               {view}
               onloadaudio={loadAudio}
               onapplyaudio={applyAudioOutput}
+              onaudioedit={() => (applyError = "")}
               onsendaction={sendAction}
             />
           {:else if tab === "view"}

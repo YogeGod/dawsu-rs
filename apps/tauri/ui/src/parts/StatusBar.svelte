@@ -31,7 +31,7 @@
   title={view?.keepPitch !== false ? "Playback speed (pitch preserved)" : "Playback speed (pitch follows speed)"} hidden={!hasScene}>
   {#each PLAYBACK_SPEEDS as speed (speed)}
     <button type="button" aria-label={"Playback speed " + Math.round(speed * 100) + "%"}
-      aria-pressed={view?.speed === speed} disabled={docDisabled}
+      aria-pressed={view?.speed === speed} data-playback-speed={speed} disabled={docDisabled}
       onclick={() => send("speed", speed)}>{Math.round(speed * 100)}%</button>
   {/each}
   <button id="keep-pitch-toggle" type="button" class="pitch-toggle"
