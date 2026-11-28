@@ -2911,6 +2911,39 @@ mod tests {
     }
 
     #[test]
+    fn a_tap_take_lands_when_its_pass_ends_and_recording_stays_armed_for_the_next() {
+        let (_scratch, _map_dir, mut app) =
+            setup_mapset("tap-take-per-pass", "256,192,1000,1,0,0:0:0:0:\r\n");
+        app.reset_fresh_open_for_tests();
+        let before = app.document().unwrap().composer.hitsounds().moments().len();
+        app.toggle_tap_recording().unwrap();
+        app.seek(1122.0);
+        assert!(app.tap_lane(0));
+        app.seek(1495.0);
+        assert!(app.tap_lane(1));
+        // Stopping playback ends the pass: the taps show on the timeline at once, as one Undo step.
+        app.commit_tap_take();
+        assert_eq!(app.tap_recorded_count(), 0);
+        assert!(app.tap_recording_armed(), "still armed for the next pass");
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before + 2);
+        assert!(app.status.starts_with("Recorded 2 taps."), "{}", app.status);
+        // A second pass is its own Undo step.
+        app.seek(1700.0);
+        assert!(app.tap_lane(0));
+        app.commit_tap_take();
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before + 3);
+        app.command("undo");
+        assert_eq!(app.document().unwrap().composer.hitsounds().moments().len(), before + 2);
+        // Disarming with nothing buffered commits nothing more.
+        let done = app.toggle_tap_recording().unwrap();
+        assert_eq!(done.committed_taps, 0);
+        // An empty pass changes nothing.
+        let status = app.status.clone();
+        app.commit_tap_take();
+        assert_eq!(app.status, status);
+    }
+
+    #[test]
     fn toggle_tap_disarm_commits_armed_midi_and_unarmed_taps_capture_retrospectively() {
         let (_scratch, _map_dir, mut app) =
             setup_mapset("retro-and-disarm", "256,192,1000,1,0,0:0:0:0:\r\n");

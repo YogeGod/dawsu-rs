@@ -687,6 +687,31 @@ try {
     return "00:01:500 → 1500 ms";
   });
 
+  await step("Tap record: a pass of A taps lands when playback stops", async () => {
+    if (!silent) return needsSilence();
+    const before = (await hits()).length;
+    await fromMenu("Playback", "Tap record");
+    await until(() => window.view.tapRecordingArmed && document.getElementById("editor-menu").hidden, null,
+      "Tap record did not arm, or the Playback menu stayed open");
+    await page().keyboard.press("Space");
+    await until(() => window.view.playing, null, "Space did not start playback after arming Tap record");
+    await sleep(400);
+    await page().keyboard.press("a");
+    await sleep(350);
+    await page().keyboard.press("a");
+    await sleep(200);
+    await page().keyboard.press("Space");
+    await until(before => window.scene.moments.reduce((n, m) => n + m[3].length, 0) >= before + 1 && !window.view.playing,
+      before, "the taps did not land when playback stopped", 5000);
+    expect(await read(() => window.view.tapRecordingArmed), "Tap record disarmed itself after one pass");
+    await fromMenu("Playback", "Tap record");
+    await until(() => !window.view.tapRecordingArmed, null, "Tap record did not disarm");
+    // Leave the map as it was for the steps after this one.
+    await page().keyboard.press("Control+z");
+    await until(before => window.scene.moments.reduce((n, m) => n + m[3].length, 0) === before, before, "Undo did not take the pass back");
+    return `${before} hits → a pass → undone`;
+  });
+
   await step("Place a hit with a click", async () => {
     if (!silent) return needsSilence();
     // An empty spot on the first lane, on the beat grid, away from the map's objects.
