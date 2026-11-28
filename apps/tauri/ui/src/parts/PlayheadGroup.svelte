@@ -36,7 +36,7 @@
     align-items: center;
     gap: 6px;
     margin-right: 4px;
-    color: var(--editor-secondary);
+    color: #c7c7cc;
     font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
@@ -76,11 +76,12 @@
     border: 0;
     border-radius: 4px;
     background: transparent;
-    color: var(--editor-secondary);
+    color: #c7c7cc;
     cursor: pointer;
   }
   .toggle:hover:not(:disabled) {
     background: var(--editor-border);
+    color: var(--editor-text);
   }
   .toggle[aria-pressed="true"],
   .toggle[aria-pressed="true"]:hover:not(:disabled) {

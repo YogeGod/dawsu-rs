@@ -206,12 +206,14 @@
   border-radius: 6px;
   background: var(--editor-ink);
   box-shadow: var(--shadow-well);
+  color: var(--ink-on-dark);
 }
 #editor-header[data-empty="true"] .map-chip {
   display: none;
 }
 #editor-header .map-chip:hover {
-  background: var(--editor-panel);
+  background: var(--dark-panel);
+  color: var(--ink-on-dark);
 }
 .map-chip-title {
   min-width: 0;
@@ -239,7 +241,7 @@
 .map-chip-chevron {
   width: 14px;
   height: 14px;
-  color: var(--editor-secondary);
+  color: #c7c7cc;
 }
 /* The sibling list sits over the whole chip, laid out but see-through, so Ctrl+O can read it and its
    focus ring still shows. */
@@ -276,6 +278,7 @@
   border-radius: 6px;
   background: var(--editor-ink);
   box-shadow: var(--shadow-well);
+  color: var(--ink-on-dark);
 }
 #editor-ribbon .lane-mode button {
   display: inline-flex;
@@ -289,7 +292,7 @@
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: var(--editor-text);
+  color: var(--ink-on-dark);
   font-size: 12px;
   white-space: nowrap;
 }

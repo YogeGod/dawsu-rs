@@ -42,13 +42,13 @@
     border: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     background: #232327;
-    color: var(--editor-secondary);
+    color: #c7c7cc;
     font-size: 10px;
     cursor: pointer;
   }
   .pk-key.black {
     background: #121214;
-    color: var(--editor-muted);
+    color: #98989f;
   }
   .pk-key:hover {
     background: var(--editor-selected);

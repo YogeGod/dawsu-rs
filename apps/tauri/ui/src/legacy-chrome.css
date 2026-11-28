@@ -191,7 +191,7 @@ aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}as
 .playback-rates { display:grid; grid-auto-flow:column; gap:2px; padding:2px; border-radius:5px; background:var(--base); }
 .playback-rates:empty { display:none; }
 .playback-rates > button { min-height:26px; padding:2px 6px; font-size:11px; font-variant-numeric:tabular-nums; }
-.row[aria-label="Lane view"] { gap: 2px; background: #2c2c2c; padding: 2px; border-radius: 5px; }
+.row[aria-label="Lane view"] { gap: 2px; background: #2c2c2c; color: var(--ink-on-dark); padding: 2px; border-radius: 5px; }
 .row[aria-label="Lane view"] button { border: 0; background: transparent; }
 .row[aria-label="Lane view"] button[aria-pressed="true"] { color: var(--hi); background: #454545; }
 :root {
@@ -225,7 +225,7 @@ aside section > :last-child { margin-bottom:0; }
 .tint-palette input { appearance:none; width:100%; min-width:0; height:16px; margin:0; border:1px solid transparent; border-radius:4px; cursor:pointer; }
 .tint-palette input:checked { outline:2px solid #f1f1f1; outline-offset:1px; }
 .tint-palette input:focus-visible { outline:2px solid #a1d0f7; outline-offset:2px; }
-.tint-preview { display:flex; align-items:center; justify-content:space-between; height:54px; padding:0 18px 0 10px; background:#151515; border-left:3px solid var(--preview-colour); border-radius:3px; }
+.tint-preview { display:flex; align-items:center; justify-content:space-between; height:54px; padding:0 18px 0 10px; background:#151515; color:var(--ink-on-dark); border-left:3px solid var(--preview-colour); border-radius:3px; }
 .tint-preview span { min-width:30%; }
 .tint-preview small { display:block; color:var(--muted); }
 .tint-preview i { width:7px; height:7px; transform:rotate(45deg); background:var(--preview-colour); }
@@ -288,7 +288,7 @@ aside section > :last-child { margin-bottom:0; }
 .shortcut-row{display:flex;align-items:center;gap:10px;min-height:36px;padding:3px 6px 3px 12px;border-radius:6px}
 .shortcut-row:hover{background:var(--button)}
 .shortcut-row.capturing{background:var(--control)}
-.shortcut-row.conflict{background:#241f23}
+.shortcut-row.conflict{background:#241f23;color:var(--ink-on-dark)}
 .shortcut-command{flex:1;min-width:0}
 .shortcut-conflict{color:#fa838c;text-align:right}
 .shortcut-keys{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:10px;min-height:30px;padding:2px 6px;border:0;background:transparent;color:var(--muted)}
@@ -308,7 +308,7 @@ aside section > :last-child { margin-bottom:0; }
 #editor-ribbon .ribbon-group{align-content:center}
 #editor-ribbon .ribbon-group+.ribbon-group{padding-left:6px}
 @media (forced-colors:active){#editor-ribbon .row[aria-label="Lane view"] button[aria-pressed=true],#statusbar .playback-rates>button[aria-pressed=true]{outline:2px solid Highlight;outline-offset:-2px}}
-#editor-ribbon #grid-options{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c}
+#editor-ribbon #grid-options{height:30px;min-height:30px;padding:0 10px;border-radius:6px;background:#2c2c2c;color:var(--ink-on-dark)}
 /* Row 2 (v3 §3): the tools keep their names at every width; Audition goes icon-only below 1120 px. */
 @media (max-width:1119px){#editor-ribbon .toolbar-toggle-label{display:none}#editor-ribbon #grid-options{padding:0 6px}}
 #statusbar{--layout-min-height:32px;gap:10px;padding:0 12px}
@@ -354,7 +354,7 @@ aside section > :last-child { margin-bottom:0; }
 .home-recent h2{margin:8px 0 0;padding:0 12px 8px;border-bottom:1px solid #383838;font-size:13px;font-weight:600}
 #home #recent{display:grid;gap:0;margin-top:4px}
 #home .home-recent-map{display:flex;align-items:center;gap:10px;min-width:0;min-height:40px;padding:0 12px;border:0;border-radius:6px;background:transparent;text-align:left}
-#home .home-recent-map:hover:not(:disabled){background:#2c2c2c}
+#home .home-recent-map:hover:not(:disabled){background:#2c2c2c;color:var(--ink-on-dark)}
 .home-recent-map::before{content:"";width:14px;height:14px;flex:none;background:#62d6cf;clip-path:polygon(0 43%,22% 43%,32% 13%,46% 76%,59% 22%,70% 50%,100% 50%,100% 62%,68% 62%,60% 46%,45% 95%,32% 41%,27% 58%,0 58%)}
 .home-recent-map:nth-child(5n+1)::before{background:#e28dd1}
 .home-recent-map:nth-child(5n+3)::before{background:#9c9cfc}

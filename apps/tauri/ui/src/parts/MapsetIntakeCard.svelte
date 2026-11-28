@@ -332,7 +332,7 @@
     border: 0;
     border-radius: 6px;
     background: rgba(16, 16, 20, 0.65);
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
     cursor: pointer;
   }
   .intake-close:hover {
