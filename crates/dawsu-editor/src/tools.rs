@@ -177,6 +177,10 @@ pub trait ToolTarget {
     fn delete(&mut self, items: &[Self::Item]);
     fn move_by(&mut self, items: &[Self::Item], delta_ms: f64, delta_rows: i32);
     fn set_values(&mut self, values: &[(Self::Item, i32)]);
+    /// Sets per-item values without shifting sibling items at the same moment.
+    fn set_hit_values(&mut self, values: &[(Self::Item, i32)]) {
+        self.set_values(values);
+    }
     /// The starting volume/value for newly drawn items (baseline for vertical drag adjustment).
     fn insert_value(&self) -> i32 {
         100
@@ -698,8 +702,8 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                     }
                     if target
                         .in_range(
-                            SongTime::from_ms(at.ms() - 1.0),
-                            SongTime::from_ms(at.ms() + 1.0),
+                            SongTime::from_ms(at.ms() - 5.0),
+                            SongTime::from_ms(at.ms() + 5.0),
                             *row,
                             *row,
                         )
@@ -731,7 +735,7 @@ impl<I: Clone + Eq + Hash> ToolBox<I> {
                             *current_volume = next_volume;
                             let updates: Vec<(I, i32)> =
                                 created.iter().cloned().map(|item| (item, *current_volume)).collect();
-                            target.set_values(&updates);
+                            target.set_hit_values(&updates);
                         }
                     }
                 }

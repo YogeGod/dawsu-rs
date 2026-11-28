@@ -591,6 +591,8 @@ export function attachIpc(ctx) {
     if (!state.view.hasDocument || state.view.showHome) {
       state.scene = null;
       state.pendingDrawHits = [];
+      state.selectionVolumeScope = "hits";
+      state.selectionLanesOnly = false;
       waveformFetchKey = null;
     }
     if (state.view.scene) {
@@ -605,9 +607,12 @@ export function attachIpc(ctx) {
         state.markedRange = null;
         state.selectionLaneKeys.clear();
         state.selectionLaneAnchor = null;
-        if (state.selectionLanesOnly) ctx.act({ kind: "volume_scope", path: state.view.scene.path, lanes: null }, false);
-        state.selectionLanesOnly = false;
+        state.selectionVolumeScope = typeof state.view.volumeScope === "string" ? state.view.volumeScope : "hits";
+        state.selectionLanesOnly = state.selectionVolumeScope === "selected";
         state.laneFilterText = "";
+      } else if (!state.drag && typeof state.view.volumeScope === "string") {
+        state.selectionVolumeScope = state.view.volumeScope;
+        state.selectionLanesOnly = state.selectionVolumeScope === "selected";
       }
       if (loaded || !state.layoutWrites) ctx.hydrateLaneLayout(state.view.scene.laneLayout);
       if (loaded) {

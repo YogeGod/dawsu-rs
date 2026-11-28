@@ -568,16 +568,20 @@ export function attachLanes(ctx) {
 
   // The Inspector's line under Change volume.
   function volumeScopeHint() {
-    return state.selectionLanesOnly
-      ? (state.selectionLaneKeys.size ? "Changes selected lanes at the selected times." : "Select lanes to change their volume.")
-      : "Changes all sounds at the selected times.";
+    const mode = state.selectionVolumeScope ?? (state.selectionLanesOnly ? "selected" : "hits");
+    if (mode === "selected") {
+      return state.selectionLaneKeys.size ? "Changes selected lanes at the selected times." : "Select lanes to change their volume.";
+    }
+    if (mode === "all") return "Changes all sounds at the selected times.";
+    return "Changes only the selected hits.";
   }
 
   function updateVolumeScope() {
     ctx.renderSelection();
     if (state.scene) {
-      const lanes = state.selectionLanesOnly ? [...state.selectionLaneKeys] : null;
-      ctx.act({ kind: "volume_scope", path: state.scene.path, lanes }, false);
+      const mode = state.selectionVolumeScope ?? (state.selectionLanesOnly ? "selected" : "hits");
+      const lanes = mode === "selected" ? [...state.selectionLaneKeys] : null;
+      ctx.act({ kind: "volume_scope", path: state.scene.path, mode, lanes }, false);
     }
   }
 
@@ -625,7 +629,7 @@ export function attachLanes(ctx) {
       }
       state.selectionLaneAnchor = key;
     }
-    if (state.selectionLanesOnly) updateVolumeScope();
+    if (state.selectionVolumeScope === "selected" || state.selectionLanesOnly) updateVolumeScope();
     ctx.renderLanes();
     ctx.paintSoon();
   }

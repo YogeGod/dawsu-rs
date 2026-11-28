@@ -392,7 +392,10 @@ impl ToolTarget for DrumRowTarget<'_> {
         if lanes.is_empty() {
             return None;
         }
-        let volume = self.composer.insert_volume;
+        let volume = self
+            .composer
+            .insert_volume
+            .clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
         let existing = nearest_moment(self.composer.hitsounds(), at.ms(), 5.0);
         if let Some(id) = existing
             && let Some(occupied) = lanes
@@ -408,7 +411,7 @@ impl ToolTarget for DrumRowTarget<'_> {
         let mut moment = 0;
         let _ = self.composer.history.edit(true, |h| {
             let id = existing.unwrap_or_else(|| h.add_moment(at, volume));
-            h.add_hit(id, chosen.clone());
+            h.add_hit_with_volume(id, chosen.clone(), volume);
             moment = id.0;
             Ok::<_, Infallible>(())
         });
@@ -558,6 +561,10 @@ impl ToolTarget for DrumRowTarget<'_> {
         ToolTarget::set_values(self.composer, values);
     }
 
+    fn set_hit_values(&mut self, values: &[(HitKey, i32)]) {
+        ToolTarget::set_hit_values(self.composer, values);
+    }
+
     fn insert_value(&self) -> i32 {
         ToolTarget::insert_value(self.composer)
     }
@@ -655,7 +662,9 @@ pub(crate) fn paint_hits_on_group(
     if to_place.is_empty() {
         return 0;
     }
-    let volume = composer.insert_volume;
+    let volume = composer
+        .insert_volume
+        .clamp(dawsu_hitsounding::rules::SAVED_VOLUME_FLOOR, 100);
     let mut placed = 0usize;
     composer.history.begin("Paint draw stroke");
     let _ = composer.history.edit(true, |h| {

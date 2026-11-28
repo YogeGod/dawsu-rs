@@ -467,6 +467,50 @@ async function menuKeys(menu, row) {
   return keys;
 }
 
+// Saves the open difficulty, answering the save review; returns what the review showed.
+async function saveThroughReview() {
+  expect(await read(() => window.view.dirty), "the editor does not show unsaved changes");
+  await page().click("#save");
+  let reviewed = [];
+  const end = Date.now() + 15000;
+  while (Date.now() < end && await read(() => window.view.dirty || window.view.busy || document.getElementById("dialog").open)) {
+    const title = await dialogTitle();
+    if (title?.startsWith("Review Save")) {
+      reviewed = await read(() => Array.from(document.querySelectorAll("#dialog-body p"), p => p.textContent));
+      await dialogButton(/^(Save|Done)$/).click();
+    } else if (title?.startsWith("Save hitsounds")) {
+      reviewed.push(title);
+      await dialogButton(/^(Save|Continue to Save)$/).click();
+    } else if (title) {
+      throw new Error(`Save showed "${title}": ${(await read(() => document.getElementById("dialog-body").innerText)).slice(0, 120)}`);
+    }
+    await sleep(250);
+  }
+  expect(!(await read(() => window.view.dirty)), "the editor still shows unsaved changes");
+  expect(!(await read(() => window.view.busy)), "the editor is still busy after Save");
+  return reviewed;
+}
+
+// Whether a saved .osu plays a sample file: its name is written in the .osu, or it is a
+// set-sound-index file whose custom index a hit object or timing line uses.
+function playedBy(osu) {
+  const indexes = new Set();
+  let section = "";
+  for (const line of osu.split(/\r?\n/)) {
+    if (/^\[.*\]$/.test(line.trim())) section = line.trim();
+    const fields = line.split(",");
+    if (section === "[TimingPoints]" && fields.length > 4) indexes.add(Number(fields[4]));
+    if (section === "[HitObjects]" && fields.length > 5) {
+      const sample = fields[fields.length - 1].split(":");
+      if (sample.length >= 4) indexes.add(Number(sample[2]));
+    }
+  }
+  return name => osu.includes(name) || (() => {
+    const match = /^(normal|soft|drum)-(hit(normal|whistle|finish|clap)|slider(slide|whistle|tick))(\d+)\.(wav|ogg|mp3)$/i.exec(name);
+    return !!match && indexes.has(Number(match[5]));
+  })();
+}
+
 // Steps that place, select or move hits run only once Audition is off, so nothing plays.
 let silent = false;
 const needsSilence = () => silent ? null : { skip: "Audition could not be switched off, so no hit is placed" };
@@ -480,6 +524,8 @@ let practiceFolder = null;
 const keys = {};
 let savedHits = null;
 let mixFiles = [];
+// Path 1's new [Hitsounds] difficulty, its outside sample, and the mapset files before it.
+let path1 = null;
 
 try {
   await step("Start with no map and see the start screen", async () => {
@@ -1017,24 +1063,7 @@ try {
   });
 
   await step("Save, through the save review", async () => {
-    expect(await read(() => window.view.dirty), "the editor does not show unsaved changes");
-    await page().click("#save");
-    let reviewed = [];
-    const end = Date.now() + 15000;
-    while (Date.now() < end && await read(() => window.view.dirty || document.getElementById("dialog").open)) {
-      const title = await dialogTitle();
-      if (title?.startsWith("Review Save")) {
-        reviewed = await read(() => Array.from(document.querySelectorAll("#dialog-body p"), p => p.textContent));
-        await dialogButton(/^(Save|Done)$/).click();
-      } else if (title?.startsWith("Save hitsounds")) {
-        reviewed.push(title);
-        await dialogButton(/^(Save|Continue to Save)$/).click();
-      } else if (title) {
-        throw new Error(`Save showed "${title}": ${(await read(() => document.getElementById("dialog-body").innerText)).slice(0, 120)}`);
-      }
-      await sleep(250);
-    }
-    expect(!(await read(() => window.view.dirty)), "the editor still shows unsaved changes");
+    const reviewed = await saveThroughReview();
     savedHits = await namedHits();
     return reviewed.join("; ");
   });
@@ -1066,25 +1095,8 @@ try {
     const added = [...after.keys()].filter(name => !copyBefore.has(name) && name !== laneSample);
     const removed = [...copyBefore.keys()].filter(name => !after.has(name));
     const changed = [...after.keys()].filter(name => copyBefore.has(name) && copyBefore.get(name) !== after.get(name));
-    // A new sample file is one Save meant to write only when the saved difficulty plays it: its name
-    // is written in the .osu, or it is a set-sound-index file whose custom index a hit object or
-    // timing line uses.
-    const osu = readFileSync(mapCopy, "latin1");
-    const indexes = new Set();
-    let section = "";
-    for (const line of osu.split(/\r?\n/)) {
-      if (/^\[.*\]$/.test(line.trim())) section = line.trim();
-      const fields = line.split(",");
-      if (section === "[TimingPoints]" && fields.length > 4) indexes.add(Number(fields[4]));
-      if (section === "[HitObjects]" && fields.length > 5) {
-        const sample = fields[fields.length - 1].split(":");
-        if (sample.length >= 4) indexes.add(Number(sample[2]));
-      }
-    }
-    const plays = name => osu.includes(name) || (() => {
-      const match = /^(normal|soft|drum)-(hit(normal|whistle|finish|clap)|slider(slide|whistle|tick))(\d+)\.(wav|ogg|mp3)$/i.exec(name);
-      return !!match && indexes.has(Number(match[5]));
-    })();
+    // A new sample file is one Save meant to write only when the saved difficulty plays it.
+    const plays = playedBy(readFileSync(mapCopy, "latin1"));
     const unused = added.filter(name => !plays(name));
     mixFiles = added.filter(plays);
     expect(!unused.length && !removed.length, `unused new files: ${unused.join(", ") || "none"}; removed: ${removed.join(", ") || "none"}`);
@@ -1113,17 +1125,20 @@ try {
     reopened = await namedHits();
     return compare(hit => !mixed(hit), "away from the mixed circle");
   });
-  // Save writes a sound the circle's line cannot hold as a mix of new sample files, and the editor
-  // project keeps no record of the lanes it was drawn on: reopened, the circle plays those files
-  // (as crates/dawsu-application/src/lib.rs hs_save_mix_reopens_without_duplicate_project_hits expects).
-  await step("Reopening shows the mixed circle as the sample files Save wrote", async () => {
+  // Drawing a whistle at default Insert volume (100%) onto the 40% custom-clap circle creates mixed
+  // per-hit volumes on that circle: Save renders mix files for osu!, and reopening inside the editor
+  // project restores both the authored lanes and their distinct (40%, 100%) volumes via gain recovery.
+  await step("Reopening restores the mixed circle's hits and per-hit volumes", async () => {
     expect(reopened, "the reopen did not finish, so there is nothing to compare");
-    const now = reopened.filter(mixed).map(hit => hit.slice("3500 ms ".length));
-    expect(now.length, "the circle at 3500 ms has no hits after reopening");
-    const written = mixFiles.map(name => name.replace(/\.(wav|ogg|mp3)$/i, ""));
-    const other = now.filter(name => !written.includes(name));
-    expect(written.length && !other.length, `at 3500 ms: ${now.join(", ")}; Save wrote: ${mixFiles.join(", ") || "nothing"}`);
-    return now.join(", ");
+    expect(mixFiles.length, "Save wrote no mixed sample files");
+    const summary = compare(mixed, "at the mixed circle");
+    const vols = await read(() => {
+      const m = window.scene.moments.find(([t]) => Math.abs(t - 3500) <= 5);
+      return m ? m[3].map(h => h[3] ?? m[1]).sort((a, b) => a - b) : [];
+    });
+    expect(vols.includes(40) && vols.includes(100),
+      `expected reopened 3500 ms volumes to keep both 40% and 100%, got ${JSON.stringify(vols)}`);
+    return `${summary} (${vols.join("/")}%)`;
   });
   // The Base lives in this run's own data folder (LOCALAPPDATA is the profile), never in the map copy.
   await step("Shared Base: capture shows the moment count, Apply all asks first", async () => {
@@ -1208,7 +1223,74 @@ try {
     const filesAfter = snapshot(mapFolder);
     const newWavs = [...filesAfter.keys()].filter(name => !filesBefore.has(name) && /\.(wav|ogg|mp3)$/i.test(name));
     expect(newWavs.length === 0, `expected 0 new audio files in mapset before Save, found: ${newWavs.join(", ")}`);
+    path1 = { created, extWav, filesBefore };
     return "0 lanes → 1 staged custom lane, 0 files written before Save";
+  });
+
+  await step("Path 1: a hit drawn on the custom lane saves into the .osu with its sample file, and reopens on it", async () => {
+    if (!silent) return needsSilence();
+    expect(path1, "Path 1 did not add its custom lane");
+    const row = await read(() => window.scene.laneOrder[0]);
+    await page().click("#ruler-fit");
+    await until(() => window.scene.viewStart === 0, null, "Fit all did not go back to the start");
+    // On the difficulty's first object when it has one, a little after it so the snap puts it there.
+    const target = await read(() => window.scene.moments[0]?.[0] ?? 1000);
+    await pickTool("Draw");
+    const before = (await hits()).length;
+    const point = await at(target + 40, row);
+    await page().mouse.click(point.x, point.y);
+    // In a list, so a hit at 0 ms still counts as found.
+    const [drawn] = await until(([count, row]) => {
+      const times = window.scene.moments.filter(([, , , list]) => list.some(([r]) => r === row)).map(([time]) => time);
+      return window.scene.moments.reduce((sum, moment) => sum + moment[3].length, 0) === count + 1 && times.length > 0 && times;
+    }, [before, row], "no hit appeared on the custom lane");
+    await pickTool("Select");
+    await saveThroughReview();
+
+    const after = snapshot(mapFolder);
+    const added = [...after.keys()].filter(name => !path1.filesBefore.has(name) && /\.(wav|ogg|mp3)$/i.test(name));
+    const sample = readFileSync(path1.extWav);
+    const copies = added.filter(name => readFileSync(join(mapFolder, name)).equals(sample));
+    expect(copies.length === 1, `expected 1 copy of the custom sample in the mapset, new audio files: ${added.join(", ") || "none"}`);
+    const osu = readFileSync(path1.created, "latin1");
+    expect(playedBy(osu)(copies[0]), `the saved .osu does not play ${copies[0]}`);
+    const objects = osu.slice(osu.indexOf("[HitObjects]")).split(/\r?\n/).slice(1);
+    expect(objects.some(line => line.split(",")[2] === String(drawn)), `the saved .osu has no hit object at ${drawn} ms`);
+
+    // Reopened from disk (another difficulty first, so it really loads again), the hit sits on a
+    // lane named after the file Save wrote. Wait for each open to finish: request_open drops
+    // calls while busy, and window.scene still holds the pre-reopen hit until the UI syncs.
+    const beforeReopenKey = await read(() => window.scene.previewKey);
+    await read(async path => {
+      await window.__TAURI__.core.invoke("editor_view", { scene: true, action: { kind: "open", path } });
+    }, mapCopy);
+    await until(
+      ([path, key]) => Boolean(window.scene?.path) && window.scene.path.toLowerCase() !== path.toLowerCase() &&
+        window.scene.previewKey !== key && !window.view.busy,
+      [path1.created, beforeReopenKey],
+      "switching away from Path 1 diff before reopening did not finish",
+      15000,
+    );
+    const otherKey = await read(() => window.scene.previewKey);
+    await read(async path => {
+      await window.__TAURI__.core.invoke("editor_view", { scene: true, action: { kind: "open", path } });
+    }, path1.created);
+    await until(
+      ([path, key]) => window.scene?.path?.toLowerCase() === path.toLowerCase() &&
+        window.scene.previewKey !== key && !window.view.busy,
+      [path1.created, otherKey],
+      "Path 1 diff did not reopen from disk",
+      15000,
+    );
+    // A file lane keeps the extension in its name (a set-sound-index lane does not).
+    const expected = `${drawn} ms ${copies[0]}`;
+    const visibleHits = await read(() => {
+      const visible = new Set(window.scene.laneOrder ?? []);
+      return window.scene.moments.flatMap(([time, , , list]) =>
+        list.filter(([row]) => visible.has(row)).map(([row]) => `${time} ms ${window.scene.lanes[row]?.name}`));
+    });
+    expect(visibleHits.includes(expected), `reopened, no "${expected}" hit (visible: ${visibleHits.join(", ") || "none"})`);
+    return `hit at ${drawn} ms → ${copies[0]} written and played by the .osu`;
   });
 
   await step("Path 2: 12 osu! default lanes auto-activates Default osu! kit with all 12 skin rows", async () => {

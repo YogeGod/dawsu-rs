@@ -116,8 +116,9 @@ impl Composer {
         let moved_count = to_move.len();
         self.apply("Alternate variants", |hits| {
             for key in &to_move {
+                let vol = hits.moment(MomentId(key.moment)).hit_volume(from_lane);
                 hits.remove_hit(MomentId(key.moment), from_lane);
-                hits.add_hit(MomentId(key.moment), to_lane.clone());
+                hits.add_hit_with_volume(MomentId(key.moment), to_lane.clone(), vol);
             }
         });
         if !self.lanes.contains(to_lane) {

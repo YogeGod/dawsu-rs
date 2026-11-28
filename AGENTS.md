@@ -14,6 +14,11 @@ Rules for coding agents in this repo. Keep edits cross-platform (Windows, macOS,
 - **Crate boundary.** Keep workspace crate layout stable; add new crate only when heavy native dependency (ONNX, VST3) forces isolation.
 - **Layout menu freeze.** Leave `View > Layout...` untouched; only keep it from breaking.
 - **Map & worktree safety.** Test against copied maps or `tests/fixtures/` only. Treat real osu! installs and `E:/GitHub/dawsu-drum-corpus` as read-only. Never modify sibling worktrees (`E:/GitHub/dawsu-rs-*`) or delete branches checked out in another worktree.
+- **Audit guardrails (`E:/Obsidian/Workspace/dawsu-rewrite/research/ponytail-audit-2026-11-28.md`):**
+  - **Atomic writes & path safety:** Use `dawsu_foundation::safe_write` for persisted JSON/data/exports — never delete-then-rename on Windows or raw `fs::write` over live files. Require a Rust `rfd` picker or canonical root containment check for webview write/native-load paths; never slice UTF-8 strings at raw byte indices (`as_bytes().get(..)` / char-boundary check).
+  - **Editor queue & IPC seams:** Inside JS `run(...)`, call `update(...)`, never `act(...)` (deadlocks `state.pending`). Route slow Rust commands (>1 s: VST3 scans, bounces, pipe reads) through `async` + `spawn_blocking` off the 7 s `ask()` editor loop. Allow commands containing digits (e.g. `vst3_scan`) in window `capabilities/*.json` and match `[a-z0-9_]+` in `capabilities.test.mjs`.
+  - **Unsafe / Win32 / RT audio:** Never hold `&*ptr` across `&mut *ptr` or form `&mut` over cross-process SHM (use raw field pointers); declare Win32 event handles *before* COM audio clients that borrow them (`Release()` before `CloseHandle()`); sanitize `NaN`/`Inf` to `0.0` before and after audio limiting/DSP; call `strip_unc_prefix` before `ShellExecuteW`.
+  - **Workers & cleanup:** Guard in-flight flags (`reading`, `writing`) with drop guards (never wedge on panic); never cache fallible init in `OnceLock<Result<...>>`; abort stale-sample cleanup whenever sibling-diff `reservations` fail.
 
 ## Verification
 

@@ -150,6 +150,10 @@ impl ToolTarget for SamplesRowTarget<'_> {
         ToolTarget::set_values(self.composer, values);
     }
 
+    fn set_hit_values(&mut self, values: &[(HitKey, i32)]) {
+        ToolTarget::set_hit_values(self.composer, values);
+    }
+
     fn insert_value(&self) -> i32 {
         ToolTarget::insert_value(self.composer)
     }
@@ -177,6 +181,17 @@ impl ToolTarget for SamplesRowTarget<'_> {
     fn show_preview(&mut self, preview: ToolPreview) {
         ToolTarget::show_preview(self.composer, preview);
     }
+}
+
+fn resolve_volume_lanes(
+    composer: &dawsu_editor_composer::Composer,
+    rows: &[usize],
+) -> BTreeSet<SampleIdentity> {
+    let hits = composer.hitsounds();
+    rows.iter()
+        .filter_map(|&row| composer.lanes.get(row))
+        .map(|lane| hits.lane_slot(lane).unwrap_or(lane).clone())
+        .collect()
 }
 
 impl Application {
@@ -364,14 +379,8 @@ impl Application {
                 if !self.tools.is_stroke_open() {
                     let scope = volume_lanes
                         .filter(|rows| !rows.is_empty())
-                        .map(|rows| {
-                            let hits = d.composer.hitsounds();
-                            rows.iter()
-                                .filter_map(|&row| d.composer.lanes.get(row))
-                                .map(|lane| hits.lane_slot(lane).unwrap_or(lane).clone())
-                                .collect::<BTreeSet<_>>()
-                        })
-                        .or_else(|| self.selection_lane_scope.clone());
+                        .map(|rows| resolve_volume_lanes(&d.composer, rows))
+                        .or_else(|| self.selection_volume_scope.lane_scope().cloned());
                     let active_slot = d.composer.lanes.get(self.active_lane).map(|lane| {
                         d.composer.hitsounds().lane_slot(lane).unwrap_or(lane).clone()
                     });
@@ -633,38 +642,71 @@ impl Application {
         self.bump_view_revision();
         true
     }
-    pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {
+    pub fn selection_volume_scope_str(&self) -> &'static str {
+        self.selection_volume_scope.as_str()
+    }
+
+    pub fn set_selection_volume_scope(&mut self, scope: crate::SelectionVolumeScope) -> Result<(), String> {
         if self.busy || self.is_stroke_open() {
             return Err("Finish the current edit before changing volume scope".into());
         }
         self.document.as_ref().ok_or("Open a difficulty first")?;
-        self.selection_lane_scope = lanes;
+        self.selection_volume_scope = scope;
         self.bump_view_revision();
         Ok(())
+    }
+
+    pub fn set_selection_lane_scope(&mut self, lanes: Option<BTreeSet<SampleIdentity>>) -> Result<(), String> {
+        self.set_selection_volume_scope(match lanes {
+            Some(lanes) => crate::SelectionVolumeScope::SelectedLanes(lanes),
+            None => crate::SelectionVolumeScope::AllLanes,
+        })
     }
 
     pub fn selection_volume(&mut self, v: i32, relative: bool) {
         if self.busy || self.is_stroke_open() {
             return;
         }
-        if let Some(d) = self.document.as_mut() {
-            d.composer.volume_for_lanes(v, relative, self.selection_lane_scope.as_ref());
+        let scope = self.selection_volume_scope.clone();
+        let changed = self.document.as_mut().is_some_and(|d| match &scope {
+            crate::SelectionVolumeScope::SelectedHits => d.composer.volume_for_selected_hits(v, relative),
+            crate::SelectionVolumeScope::AllLanes => d.composer.volume_for_lanes(v, relative, None),
+            crate::SelectionVolumeScope::SelectedLanes(lanes) => {
+                d.composer.volume_for_lanes(v, relative, Some(lanes))
+            }
+        });
+        if changed {
+            self.bump_view_revision();
+            self.refresh_recovery_edit();
         }
-        self.refresh_recovery_edit();
     }
 
-    pub fn set_moment_volume_at(&mut self, ms: f64, value: i32) -> bool {
+    pub fn set_moment_volume_at_scoped(
+        &mut self,
+        ms: f64,
+        value: i32,
+        volume_lanes: Option<&[usize]>,
+    ) -> bool {
         if self.busy || self.is_stroke_open() {
             return false;
         }
+        let explicit_scope = self.selection_volume_scope.lane_scope().cloned();
         let changed = self.document.as_mut().is_some_and(|d| {
-            d.composer
-                .set_moment_volume_at(ms, value, self.selection_lane_scope.as_ref())
+            let scope = volume_lanes
+                .filter(|rows| !rows.is_empty())
+                .map(|rows| resolve_volume_lanes(&d.composer, rows))
+                .or(explicit_scope);
+            d.composer.set_moment_volume_at(ms, value, scope.as_ref())
         });
         if changed {
+            self.bump_view_revision();
             self.refresh_recovery_edit();
         }
         changed
+    }
+
+    pub fn set_moment_volume_at(&mut self, ms: f64, value: i32) -> bool {
+        self.set_moment_volume_at_scoped(ms, value, None)
     }
 
     pub fn set_selection_sample_set(&mut self, set: SampleSet) -> bool {
