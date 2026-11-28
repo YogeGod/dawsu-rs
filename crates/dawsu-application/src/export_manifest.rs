@@ -112,16 +112,8 @@ pub fn save_manifest(
     stamped.version = MANIFEST_VERSION;
     let bytes = serde_json::to_vec_pretty(&stamped)
         .map_err(|e| format!("Could not encode export manifest: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &bytes).map_err(|e| format!("Could not write export manifest: {e}"))?;
-    if fs::rename(&tmp, &path).is_err() {
-        let _ = fs::remove_file(&path);
-        fs::rename(&tmp, &path).map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            format!("Could not replace export manifest: {e}")
-        })?;
-    }
-    Ok(())
+    dawsu_foundation::safe_write::write_new(&path, &bytes)
+        .map_err(|e| format!("Could not replace export manifest: {e}"))
 }
 
 /// Automatically moves stale dawsu!-owned custom sample files out of `mapset_root` into
@@ -453,5 +445,78 @@ mod tests {
             passthrough_single_sample(&ogg, SingleSampleFormat::MatchMixFormat),
             None
         );
+    }
+
+    fn temporaries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn manifest_owning(name: &str) -> ExportOwnershipManifest {
+        ExportOwnershipManifest {
+            version: MANIFEST_VERSION,
+            owned_samples: BTreeMap::from([(name.to_string(), "00".to_string())]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn save_manifest_overwrites_existing_file_and_leaves_no_temporaries() {
+        let scratch = Scratch::new("export-manifest-overwrite");
+        let mapset = scratch.path("mapset");
+        let data = scratch.path("data");
+        fs::create_dir_all(&mapset).unwrap();
+        save_manifest(&data, &mapset, &manifest_owning("dawsu-mix-a.wav")).unwrap();
+        let updated = manifest_owning("dawsu-mix-b.wav");
+        save_manifest(&data, &mapset, &updated).unwrap();
+        assert_eq!(load_manifest(&data, &mapset), updated);
+        assert!(temporaries(&data.join("export-manifests")).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_manifest_waits_out_a_brief_windows_share_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let scratch = Scratch::new("export-manifest-brief-lock");
+        let mapset = scratch.path("mapset");
+        let data = scratch.path("data");
+        fs::create_dir_all(&mapset).unwrap();
+        save_manifest(&data, &mapset, &manifest_owning("dawsu-mix-a.wav")).unwrap();
+        let path = manifest_path(&data, &mapset);
+        let holder = fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(holder);
+        });
+        let updated = manifest_owning("dawsu-mix-b.wav");
+        let result = save_manifest(&data, &mapset, &updated);
+        release.join().unwrap();
+        result.unwrap();
+        assert_eq!(load_manifest(&data, &mapset), updated);
+        assert!(temporaries(&data.join("export-manifests")).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_manifest_keeps_live_file_when_windows_share_lock_persists() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let scratch = Scratch::new("export-manifest-held-lock");
+        let mapset = scratch.path("mapset");
+        let data = scratch.path("data");
+        fs::create_dir_all(&mapset).unwrap();
+        save_manifest(&data, &mapset, &manifest_owning("dawsu-mix-a.wav")).unwrap();
+        let path = manifest_path(&data, &mapset);
+        let original = fs::read(&path).unwrap();
+        let holder = fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+        let result = save_manifest(&data, &mapset, &manifest_owning("dawsu-mix-b.wav"));
+        drop(holder);
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(temporaries(&data.join("export-manifests")).is_empty());
     }
 }
