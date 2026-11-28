@@ -319,6 +319,7 @@ pub struct SavedMapIdentity {
     pub artist_unicode: String,
     pub title_unicode: String,
     pub version: String,
+    pub creator: String,
 }
 
 impl SavedMapIdentity {
@@ -330,6 +331,7 @@ impl SavedMapIdentity {
             artist_unicode: value("ArtistUnicode"),
             title_unicode: value("TitleUnicode"),
             version: value("Version"),
+            creator: value("Creator"),
         }
     }
 }
@@ -433,6 +435,7 @@ pub fn window_title_matches_identity(window_title: &str, id: &SavedMapIdentity) 
             or_romanised(&id.title_unicode, &title),
         ),
     ];
+    let saved_creator = normalize_title_part(&id.creator);
     pairs.iter().any(|(artist, title)| {
         let expected = normalize_title_part(&format!("{artist} - {title}"));
         song.strip_prefix(expected.as_str()).is_some_and(|tail| {
@@ -441,7 +444,12 @@ pub fn window_title_matches_identity(window_title: &str, id: &SavedMapIdentity) 
                 || tail
                     .strip_prefix('(')
                     .and_then(|t| t.strip_suffix(')'))
-                    .is_some_and(|creator| !creator.contains(['(', ')']))
+                    .is_some_and(|creator| {
+                        // A shown creator must be the saved one: same song and difficulty name
+                        // from another mapper's mapset gets no keys.
+                        !creator.contains(['(', ')'])
+                            && (saved_creator.is_empty() || creator.trim() == saved_creator)
+                    })
         })
     })
 }
@@ -783,6 +791,20 @@ mod tests {
         ));
         assert!(!matches(
             "un!stable master-6625bea - Jakub Zytecki - Satya's Diary (feat. Piotr Gibner) (nhlx) [b].osu"
+        ));
+        // Same song and difficulty name, another mapper's mapset: no keys.
+        let with_creator = SavedMapIdentity { creator: "nhlx".into(), ..id.clone() };
+        assert!(window_title_matches_identity(
+            "un!stable master-6625bea - Jakub Zytecki - Satya's Diary (feat. Piotr Gibner) (NHLX) [a].osu",
+            &with_creator
+        ));
+        assert!(!window_title_matches_identity(
+            "un!stable master-6625bea - Jakub Zytecki - Satya's Diary (feat. Piotr Gibner) (someone) [a].osu",
+            &with_creator
+        ));
+        assert!(!window_title_matches_identity(
+            "osu!  - Jakub Zytecki - Satya's Diary (feat. Piotr Gibner) (someone) [a].osu",
+            &with_creator
         ));
         assert!(!matches(
             "un!stable - Jakub Zytecki - Satya's Diary (feat. Piotr Gibner) (nhlx) [a].osu"
