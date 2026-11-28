@@ -250,6 +250,27 @@ fn match_window_title_in_songs(title: &str, songs_folder: Option<&Path>) -> Opti
     let rest = title
         .strip_prefix("osu!  - ")
         .or_else(|| title.strip_prefix("osu! - "))?;
+    // The editor's title is the .osu file name itself ("Artist - Title (Creator) [Diff].osu"):
+    // look for that exact file first, since the folder name need not hold the creator.
+    let file_name = rest.trim();
+    // A window title is another process's text: never let it name a path outside one set folder.
+    if file_name.len() > 4
+        && !file_name.contains(['/', '\\'])
+        && file_name.is_char_boundary(file_name.len() - 4)
+        && file_name[file_name.len() - 4..].eq_ignore_ascii_case(".osu")
+    {
+        for songs in candidate_songs_folders(songs_folder) {
+            let Ok(dirs) = fs::read_dir(&songs) else {
+                continue;
+            };
+            for dir in dirs.flatten() {
+                let candidate = dir.path().join(file_name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
     let bracket_start = rest.rfind('[')?;
     let bracket_end = rest.rfind(']')?;
     if bracket_end <= bracket_start + 1 {
@@ -727,6 +748,31 @@ impl OsuWindowSystem for Win32Windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The osu!stable editor titles its window with the .osu file name, creator included:
+    /// "osu!  - Ludicin - Echoes of Memoria (Shinjuko) [Eternal Reflections of Memory].osu".
+    /// The folder ("2217155 Ludicin - Echoes of Memoria") never holds "(Shinjuko)", so matching the
+    /// title's last " - " part against folder names found nothing and Open from osu! failed.
+    #[cfg(windows)]
+    #[test]
+    fn open_from_osu_finds_the_editor_window_s_exact_osu_file_even_when_the_folder_lacks_the_creator() {
+        let songs = std::env::temp_dir().join(format!("dawsu-osu-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&songs);
+        let set = songs.join("2217155 Ludicin - Echoes of Memoria");
+        let decoy = songs.join("2585881 Ludicin - Echoes of Memoria");
+        fs::create_dir_all(&set).unwrap();
+        fs::create_dir_all(&decoy).unwrap();
+        let wanted = set.join("Ludicin - Echoes of Memoria (Shinjuko) [Eternal Reflections of Memory].osu");
+        fs::write(&wanted, "osu file format v14\n").unwrap();
+        fs::write(decoy.join("Ludicin - Echoes of Memoria (Shinjuko) [The Beginning Before The End].osu"), "x").unwrap();
+
+        let found = match_window_title_in_songs(
+            "osu!  - Ludicin - Echoes of Memoria (Shinjuko) [Eternal Reflections of Memory].osu",
+            Some(&songs),
+        );
+        let _ = fs::remove_dir_all(&songs);
+        assert_eq!(found, Some(wanted));
+    }
 
     #[test]
     fn detects_osu_lazer_external_edit_paths_only_for_64_hex_folders_in_temp() {
