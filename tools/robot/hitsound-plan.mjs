@@ -48,6 +48,8 @@ export function chooseWindow(moments, lines, length = 30000) {
 }
 
 
+const fileFor = (name, mapFiles) => ["wav", "ogg", "mp3"].some(ext => mapFiles.has(`${name}.${ext}`));
+
 /**
  * The plan for a gameplay difficulty's bytes and the mapset's file names (lower case):
  * indexes: { calm, kiai } forces a section's custom index.
@@ -114,6 +116,12 @@ export function planHitsounds(referenceBytes, mapFiles, { length = 30000, indexe
     } else if (set.whistle && entry.node === "head" && where.onBeat && where.barBeat === 2 % meter) {
       layers.push(layer("hitwhistle", set.additions));
       why.push("slider accent");
+    }
+    // The green line's index only when the mapset has every file the moment plays at it; otherwise
+    // osu! falls back to the skin sound, which dawsu! shows on the skin lane (#0), and Save adds the
+    // green line index 0 needs there.
+    if (index[section] == null && at > 0 && !layers.every(l => fileFor(l.lane, mapFiles))) {
+      for (const l of layers) { l.index = 0; l.lane = `${l.bank}-${l.sound}`; }
     }
     let volume = where.onBeat ? (where.barBeat === 0 ? 80 : 70) : where.half ? 55 : 40;
     if (entry.spinner) volume = 70;

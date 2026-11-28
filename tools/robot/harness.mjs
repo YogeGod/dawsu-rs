@@ -369,7 +369,13 @@ export function createRobot({ exe, profile, shots = join(profile, "shots"), chro
     const seen = [];
     const end = Date.now() + timeout;
     while (Date.now() < end) {
-      if (await read(done).catch(() => false) && !(await dialogTitle())) return seen;
+      // Done only when it still holds 300 ms later: between one dialog closing and the next review
+      // opening there is a moment with no dialog, nothing busy and no review.
+      if (await read(done).catch(() => false) && !(await dialogTitle())) {
+        await sleep(300);
+        if (await read(done).catch(() => false) && !(await dialogTitle())) return seen;
+        continue;
+      }
       const title = await dialogTitle();
       if (title && refuse?.test(title)) {
         const body = (await read(() => document.getElementById("dialog-body").innerText)).trim();

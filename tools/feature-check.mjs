@@ -357,16 +357,25 @@ function defineSteps(robot, picked) {
 
   define("Mute tool silences a hit in dawsu! only", ["F020", "F017"], async () => {
     if (!scratch) return { skip: "no scratch lane" };
+    const startAt = await read(() => window.scene.historyPosition);
     const landed = await draw(scratch.time, scratch.row);
     const time = landed.find(t => Math.abs(t - closestGrid(lines, scratch.time, 4)) <= 1);
+    const drawnAt = await read(() => window.scene.historyPosition);
     await pickTool("Mute");
     await clickHit(time, scratch.row);
     await until(([time, row]) => window.scene.moments.some(([t, , , list]) => t === time && list.some(([r, , muted]) => r === row && muted)),
       [time, scratch.row], "the Mute tool did not mark the hit muted");
+    const mutedAt = await read(() => window.scene.historyPosition);
     await pickTool("Select");
-    await page().keyboard.press("Control+Z");
-    await page().keyboard.press("Control+Z");
-    await sleep(400);
+    await r.focusEditor();
+    // Undo back to where the step started, by History position, not by a count of presses: an
+    // extra Undo would take away earlier steps (Show 12 default lanes, the scratch lane).
+    for (let i = 0; i < 4 && await read(() => window.scene.historyPosition) > startAt; i++) {
+      await page().keyboard.press("Control+Z");
+      await sleep(250);
+    }
+    expect(await read(() => window.scene.historyPosition) === startAt, "Undo did not go back to where the step started");
+    return mutedAt === drawnAt ? "muted; note: Mute adds no Undo step" : "muted, and Undo takes it back";
   });
 
   define("Copy, paste at the playhead, duplicate and select all", ["F021", "F038"], async () => {

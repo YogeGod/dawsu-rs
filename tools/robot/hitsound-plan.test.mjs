@@ -42,11 +42,19 @@ for (const path of maps) {
   });
 }
 
-test("each moment uses the custom index of the green line in force there", () => {
+test("each moment uses the green line's index when the mapset has its files, else the skin", () => {
   for (const map of maps) {
     const bytes = readFileSync(map);
     const lines = controlPoints(readOsu(bytes));
+    // With no files in the mapset every moment falls back to the skin lanes.
     for (const moment of planHitsounds(bytes, new Set()).moments) {
+      for (const layer of moment.layers) assert.equal(layer.index, 0, `${map} ${moment.time} ms`);
+    }
+    // With every file of every index there, each moment keeps the green line's index.
+    const every = new Set();
+    for (const bank of ["normal", "soft", "drum"]) for (const sound of ["hitnormal", "hitclap", "hitfinish", "hitwhistle"])
+      for (let i = 1; i <= 9; i++) every.add(`${bank}-${sound}${i >= 2 ? i : ""}.wav`);
+    for (const moment of planHitsounds(bytes, every).moments) {
       const want = lines.sampleAt(moment.exact + 5).index ?? 0;
       for (const layer of moment.layers) {
         assert.equal(layer.index, want, `${map} ${moment.time} ms`);
