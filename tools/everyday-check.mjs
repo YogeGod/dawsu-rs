@@ -473,7 +473,7 @@ async function saveThroughReview() {
   await page().click("#save");
   let reviewed = [];
   const end = Date.now() + 15000;
-  while (Date.now() < end && await read(() => window.view.dirty || document.getElementById("dialog").open)) {
+  while (Date.now() < end && await read(() => window.view.dirty || window.view.busy || document.getElementById("dialog").open)) {
     const title = await dialogTitle();
     if (title?.startsWith("Review Save")) {
       reviewed = await read(() => Array.from(document.querySelectorAll("#dialog-body p"), p => p.textContent));
@@ -487,6 +487,7 @@ async function saveThroughReview() {
     await sleep(250);
   }
   expect(!(await read(() => window.view.dirty)), "the editor still shows unsaved changes");
+  expect(!(await read(() => window.view.busy)), "the editor is still busy after Save");
   return reviewed;
 }
 
