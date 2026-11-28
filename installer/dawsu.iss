@@ -84,7 +84,7 @@ Root: HKA; Subkey: "Software\Classes\dawsu.Mapset\shell\open\command"; ValueType
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 ; Silent auto-update relaunch triggered by apps/tauri/src/updater.rs when /relaunch=1 is passed.
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: Relaunch
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: Relaunch
 
 [InstallDelete]
 ; Builds before the dawsu.exe rename installed dawsu-tauri.exe; remove it on upgrade.

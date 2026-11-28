@@ -155,6 +155,28 @@ fn op_hs_spread(after: &Path, backups: &Path) -> Result<(), String> {
 
 type Op = fn(&Path, &Path) -> Result<(), String>;
 
+/// True when `dir` is missing, empty, or holds `marker` left by an earlier run.
+fn ours(dir: &Path, marker: &str) -> bool {
+    match fs::read_dir(dir) {
+        Err(_) => true,
+        Ok(mut entries) => entries.next().is_none() || dir.join(marker).exists(),
+    }
+}
+
+#[test]
+fn ours_refuses_a_foreign_folder() {
+    let root = std::env::temp_dir().join(format!("mv-cases-guard-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    assert!(ours(&root, "manifest.txt"), "missing");
+    fs::create_dir_all(&root).unwrap();
+    assert!(ours(&root, "manifest.txt"), "empty");
+    fs::write(root.join("notes.txt"), "keep").unwrap();
+    assert!(!ours(&root, "manifest.txt"), "foreign files");
+    fs::write(root.join("manifest.txt"), "").unwrap();
+    assert!(ours(&root, "manifest.txt"), "earlier run");
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 #[ignore = "writes MV oracle cases; run with --ignored, then node tools/mv-oracle/run.mjs"]
 fn write_mv_oracle_cases() {
@@ -162,6 +184,9 @@ fn write_mv_oracle_cases() {
         .map(PathBuf::from)
         .unwrap_or_else(|| repo().join("target/mv-oracle/cases"));
     let work = cases_dir.parent().unwrap().join("work");
+    // Wipe only what an earlier run made, so a wrong MV_CASES_DIR never deletes someone's folder.
+    assert!(ours(&cases_dir, "manifest.txt"), "refusing to clear {}: not empty and no manifest.txt", cases_dir.display());
+    assert!(ours(&work, "inputs"), "refusing to clear {}: not empty and no inputs/", work.display());
     let _ = fs::remove_dir_all(&cases_dir);
     let _ = fs::remove_dir_all(&work);
     let staging = work.join("inputs");
