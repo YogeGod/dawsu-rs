@@ -162,6 +162,29 @@ test("the tree lists map folder samples under Mapset samples, folds folders and 
   assert.equal(calls.length, sent);
 });
 
+test("+ Add as lane is offered only for a mapset sample whose lane is hidden, never as a silent no-op", async () => {
+  const { context, calls, model, action, settle } = await browserPage();
+  // Kick's lane is on screen, Snare's is hidden (laneOrder lists the shown rows).
+  runInContext("scene = {...scene, laneOrder: [0, 2]}; renderSampleBrowser();", context);
+  action("pick", "kick.wav");
+  await settle();
+  assert.equal(model().canAddAsLane, false, "a lane already on screen has nothing to add");
+  const sent = calls.length;
+  action("addLane");
+  await settle();
+  assert.equal(calls.length, sent);
+  action("toggle", "percussion");
+  action("pick", "percussion/snare.wav");
+  await settle();
+  assert.equal(model().canAddAsLane, true);
+  action("addLane");
+  await settle();
+  assert.deepEqual(calls.at(-1), { kind: "show_lane", target: { map: "copy.osu", lane: "clap" } });
+  // Without a laneOrder every lane is shown.
+  runInContext("scene = {...scene, laneOrder: undefined}; renderSampleBrowser();", context);
+  assert.equal(model().canAddAsLane, false);
+});
+
 test("ArrowDown and ArrowUp play the next sample row; Enter uses it in the active lane", async () => {
   const { calls, invoked, model, action, settle } = await browserPage();
   action("toggle", "percussion");
