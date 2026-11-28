@@ -348,7 +348,7 @@
   }
   .ks-key.black {
     background: #151517;
-    color: var(--editor-muted);
+    color: #98989f;
   }
   .ks-key.out-of-scale {
     opacity: 0.45;

@@ -197,7 +197,10 @@
   .tab {
     width: 18px;
     background: #1e1e1e;
-    color: var(--editor-muted);
+    color: #98989f;
+  }
+  .tab:hover:not(:disabled) {
+    color: var(--editor-text);
   }
   .tab :global(svg) {
     width: 12px;
@@ -210,6 +213,7 @@
     border-radius: 7px;
     background: var(--editor-ink);
     box-shadow: var(--shadow-readout);
+    color: var(--ink-on-dark);
     white-space: nowrap;
   }
   .time {
@@ -237,7 +241,7 @@
   }
   small {
     font-size: 11px;
-    color: var(--editor-muted);
+    color: #98989f;
   }
   .selection {
     display: flex;
@@ -255,7 +259,8 @@
     cursor: pointer;
   }
   .selection:hover:not(:disabled) {
-    background: var(--editor-panel);
+    background: var(--dark-panel);
+    color: var(--ink-on-dark);
   }
   .selection:disabled {
     cursor: default;
@@ -270,7 +275,7 @@
   }
   .copy {
     display: grid;
-    color: var(--editor-muted);
+    color: #98989f;
   }
   .copy.copied {
     color: var(--editor-play);

@@ -116,6 +116,7 @@
     border-radius: 6px;
     background: var(--editor-ink);
     box-shadow: var(--shadow-well);
+    color: var(--ink-on-dark);
     font-family: var(--font-mono);
     font-size: 11px;
     line-height: 1.45;
@@ -137,11 +138,11 @@
   }
   .osu-diff-line.added {
     background: rgba(52, 199, 89, .10);
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
   }
   .osu-diff-line.removed {
     background: rgba(255, 69, 58, .10);
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
   }
   .osu-diff-ln {
     text-align: right;
@@ -160,7 +161,7 @@
   .osu-diff-text { min-width: 0; }
   .osu-diff-more {
     padding: 5px 10px;
-    color: var(--editor-muted);
+    color: #98989f;
     border-top: 1px solid var(--editor-border);
     font-style: italic;
   }

@@ -230,14 +230,14 @@
     border-radius: 6px;
     background: var(--editor-ink);
     box-shadow: var(--shadow-well);
-    color: var(--editor-muted);
+    color: #98989f;
   }
   .field.invalid { box-shadow: inset 0 0 0 1px var(--editor-error); }
   .field input {
     width: 44px;
     border: 0;
     background: transparent;
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
     font: inherit;
     font-variant-numeric: tabular-nums;
   }
@@ -248,7 +248,7 @@
   .format { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   select.field {
     border: 0;
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
     font: inherit;
     padding: 0 8px;
     cursor: pointer;
@@ -274,7 +274,7 @@
     border-radius: 6px;
     background: var(--editor-ink);
     box-shadow: var(--shadow-well);
-    color: var(--editor-text);
+    color: var(--ink-on-dark);
     font: inherit;
   }
   .select:focus-visible { outline: 2px solid var(--editor-focus); outline-offset: 1px; }
