@@ -409,3 +409,20 @@ test("Ctrl+scroll cycling on a lane strip updates colour, coalesces undo, and pe
   assert.equal(layoutSaves.at(-1).persist, true);
   assert.equal(layoutSaves.at(-1).value.lane_colours["Skin|soft-hitclap2"], "#db642b");
 });
+
+test("dawsu!'s own mix samples read as Mix and a short id, not a 64-character hash", async () => {
+  const { evaluate } = await frontend();
+  const hash = "77ca292da2e6545c9adb9540ffd3137bca129272aaaaaaaaaaaaaaaaaaaaaaaa";
+  evaluate(`
+    view = { busy: false, hasDocument: true, activeLane: 0 };
+    scene = { path: "a.osu", rowHeight: 30, moments: [], lanes: [
+      { key: "m1", name: "dawsu-mix-${hash}.wav", sample: "dawsu-mix-${hash}.wav", colourKey: "File|m1" },
+      { key: "m2", name: "dawsu-mix-a1d4f23b75ecfa80f98e2b96c1f6ef2d5f3a7a71bbbbbbbbbbbbbbbbbbbbbbbb-2.wav", sample: "x.wav", colourKey: "File|m2" },
+      { key: "k", name: "Kick", sample: "kick.wav", colourKey: "File|kick.wav" },
+    ] };
+    renderLanes();
+  `);
+  // Two mixes used to show as the same "dawsu-mix-..." in a lane header.
+  assert.deepEqual(lanes(evaluate).map(row => [row.name, row.tag]), [["Mix 77ca29", "Mix"], ["Mix a1d4f2 · 2", "Mix"], ["Kick", "File"]]);
+  assert.match(lanes(evaluate)[0].title, new RegExp(`dawsu-mix-${hash}\\.wav`), "the full file name stays in the tooltip");
+});
