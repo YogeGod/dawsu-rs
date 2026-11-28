@@ -19,6 +19,11 @@ function sampleScene(overrides = {}) {
     beats: 1,
     divisor: 4,
     insertVolume: 70,
+    previewKey: 1,
+    difficulties: ["Test.osu"],
+    waveform: [],
+    history: [],
+    laneOrder: [0, 1],
     // 120 BPM => 500 ms beat => 125 ms 1/4 beat step.
     sections: [[0, 500, 4]],
     moments: [
@@ -71,10 +76,12 @@ test("computeDrawStrokeSteps respects Objects snap mode, snap off, and 512-step 
   assert.equal(snapTimeInScene(tempoChange, 1130), 1125, "must keep active section step when closer");
 });
 
-async function drawFrontend() {
+async function drawFrontend({ deferInvoke = false } = {}) {
   const controls = new Map();
   const documentEvents = new Map();
   const calls = [];
+  const resolvers = [];
+  let defer = false;
   function element() {
     return {
       events: new Map(),
@@ -84,6 +91,7 @@ async function drawFrontend() {
       addEventListener(name, listener) { this.events.set(name, listener); },
       append() {},
       prepend() {},
+      replaceChildren() {},
       setAttribute(name, value) { this[name] = value; },
       getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, width: 1000, height: 300 }),
       setPointerCapture() {},
@@ -109,9 +117,19 @@ async function drawFrontend() {
     window: {
       __TAURI__: {
         core: {
-          invoke: async (_name, args) => {
-            calls.push(JSON.parse(JSON.stringify(args)));
-            return { ...status };
+          invoke: (_name, args) => {
+            if (_name === "editor_waveform") return Promise.resolve(new Float32Array(0));
+            calls.push(args ? JSON.parse(JSON.stringify(args)) : undefined);
+            const reply = () => ({
+              ...status,
+              ...(args?.scene ? { scene: sampleScene({ viewStart: 0, zoom: 0.5 }) } : {}),
+            });
+            if (defer) {
+              return new Promise((resolve) => {
+                resolvers.push(() => resolve(reply()));
+              });
+            }
+            return Promise.resolve(reply());
           },
         },
         event: { listen() {} },
@@ -129,9 +147,25 @@ async function drawFrontend() {
   });
   const editor = bootEditor(context, { autoStart: false });
   await editor.act(null);
+  defer = deferInvoke;
   calls.length = 0;
   const settle = () => editor.state.pending;
-  return { calls, documentEvents, editor, get, settle };
+  const flushOne = async () => {
+    for (let i = 0; i < 10 && resolvers.length === 0; i++) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+    assert.ok(resolvers.length > 0, "expected a pending invoke to flush");
+    resolvers.shift()();
+    await new Promise(r => setTimeout(r, 0));
+  };
+  const flushAll = async () => {
+    for (let i = 0; i < 200 && (resolvers.length > 0 || editor.state.requests > 0); i++) {
+      while (resolvers.length) resolvers.shift()();
+      await new Promise(r => setTimeout(r, 0));
+    }
+    await editor.state.pending;
+  };
+  return { calls, documentEvents, editor, get, resolvers, flushOne, flushAll, settle };
 }
 
 test("Draw tool drag previews ghost steps and commits a single paint_draw_stroke on pointerup", async () => {
@@ -217,4 +251,56 @@ test("computeDrawStrokeSteps skips steps occupied on any member of a merged Set"
   const merged = computeDrawStrokeSteps(scene, 1000, 1500, new Set([0, 1]));
   assert.deepEqual(merged.steps, [1000, 1125, 1250, 1375, 1500]);
   assert.deepEqual(merged.newSteps, [1125, 1375, 1500]);
+});
+
+test("Draw drag keeps optimistic hits alive when slim pointerdown and cancel finish before paint_draw_stroke returns scene", async () => {
+  const { calls, editor, get, resolvers, flushOne, flushAll } = await drawFrontend({ deferInvoke: true });
+  const grid = get("grid");
+  editor.state.view = { busy: false, hasDocument: true, tool: "Draw", activeLane: 1 };
+  editor.state.scene = sampleScene({ viewStart: 0, zoom: 0.5 });
+  editor.state.laneRows = [0, 1];
+
+  const pt = (x, y) => ({
+    clientX: x,
+    clientY: y,
+    pointerId: 11,
+    button: 0,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    preventDefault() {},
+  });
+
+  // Start on empty snapped 1125 ms (x = 562.5 at zoom 0.5) on row 1 (y = 45).
+  grid.events.get("pointerdown")(pt(562.5, 45));
+  assert.deepEqual(editor.state.pendingDrawHits.map(h => h.time), [1125]);
+
+  // Slim pointerdown (scene: false) returns BEFORE pointermove/pointerup.
+  await flushOne();
+  await editor.state.pending;
+  assert.equal(editor.state.requests, 0);
+  assert.deepEqual(editor.state.pendingDrawHits.map(h => h.time), [1125], "initial hit stays visible across early pointerdown reply");
+
+  // Drag across 1125..1500 ms -> ghost stroke preview appears, then release.
+  grid.events.get("pointermove")(pt(750, 45));
+  grid.events.get("pointerup")(pt(750, 45));
+  assert.equal(editor.state.drawStrokePreview, null);
+  assert.ok(editor.state.pendingDrawHits.some(h => h.time === 1375), "stroke steps pushed optimistically");
+
+  // Flush the preceding cancel (scene: false) IPC, leaving paint_draw_stroke (scene: true) in flight.
+  await flushOne();
+  assert.equal(calls.at(-2).action.phase, "cancel");
+  assert.equal(calls.at(-2).scene, false);
+  assert.equal(resolvers.length, 1, "paint_draw_stroke still pending");
+  assert.ok(
+    editor.state.pendingDrawHits.some(h => h.time === 1375),
+    "cancel (scene: false) arrival must NOT clear pendingDrawHits pushed for paint_draw_stroke",
+  );
+
+  // Flush paint_draw_stroke (scene: true) -> now optimistic hits clear seamlessly.
+  await flushAll();
+  assert.equal(calls.at(-1).action.kind, "paint_draw_stroke");
+  assert.equal(calls.at(-1).scene, true);
+  assert.equal(editor.state.pendingDrawHits.length, 0, "optimistic draw hits clear once paint_draw_stroke scene arrives");
 });

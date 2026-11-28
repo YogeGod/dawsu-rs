@@ -977,7 +977,10 @@ export function attachTimeline(ctx) {
               steps: [],
               newSteps: [],
             };
+            const seq = ++state.drawHitSeq;
+            state.drag.optimisticDrawSeq = seq;
             state.pendingDrawHits.push({
+              seq,
               row: state.drag.firstPoint.row,
               time: snappedStart,
               volume: state.scene.insertVolume ?? 100,
@@ -1104,6 +1107,12 @@ export function attachTimeline(ctx) {
             state.drawStrokePreview = null;
             ctx.paintSoon();
           }
+          if (!released && state.drag.optimisticDrawSeq != null && state.pendingDrawHits?.length) {
+            const cancelledSeq = state.drag.optimisticDrawSeq;
+            const beforeLen = state.pendingDrawHits.length;
+            state.pendingDrawHits = state.pendingDrawHits.filter(hit => hit.seq !== cancelledSeq);
+            if (state.pendingDrawHits.length !== beforeLen) ctx.paintSoon();
+          }
           if (released && dp?.active) {
             const { steps, newSteps } = computeDrawStrokeSteps(
               state.scene,
@@ -1112,11 +1121,16 @@ export function attachTimeline(ctx) {
               drumMemberSet(dp.row) ?? dp.row,
             );
             if (steps.length > 1) {
+              ctx.act({ ...end, phase: "cancel" }, false);
               for (const stepTime of newSteps) {
-                state.pendingDrawHits.push({ row: dp.row, time: stepTime, volume: state.scene.insertVolume ?? 100 });
+                state.pendingDrawHits.push({
+                  seq: ++state.drawHitSeq,
+                  row: dp.row,
+                  time: stepTime,
+                  volume: state.scene.insertVolume ?? 100,
+                });
               }
               ctx.paintSoon();
-              ctx.act({ ...end, phase: "cancel" }, false);
               ctx.act({
                 kind: "paint_draw_stroke",
                 row: dp.row,

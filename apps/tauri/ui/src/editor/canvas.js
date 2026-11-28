@@ -446,7 +446,9 @@ export function attachCanvas(ctx) {
       elements.ruler.clientHeight, elements.overview.clientWidth, elements.controller.clientHeight,
       env.window.devicePixelRatio || 1, env.document?.documentElement?.dataset?.uiScale ?? "100",
       slateTimeline.arrange, slateTimeline.gridSub, slateTimeline.gridBeat, slateTimeline.gridBar,
-      state.laneRows, state.waveformShown, state.waveformHeight, state.soundFirst, ctx.ui()?.keysoundRoll?.() ?? null];
+      state.laneRows, state.waveformShown, state.waveformHeight, state.soundFirst,
+      state.drawHitSeq, state.pendingDrawHits?.length ?? 0, state.drawStrokePreview,
+      ctx.ui()?.keysoundRoll?.() ?? null];
   }
 
   function sameKey(a, b) {

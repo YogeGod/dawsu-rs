@@ -34,12 +34,14 @@ export function attachIpc(ctx) {
 
   function run(task) {
     state.requests++;
+    let failed = false;
     const result = state.pending.then(task).catch((error) => {
+      failed = true;
       setStatusNotice(String(error));
       (env.console ?? console).error(error);
     }).finally(() => {
       state.requests--;
-      if (state.requests === 0 && state.pendingDrawHits?.length) {
+      if (failed && state.requests === 0 && !state.drag && state.pendingDrawHits?.length) {
         state.pendingDrawHits = [];
         ctx.paintSoon?.();
       }
@@ -245,7 +247,8 @@ export function attachIpc(ctx) {
 
     if (needsStatePull && !state.requests && !state.refreshing && !state.telemetryPullPending) {
       state.telemetryPullPending = true;
-      ctx.run(() => ctx.update(null, false)).finally(() => {
+      const drawSeq = state.drawHitSeq ?? 0;
+      ctx.run(() => ctx.update(null, false, drawSeq)).finally(() => {
         state.telemetryPullPending = false;
         if (state.quitAfterSave && !state.view.busy && !state.view.saveProblemReview) {
           state.quitAfterSave = false;
@@ -298,7 +301,7 @@ export function attachIpc(ctx) {
     });
   }
 
-  async function update(action, full = true) {
+  async function update(action, full = true, drawSeq = state.drawHitSeq ?? 0) {
     const request = !action && !full
       ? { scene: false, action: null, tickRev: state.view?.tickRev ?? null }
       : { scene: full, action: action ?? null };
@@ -325,7 +328,7 @@ export function attachIpc(ctx) {
       if (!next.fault) next.bookmarkStep ??= step;
     }
     lastActionKind = action?.kind ?? null;
-    ctx.show(next);
+    ctx.show(next, drawSeq);
     if (next.shortcutHelp) await ctx.showHelp();
     if (next.shortcutOpen && !next.busy && !ctx.chooseSiblingDifficulty()) ctx.show(await invoke("pick_map"));
     if (!next.busy) {
@@ -433,6 +436,7 @@ export function attachIpc(ctx) {
     }
     const requestFull = action?.kind === "tool" ? false : full;
     if (requestFull) state.pendingFullRequests = (state.pendingFullRequests ?? 0) + 1;
+    const drawSeq = state.drawHitSeq ?? 0;
     return ctx.run(async () => {
       let effectiveFull = requestFull;
       if (requestFull) {
@@ -442,7 +446,7 @@ export function attachIpc(ctx) {
         // skip building and parsing a full 174 KB+ scene for this intermediate step.
         if (remaining > 1 && action?.kind === "pointer") effectiveFull = false;
       }
-      await ctx.update(action, effectiveFull);
+      await ctx.update(action, effectiveFull, drawSeq);
     });
   }
 
@@ -522,8 +526,9 @@ export function attachIpc(ctx) {
     );
   }
 
-  function show(next) {
+  function show(next, drawSeq = state.drawHitSeq ?? 0) {
     if (next.fault) {
+      state.pendingDrawHits = [];
       // A new object, so the Svelte parts see the fault and disable.
       state.view = { ...state.view, fault: next.fault };
       try { ctx.ui()?.update?.(state.view, state.scene); } catch (error) { (env.console ?? console).error(error); }
@@ -585,6 +590,7 @@ export function attachIpc(ctx) {
     ctx.setQuasimodePreset?.(state.view.keyPreset);
     if (!state.view.hasDocument || state.view.showHome) {
       state.scene = null;
+      state.pendingDrawHits = [];
       state.selectionVolumeScope = "hits";
       state.selectionLanesOnly = false;
       waveformFetchKey = null;
@@ -592,6 +598,7 @@ export function attachIpc(ctx) {
     if (state.view.scene) {
       const loaded = state.view.scene.path !== state.scene?.path || (wasBusy && state.view.status === "Difficulty loaded");
       if (loaded) {
+        state.pendingDrawHits = [];
         state.overviewDrag = null;
         state.overviewTarget = null;
         state.rulerSeekTarget = null;
@@ -645,6 +652,9 @@ export function attachIpc(ctx) {
         state.view.scene.sections ??= state.scene.sections;
       }
       state.scene = state.view.scene;
+      if (state.pendingDrawHits?.length) {
+        state.pendingDrawHits = state.pendingDrawHits.filter(hit => (hit.seq ?? 0) > drawSeq);
+      }
       ensureWaveform(state.scene);
       if (unfolded.length) ctx.saveLaneLayout();
     } else if (waveformChanged && state.scene) {
