@@ -488,10 +488,7 @@ export function attachIpc(ctx) {
     state.announcedWrite = status;
     state.writeToasts = (state.writeToasts ?? 0) + 1;
     if (title === "Hitsound-only export written") {
-      const actions = [{ label: "Open folder", onClick: () => {
-        invoke("open_editor_folder", { folder: "last_export" }).catch(error => ctx.setStatusNotice(String(error)));
-      } }];
-      try { notifyToast({ tone: "success", title, body: status, actions }); } catch (error) { (env.console ?? console).error(error); }
+      toastHitsoundOnly(status);
       return;
     }
     if (title === "Saved" && after.isLazerExternalEdit) {
@@ -516,6 +513,15 @@ export function attachIpc(ctx) {
     }
   }
 
+  function toastHitsoundOnly(body) {
+    const actions = [{ label: "Open folder", onClick: () => {
+      invoke("open_editor_folder", { folder: "last_export" }).catch(error => ctx.setStatusNotice(String(error)));
+    } }];
+    try {
+      notifyToast({ tone: "success", title: "Hitsound-only export written", body, actions });
+    } catch (error) { (env.console ?? console).error(error); }
+  }
+
   // A second identical hitsound-only write looks like the first in the view, so the Export modal
   // says when it closes on its own write: unless a write was told since it opened, it is told again.
   function exportOpened() {
@@ -529,7 +535,15 @@ export function attachIpc(ctx) {
       // A view that looks unchanged takes show's idle fast path, which tells nothing: tell it here.
       if ((state.writeToasts ?? 0) !== state.writeToastsAtExportOpen) return;
       state.announcedWrite = null;
-      announceWrite(state.view, state.view, !!state.scene);
+      if (/^Exported \d+ hitsound-only file\(s\)/.test(state.view?.status ?? "")) {
+        announceWrite(state.view, state.view, !!state.scene);
+        return;
+      }
+      // The window saw its own write finish, but a later message (a background stem load) replaced
+      // the Exported status before a view showed it: still tell the write.
+      if (!state.scene) return;
+      state.writeToasts = (state.writeToasts ?? 0) + 1;
+      toastHitsoundOnly("Exported the hitsound-only files (mapset untouched).");
     });
   }
 

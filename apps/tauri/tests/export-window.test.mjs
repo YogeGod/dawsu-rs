@@ -146,6 +146,26 @@ test("a hitsound-only Export says so with Open folder, once per write, also for 
   assert.equal(toasts[1].actions.length, 1);
 });
 
+test("a hitsound-only Export is still told when a stem message replaced the Exported status", async () => {
+  for (const stemStatus of ["Loading drum stem…", "Drum stem ready"]) {
+    const { answer, calls, ctx, get, toasts } = await answering();
+    get("export-entry").events.get("click")();
+    // The write finished, but a background stem load set the status before the editor saw it.
+    await answer({ status: stemStatus });
+    assert.equal(toasts.length, 0);
+    await ctx.exportClosed(true);
+    assert.deepEqual(toasts.map(toast => toast.title), ["Hitsound-only export written"], stemStatus);
+    assert.match(toasts[0].body, /hitsound-only/);
+    assert.deepEqual(toasts[0].actions.map(action => action.label), ["Open folder"]);
+    calls.length = 0;
+    toasts[0].actions[0].onClick();
+    assert.deepEqual(calls, [{ name: "open_editor_folder", args: { folder: "last_export" } }]);
+    // Closing again without a new write tells nothing more.
+    await ctx.exportClosed(false);
+    assert.equal(toasts.length, 1);
+  }
+});
+
 test("export.html loads only the fonts and the Svelte bundle, with no inline code", () => {
   const html = read("dist/export.html");
   const head = html.match(/<head>(.*?)<\/head>/s)[1];
