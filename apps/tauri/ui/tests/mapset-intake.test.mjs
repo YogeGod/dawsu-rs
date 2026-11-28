@@ -96,3 +96,11 @@ test("MapsetIntakeCard guards against empty or corrupt mapset folders", () => {
   }).body;
   assert.match(corruptHtml, /Could not parse mapset folder\./);
 });
+
+test("the Timing reference picker shrinks inside the card instead of running past its edge", async () => {
+  // A flex item keeps its longest option's width unless min-width is 0: "Echoes Through Eternal Time (copy) (1)"
+  // pushed the select past the card's right border.
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/parts/MapsetIntakeCard.svelte", import.meta.url), "utf8").split("<style>")[1];
+  assert.match(css, /\.intake-ref select\s*\{[^}]*min-width:\s*0;/);
+});
