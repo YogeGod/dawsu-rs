@@ -350,6 +350,7 @@ test("a Songs card's difficulty chip wraps a long name instead of cutting off wh
   const rule = css.match(/\.home-song-diff > span:first-child\s*\{([^}]*)\}/)?.[1] ?? "";
   assert.doesNotMatch(rule, /nowrap|ellipsis/);
   assert.match(rule, /overflow-wrap:\s*anywhere;/);
+  assert.match(rule, /white-space:\s*normal;/, "the chip is a <button>: it inherits white-space:nowrap");
 });
 
 test("a Songs card's mapset title and mapper wrap instead of cutting off the song name", async () => {
@@ -361,5 +362,7 @@ test("a Songs card's mapset title and mapper wrap instead of cutting off the son
     assert.ok(rule, `${selector} rule found`);
     assert.doesNotMatch(rule, /nowrap|ellipsis/, selector);
     assert.match(rule, /overflow-wrap:\s*anywhere;/, selector);
+    // Both sit in a <button>, which inherits white-space:nowrap from legacy-chrome.css.
+    assert.match(rule, /white-space:\s*normal;/, selector);
   }
 });
