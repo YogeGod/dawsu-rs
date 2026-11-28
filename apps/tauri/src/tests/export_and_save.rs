@@ -556,6 +556,34 @@ fn only_closing_the_main_window_closes_the_editor() {
 }
 
 #[test]
+fn export_view_sets_the_title_only_of_the_export_window() {
+    use crate::commands::export::sets_export_title;
+    assert!(sets_export_title("export"), "the standalone Export window follows the open map");
+    assert!(!sets_export_title("main"), "the embedded Export modal leaves the editor's title alone");
+}
+
+#[test]
+fn closing_the_embedded_export_modal_cancels_its_preview() {
+    use crate::Request;
+    use crate::commands::windows::close_export;
+    let (send, receive) = std::sync::mpsc::channel();
+    let editor = crate::Editor(
+        send,
+        dawsu_application::bounce_plan::BounceCancelToken::new(),
+        std::sync::Arc::new(crate::TelemetryHub::default()),
+    );
+    // No Export window: the modal inside main is what closes, so the editor is told directly.
+    assert_eq!(close_export(None::<fn() -> Result<(), String>>, &editor), Ok(()));
+    assert!(matches!(receive.try_recv(), Ok(Request::ExportClose)));
+    assert!(receive.try_recv().is_err());
+    // An Export window closes the way its title bar does; its close handler tells the editor.
+    let mut closed = false;
+    assert_eq!(close_export(Some(|| { closed = true; Ok(()) }), &editor), Ok(()));
+    assert!(closed);
+    assert!(receive.try_recv().is_err(), "only the window's own close handler sends ExportClose");
+}
+
+#[test]
 fn export_requests_answer_with_the_export_view_and_errors_after_a_fault() {
     use crate::{Request, answer_export};
     use dawsu_application::ExportOptions;

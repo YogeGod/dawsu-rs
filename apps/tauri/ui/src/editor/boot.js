@@ -50,7 +50,7 @@ const readonlyStateFields = [
 
 const exportedMethods = [
   "invoke", "setStatusNotice", "run", "update", "act", "command", "toggle",
-  "missingUiParts", "renderFrame", "show",
+  "missingUiParts", "renderFrame", "show", "exportClosed",
   "dockState", "setDockOverride", "panelPrefs", "effectivePanelState",
   "panelOn", "togglePanel", "openPanelAt", "renderPanelLayout",
   "hydrateLaneLayout", "saveLaneLayout", "reorderSampleFolder", "folderHeaderModel",
@@ -390,6 +390,9 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   // Keysounds mode owns the keyboard like a modal, except for its plain tool keys (keysoundsToolKey).
   const keysoundsMode = () => ctx.ui()?.mode?.() === "keysounds";
   const modalOpen = () => (env === globalThis && hasOpenModal()) || otherModalOpen() || keysoundsMode();
+  // Space from another window or the Export modal plays unless something else is open; the Export modal alone is not.
+  const spaceBlocked = () => otherModalOpen() || keysoundsMode() ||
+    (env === globalThis && hasOpenModal() && !onlyModalOpen("export"));
   // Plain 1-4 in Keysounds mode with nothing else open: the tool quasimode (plan 3.5, task 5.2).
   // Every other key stays with the Keysounds host, so no hit is tapped, deleted or edited.
   // Numpad digits are tap-lane keys, never tool keys, so they stay blocked here too.
@@ -455,6 +458,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
   // Export opens inside the editor as a modal dialog (falling back to the standalone window if not mounted).
   $("export-entry").addEventListener("click", () => {
     const opener = env !== globalThis ? env.window?.openExportModal : modals.openExportModal;
+    ctx.exportOpened();
     if (typeof opener === "function") opener();
     else invoke("open_export_window").catch((error) => { ctx.setStatusNotice(String(error)); });
   });
@@ -654,7 +658,7 @@ export function createEditor(env = globalThis, { ui = null, autoStart = true, ex
 
   // Space in the map preview window plays and stops here, through the same key route as the editor's own.
   env.window.__TAURI__.event.listen("preview-space", () => {
-    if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false || modalOpen()) return;
+    if (!state.scene || state.view.busy || elements.dialog.open || $("editor-menu")?.hidden === false || spaceBlocked()) return;
     ctx.act({ kind: "key", key: " ", code: "Space", ctrl: false, shift: false, alt: false });
   });
 

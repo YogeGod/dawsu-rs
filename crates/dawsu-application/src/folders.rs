@@ -9,6 +9,8 @@ pub enum Folder {
     Library,
     Project,
     CrashLogs,
+    /// The folder the last hitsound-only Export wrote.
+    LastExport,
 }
 
 impl Folder {
@@ -17,6 +19,7 @@ impl Folder {
         map: Option<&Path>,
         library: Option<&Path>,
         data: &Path,
+        last_export: Option<&Path>,
     ) -> Result<PathBuf, String> {
         match self {
             Self::Map => map
@@ -28,6 +31,9 @@ impl Folder {
                 .map(Path::to_path_buf)
                 .ok_or_else(|| "Choose a hitsound library folder first.".into()),
             Self::CrashLogs => Ok(data.to_path_buf()),
+            Self::LastExport => last_export
+                .map(Path::to_path_buf)
+                .ok_or_else(|| "Export a hitsound-only folder first.".into()),
         }
     }
 
@@ -35,7 +41,7 @@ impl Folder {
         if let Some(label) = match self {
             Self::Project => Some("project folder"),
             Self::CrashLogs => Some("crash log folder"),
-            Self::Map | Self::Library => None,
+            Self::Map | Self::Library | Self::LastExport => None,
         } {
             std::fs::create_dir_all(folder)
                 .map_err(|error| format!("Creating {label} {}: {error}", folder.display()))?;
@@ -179,21 +185,48 @@ mod tests {
         let map = Path::new("Songs/Mapset/Hard.osu");
         let data = Path::new("EditorData");
         assert_eq!(
-            Folder::Map.resolve(Some(map), None, data).unwrap(),
+            Folder::Map.resolve(Some(map), None, data, None).unwrap(),
             Path::new("Songs/Mapset")
         );
-        assert!(Folder::Map.resolve(None, None, data).is_err());
-        assert!(Folder::Library.resolve(None, None, data).is_err());
+        assert!(Folder::Map.resolve(None, None, data, None).is_err());
+        assert!(Folder::Library.resolve(None, None, data, None).is_err());
         let library = Path::new("SampleLibrary");
         assert_eq!(
-            Folder::Library.resolve(None, Some(library), data).unwrap(),
+            Folder::Library.resolve(None, Some(library), data, None).unwrap(),
             library
         );
         assert_eq!(
-            Folder::Project.resolve(Some(map), None, data).unwrap(),
+            Folder::Project.resolve(Some(map), None, data, None).unwrap(),
             Path::new("EditorData/projects")
         );
-        assert_eq!(Folder::CrashLogs.resolve(None, None, data).unwrap(), data);
+        assert_eq!(Folder::CrashLogs.resolve(None, None, data, None).unwrap(), data);
+    }
+
+    #[test]
+    fn folder_last_export_is_the_last_hitsound_only_folder_and_is_never_created() {
+        let data = Path::new("EditorData");
+        let out = Path::new("Exports/Mapset-hitsound-only");
+        assert_eq!(
+            serde_json::from_str::<Folder>("\"last_export\"").unwrap(),
+            Folder::LastExport
+        );
+        assert_eq!(
+            Folder::LastExport.resolve(None, None, data, None),
+            Err("Export a hitsound-only folder first.".into())
+        );
+        assert_eq!(
+            Folder::LastExport
+                .resolve(None, None, data, Some(out))
+                .unwrap(),
+            out
+        );
+        let gone = std::env::temp_dir().join(format!(
+            "dawsu-folders-last-export-gone-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&gone);
+        assert!(Folder::LastExport.open(&gone).is_err());
+        assert!(!gone.exists(), "a moved or deleted export folder is not made again");
     }
 
     #[test]
