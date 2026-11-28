@@ -116,12 +116,12 @@ fn selected_lane_volume_and_shortcut_leave_other_voices_at_the_moment() {
 
 
 /// HS mode: the circle needs a sample mix of two files, which Save renders; the slider's tail
-/// asks for a soft and a drum clap, which no object line can hold.
+/// asks for a soft and a drum clap, a mix whose index needs a green line that has no room there.
 fn mix_and_unwritable(scratch: &Scratch, second: &str) -> (Document, Hitsounds, project::Project) {
     let folder = scratch.path("mapset");
     std::fs::create_dir(&folder).unwrap();
     let map = folder.join("a.osu");
-    std::fs::write(&map, SLIDER_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_MAP).unwrap();
     wav(&folder.join("a.wav"), 8192);
     wav(&folder.join("b.wav"), 4096);
     // A file in the folder that is not audio, for the test whose mix must fail.
@@ -175,7 +175,7 @@ fn save_renders_the_mixes_it_can_and_lists_only_the_parts_it_leaves_out() {
 }
 
 #[test]
-fn hs_save_merges_a_circle_per_role_and_leaves_a_slider_head_out() {
+fn hs_save_merges_per_role_on_a_circle_and_on_a_slider_head_through_a_green_line() {
     let scratch = Scratch::new("hs-merge-roles");
     let folder = scratch.path("mapset");
     std::fs::create_dir(&folder).unwrap();
@@ -192,7 +192,7 @@ fn hs_save_merges_a_circle_per_role_and_leaves_a_slider_head_out() {
         (numbered(SampleSet::Drum, Hitsound::Finish, 3), 80),
         (numbered(SampleSet::Soft, Hitsound::Finish, 4), 40),
     ]);
-    // On objects only, a slider head cannot take a new index, so it stays left out.
+    // A slider head holds no index of its own: Save gives its mixes one through a green line.
     let head = hits.moments().iter().position(|m| matches!(m.place(), dawsu_hitsounding::Place::SliderNode { node: 0, .. })).unwrap();
     hits.set_moment_state(dawsu_hitsounding::MomentId(head), 70, [
         (skin(SampleSet::Normal, Hitsound::Normal), 70), (skin(SampleSet::Drum, Hitsound::Finish), 70), (skin(SampleSet::Soft, Hitsound::Finish), 35),
@@ -201,13 +201,16 @@ fn hs_save_merges_a_circle_per_role_and_leaves_a_slider_head_out() {
     let mut diagnostics = Vec::new();
     let plan = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).unwrap();
     let names: Vec<_> = plan.mix_files.staged.iter().map(|mix| mix.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
-    assert_eq!(names, ["normal-hitnormal2.wav", "drum-hitfinish2.wav"]);
+    assert_eq!(names, ["normal-hitnormal2.wav", "drum-hitfinish2.wav", "normal-hitnormal5.wav", "drum-hitfinish5.wav"]);
     assert!((plan.mix_files.staged[0].clip().samples[0] - 0.25).abs() < 0.0001);
     assert!((plan.mix_files.staged[1].clip().samples[0] - (0.125 + 0.5 * 0.5)).abs() < 0.0001);
     let text = String::from_utf8(plan.out.to_bytes()).unwrap();
     assert!(text.contains("256,192,1000,1,4,0:3:2:80:\r\n"), "{text}");
-    assert_eq!(plan.left_out.len(), 1);
-    assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [2000.0]);
+    // The head's index 5 and the mix's volume go on a green line at the slider's start, given
+    // back 6 ms later.
+    assert!(text.contains("2000,-100,4,1,5,81,0,0\r\n2006,-100,4,1,0,70,0,0\r\n"), "{text}");
+    assert!(plan.left_out.is_empty());
+    assert!(diagnostics.is_empty(), "{:?}", diagnostics.iter().map(|p| &p.message).collect::<Vec<_>>());
 }
 
 #[test]
@@ -247,8 +250,9 @@ fn a_failed_mix_render_stops_the_whole_save() {
     let mut diagnostics = Vec::new();
     let error = prepare(&scratch, &document, &hits, Some(&project), &mut diagnostics).err().unwrap();
     assert!(error.contains("Could not mix"), "{error}");
-    assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [1000.0]);
-    assert!(diagnostics[0].message.contains("Could not mix"));
+    // Every moment the Save would mix is named with the error, the tail's mix too.
+    assert_eq!(diagnostics.iter().map(|p| p.time).collect::<Vec<_>>(), [1000.0, 2500.0]);
+    assert!(diagnostics.iter().all(|p| p.message.contains("Could not mix")));
 }
 
 
@@ -266,13 +270,13 @@ fn ctrl_s_with_left_out_moments_shows_the_summary_and_its_save_writes_the_rest()
     assert!(app.save_problem_review(), "Ctrl+S shows the Save hitsounds summary first");
     assert!(app.save_review_files().is_some(), "the summary's Save writes the reviewed plan");
     assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
-    assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "nothing is written before the summary's Save");
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_MAP, "nothing is written before the summary's Save");
     app.answer_save_review(true);
     wait(&mut app);
     assert!(app.error.is_none(), "{:?}", app.error);
     let saved = std::fs::read(&map).unwrap();
-    assert_eq!(line(&saved, "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"), "the slider keeps its line");
-    assert_ne!(line(&saved, "256,192,1000,"), line(SLIDER_MAP, "256,192,1000,"), "the circle's finish is written");
+    assert_eq!(line(&saved, "100,100,2000,"), line(LEFT_OUT_MAP, "100,100,2000,"), "the slider keeps its line");
+    assert_ne!(line(&saved, "256,192,1000,"), line(LEFT_OUT_MAP, "256,192,1000,"), "the circle's finish is written");
     assert!(!app.is_dirty());
     assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0], "the left-out moment stays listed");
     assert!(!app.save_problem_review());
@@ -307,7 +311,7 @@ fn a_node_written_by_one_save_keeps_those_fields_when_the_next_save_leaves_it_ou
     });
     save_through_summary(&mut app, scratch.path("backups"));
     let first = std::fs::read(&map).unwrap();
-    assert_ne!(line(&first, "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"), "save 1 writes the soft clap");
+    assert_ne!(line(&first, "100,100,2000,"), line(LEFT_OUT_MAP, "100,100,2000,"), "save 1 writes the soft clap");
     app.document.as_mut().unwrap().composer.apply("Drum clap", |hits| {
         hits.add_hit(tail_id(hits), skin(SampleSet::Drum, Hitsound::Clap));
     });
@@ -316,8 +320,12 @@ fn a_node_written_by_one_save_keeps_those_fields_when_the_next_save_leaves_it_ou
     assert_eq!(line(&std::fs::read(&map).unwrap(), "100,100,2000,"), line(&first, "100,100,2000,"));
 }
 
-/// Under a timing line with custom index 2, a circle cannot ask for the skin's index 0.
+/// Under a timing line with custom index 2, a circle cannot ask for the skin's index 0 on its own
+/// line: it needs a green line of its own.
 const INDEXED_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Soft\r\n\r\n[TimingPoints]\r\n0,500,4,2,2,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
+/// [`INDEXED_MAP`] with a green line at 3002 ms: a circle at 3000 ms has no room for a green line of
+/// its own (ADR 0042 point 4), so Save leaves index 0 there out.
+const LEFT_OUT_INDEXED_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Soft\r\n\r\n[TimingPoints]\r\n0,500,4,2,2,70,1,0\r\n3002,-100,4,2,2,70,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
 
 fn record_json(app: &Application) -> serde_json::Value {
     serde_json::to_value(stored(app).unwritten).unwrap()
@@ -335,7 +343,7 @@ fn left_out_moments_are_kept_in_the_project_through_session_writes_and_come_back
     let scratch = Scratch::new("record-kept");
     let (mut app, map) = open_left_out_fixture(&scratch, true);
     let other = map.with_file_name("b.osu");
-    std::fs::write(&other, SLIDER_MAP).unwrap();
+    std::fs::write(&other, LEFT_OUT_MAP).unwrap();
     let drawn = tail_hits(&app);
     save_through_summary(&mut app, scratch.path("backups"));
     let record = record_json(&app);
@@ -355,7 +363,7 @@ fn left_out_moments_are_kept_in_the_project_through_session_writes_and_come_back
     let reopened = reopen(&app, &map);
     assert_eq!(tail_hits(&reopened), drawn);
     assert_eq!(reopened.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2500.0]);
-    assert_eq!(std::fs::read(&other).unwrap(), SLIDER_MAP);
+    assert_eq!(std::fs::read(&other).unwrap(), LEFT_OUT_MAP);
 }
 
 #[test]
@@ -419,7 +427,7 @@ fn a_failed_record_write_writes_no_osu() {
     app.answer_save_review(true);
     wait(&mut app);
     assert!(app.error.is_some());
-    assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_MAP);
     assert!(app.is_dirty());
 }
 
@@ -436,7 +444,7 @@ fn a_failed_record_update_after_the_write_names_the_left_out_moments() {
     wait(&mut app);
     app.answer_save_review(true);
     wait(&mut app);
-    assert_ne!(std::fs::read(&map).unwrap(), SLIDER_MAP, "the difficulty is written");
+    assert_ne!(std::fs::read(&map).unwrap(), LEFT_OUT_MAP, "the difficulty is written");
     assert!(app.error.is_some());
     assert_eq!(app.status, "Difficulty saved. Left-out moments could not be recorded.");
     assert_eq!(tail_hits(&reopen(&app, &map)), drawn, "the staged record still puts them back");
@@ -453,7 +461,7 @@ fn a_crash_after_the_osu_write_restores_the_staged_record_on_reopen() {
     let mut file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let current = file["settings"]["unwritten"]["current"].take();
     file["settings"]["unwritten"] = serde_json::json!({
-        "current": null, "pending": current, "before": dawsu_foundation::digest::sha256_hex(SLIDER_MAP),
+        "current": null, "pending": current, "before": dawsu_foundation::digest::sha256_hex(LEFT_OUT_MAP),
     });
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
     assert_eq!(tail_hits(&reopen(&app, &map)), drawn);
@@ -472,7 +480,7 @@ fn fixing_the_moment_and_saving_clears_the_record() {
     assert!(!app.save_problem_review(), "nothing is left out, so Save writes straight away");
     assert!(app.error.is_none(), "{:?}", app.error);
     assert_eq!(record_json(&app)["current"]["moments"], serde_json::json!([]));
-    assert_ne!(line(&std::fs::read(&map).unwrap(), "100,100,2000,"), line(SLIDER_MAP, "100,100,2000,"));
+    assert_ne!(line(&std::fs::read(&map).unwrap(), "100,100,2000,"), line(LEFT_OUT_MAP, "100,100,2000,"));
     assert!(app.output_problems().is_empty());
 }
 
@@ -498,14 +506,14 @@ fn a_body_volume_left_out_in_hs_mode_comes_back_with_its_head() {
     let folder = scratch.path("mapset");
     std::fs::create_dir(&folder).unwrap();
     let map = folder.join("a.osu");
-    std::fs::write(&map, SLIDER_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_HEAD_MAP).unwrap();
     let mut app = Application::headless();
     app.project_root = Some(scratch.path("projects"));
     open(&mut app, map.clone());
     app.set_hs_mode(true);
     app.document.as_mut().unwrap().composer.apply("Body volume", |hits| hits.set_body_volume(0, 40));
     save_through_summary(&mut app, scratch.path("backups"));
-    assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "HS mode can't add the green line a body volume needs");
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_HEAD_MAP, "no room for the green line a body volume needs");
     assert_eq!(app.output_problems().iter().map(|p| p.time).collect::<Vec<_>>(), [2000.0, 2000.0], "the body and its head are both listed");
     assert!(app.status.contains("Saved with backup. 2 parts left out."), "{}", app.status);
     let messages: Vec<_> = app.output_problems().into_iter().map(|p| p.message).collect();
@@ -530,7 +538,7 @@ fn per_hit_volumes_of_a_left_out_node_survive_reopen_and_the_next_save() {
     let folder = scratch.path("mapset");
     std::fs::create_dir(&folder).unwrap();
     let map = folder.join("a.osu");
-    std::fs::write(&map, SLIDER_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_MAP).unwrap();
     let mut app = Application::headless();
     app.project_root = Some(scratch.path("projects"));
     open(&mut app, map.clone());
@@ -549,7 +557,7 @@ fn per_hit_volumes_of_a_left_out_node_survive_reopen_and_the_next_save() {
     assert_eq!(reopened.output_problems().len(), 1, "still listed after reopen");
     save_through_summary(&mut reopened, scratch.path("backups"));
     assert_eq!(record_json(&reopened)["current"]["moments"].as_array().map(Vec::len), Some(1));
-    assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_MAP);
 }
 
 #[test]
@@ -762,8 +770,8 @@ fn an_hs_group_never_written_makes_no_circle_and_comes_back_as_loose_hits() {
     std::fs::create_dir(&folder).unwrap();
     let map = folder.join("a.osu");
     let other = folder.join("b.osu");
-    std::fs::write(&map, INDEXED_MAP).unwrap();
-    std::fs::write(&other, INDEXED_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_INDEXED_MAP).unwrap();
+    std::fs::write(&other, LEFT_OUT_INDEXED_MAP).unwrap();
     let mut app = Application::headless();
     app.project_root = Some(scratch.path("projects"));
     open(&mut app, map.clone());
@@ -772,7 +780,7 @@ fn an_hs_group_never_written_makes_no_circle_and_comes_back_as_loose_hits() {
     composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Normal), 80, 0.0);
     composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
     save_through_summary(&mut app, scratch.path("backups"));
-    assert_eq!(std::fs::read(&map).unwrap(), INDEXED_MAP, "no 256,192 placeholder circle");
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_INDEXED_MAP, "no 256,192 placeholder circle");
     assert_eq!(stored(&app).unanchored.map(|rows| rows.len()), Some(2));
     app.zoom = 0.5;
     app.save_session().unwrap();
@@ -794,7 +802,7 @@ fn an_hs_group_written_before_and_left_out_later_keeps_one_circle() {
     let folder = scratch.path("mapset");
     std::fs::create_dir(&folder).unwrap();
     let map = folder.join("a.osu");
-    std::fs::write(&map, INDEXED_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_INDEXED_MAP).unwrap();
     wav(&folder.join("voice.wav"), 8192);
     let mut app = Application::headless();
     app.project_root = Some(scratch.path("projects"));
@@ -824,18 +832,18 @@ fn loose_hits_saved_outside_hs_mode_never_count_as_a_written_circle() {
     let folder = scratch.path("mapset");
     std::fs::create_dir(&folder).unwrap();
     let map = folder.join("a.osu");
-    std::fs::write(&map, INDEXED_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_INDEXED_MAP).unwrap();
     wav(&folder.join("voice.wav"), 8192);
     let mut app = Application::headless();
     app.project_root = Some(scratch.path("projects"));
     open(&mut app, map.clone());
     app.document.as_mut().unwrap().composer.add(3000.0, SampleIdentity::File("voice.wav".into()), 80, 0.0);
     save_through_summary(&mut app, scratch.path("backups"));
-    assert_eq!(std::fs::read(&map).unwrap(), INDEXED_MAP, "outside HS mode a loose hit stays in the project");
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_INDEXED_MAP, "outside HS mode a loose hit stays in the project");
     app.set_hs_mode(true);
     app.document.as_mut().unwrap().composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
     save_through_summary(&mut app, scratch.path("backups"));
-    assert_eq!(std::fs::read(&map).unwrap(), INDEXED_MAP, "the group was never a circle, so none is made");
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_INDEXED_MAP, "the group was never a circle, so none is made");
     assert_eq!(app.output_problems().len(), 1);
 }
 
@@ -852,7 +860,7 @@ fn cancel_or_show_in_the_summary_drops_the_pending_save() {
     assert!(app.save_review_files().is_none(), "Review Save must not pop up straight after");
     app.answer_save_review(true);
     wait(&mut app);
-    assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_MAP);
     assert!(app.is_dirty());
 }
 
@@ -863,7 +871,7 @@ fn without_a_project_save_still_refuses_to_leave_moments_out() {
     app.save_with_backups(scratch.path("backups"));
     wait(&mut app);
     assert!(app.error.as_deref().is_some_and(|e| e.contains("cannot be written")), "{:?}", app.error);
-    assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP);
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_MAP);
     assert!(app.is_dirty());
 }
 
@@ -872,13 +880,13 @@ fn a_pending_open_save_shows_the_summary_first_and_opens_after_its_save() {
     let scratch = Scratch::new("pending-open-summary");
     let (mut app, map) = open_left_out_fixture(&scratch, true);
     let other = map.with_file_name("b.osu");
-    std::fs::write(&other, SLIDER_MAP).unwrap();
+    std::fs::write(&other, LEFT_OUT_MAP).unwrap();
     app.request_open(other.clone());
     assert!(app.pending_open.is_some());
     app.save();
     wait(&mut app);
     assert!(app.error.is_none() && app.is_dirty() && app.save_problem_review(), "{:?}", app.error);
-    assert_eq!(std::fs::read(&map).unwrap(), SLIDER_MAP, "nothing is written before the summary's Save");
+    assert_eq!(std::fs::read(&map).unwrap(), LEFT_OUT_MAP, "nothing is written before the summary's Save");
     assert!(app.pending_open.is_some());
     app.answer_save_review(true);
     wait(&mut app);
@@ -892,7 +900,7 @@ fn editing_a_left_out_hs_group_drops_it_from_the_list_and_undo_brings_it_back() 
     let folder = scratch.path("mapset");
     std::fs::create_dir(&folder).unwrap();
     let map = folder.join("a.osu");
-    std::fs::write(&map, INDEXED_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_INDEXED_MAP).unwrap();
     let mut app = Application::headless();
     app.project_root = Some(scratch.path("projects"));
     open(&mut app, map.clone());
@@ -1884,3 +1892,77 @@ fn task2_addition_only_normal_silent_exports_custom_indexed_additions_without_er
     );
 }
 
+
+/// A Save that rendered a mix wrote the mixed moment a second time with the mix file in its place;
+/// the recovery copy taken after it still reproduces that Save, in either mode.
+#[test]
+fn a_recovery_copy_after_a_save_with_a_mix_on_a_slider_node_restores() {
+    for hs in [false, true] {
+        let scratch = Scratch::new(&format!("recovery-after-mix-{hs}"));
+        let folder = scratch.path("mapset");
+        std::fs::create_dir_all(&folder).unwrap();
+        let map = folder.join("a.osu");
+        std::fs::write(&map, SLIDER_MAP).unwrap();
+        let mut app = Application::headless();
+        app.project_root = Some(scratch.path("projects"));
+        app.data_root = scratch.path("data");
+        open(&mut app, map.clone());
+        app.set_hs_mode(hs);
+        app.document.as_mut().unwrap().composer.apply("Two claps", |hits| {
+            let tail = tail_id(hits);
+            hits.add_hit(tail, skin(SampleSet::Soft, Hitsound::Clap));
+            hits.add_hit(tail, skin(SampleSet::Drum, Hitsound::Clap));
+        });
+        let drawn = tail_hits(&app);
+        save_through_summary(&mut app, scratch.path("backups"));
+        assert!(app.document().unwrap().left_out.is_empty(), "hs {hs}");
+        assert!(app.status.contains("Added 2 green lines"), "hs {hs}: {}", app.status);
+        app.document.as_mut().unwrap().composer.apply("Later edit", |hits| hits.set_volume(dawsu_hitsounding::MomentId(0), 33));
+        app.poll();
+        let offer = app.write_recovery_copy().unwrap().unwrap();
+        let mut restored = Application::create(Preferences::default(), false, None, None, false, scratch.path("data"));
+        restored.project_root = app.project_root.clone();
+        restored.restore_recovery(&offer.id).unwrap();
+        wait(&mut restored);
+        assert!(restored.error.is_none(), "hs {hs}: {:?}", restored.error);
+        assert_eq!(tail_hits(&restored), drawn, "hs {hs}");
+    }
+}
+
+/// Yoge 2026-11-28: on a map whose timing lines carry a custom index, a skin sound in HS mode gets
+/// its circle and the green line it needs, and Save says how many lines it added.
+#[test]
+fn hs_save_adds_the_green_line_a_skin_sound_needs_and_says_so() {
+    let scratch = Scratch::new("hs-adds-green-line");
+    let folder = scratch.path("mapset");
+    std::fs::create_dir(&folder).unwrap();
+    let map = folder.join("a.osu");
+    std::fs::write(&map, INDEXED_MAP).unwrap();
+    let mut app = Application::headless();
+    app.project_root = Some(scratch.path("projects"));
+    app.data_root = scratch.path("data");
+    open(&mut app, map.clone());
+    app.set_hs_mode(true);
+    let composer = &mut app.document.as_mut().unwrap().composer;
+    composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Normal), 80, 0.0);
+    composer.add(3000.0, skin(SampleSet::Soft, Hitsound::Clap), 80, 0.0);
+    assert!(app.output_problems().is_empty(), "nothing is listed as left out before the Save");
+    save_through_summary(&mut app, scratch.path("backups"));
+    assert!(app.output_problems().is_empty(), "{:?}", app.output_problems().into_iter().map(|p| p.message).collect::<Vec<_>>());
+    assert!(app.status.contains("Added 2 green lines so every hit plays as drawn."), "{}", app.status);
+    let text = String::from_utf8(std::fs::read(&map).unwrap()).unwrap();
+    assert!(text.contains("3000,-100,4,2,0,70,0,0\r\n3006,-100,4,2,2,70,0,0\r\n"), "{text}");
+    assert!(text.contains("256,192,3000,1,8,0:0:0:80:"), "{text}");
+    let reopened = reopen(&app, &map);
+    let circle = reopened.document().unwrap().composer.hitsounds().moments().iter().find(|m| m.time().ms() == 3000.0).unwrap();
+    assert_eq!(circle.hits().count(), 2, "the circle plays the two skin sounds");
+    // A recovery copy taken after this Save reproduces it.
+    app.document.as_mut().unwrap().composer.add(1000.0, skin(SampleSet::Soft, Hitsound::Finish), 80, 0.0);
+    app.poll();
+    let offer = app.write_recovery_copy().unwrap().unwrap();
+    let mut restored = Application::create(Preferences::default(), false, None, None, false, scratch.path("data"));
+    restored.project_root = app.project_root.clone();
+    restored.restore_recovery(&offer.id).unwrap();
+    wait(&mut restored);
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+}

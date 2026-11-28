@@ -367,8 +367,14 @@ mod tests {
 
     const MAP: &str = "osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
     /// Under a timing line with custom index 2, a circle cannot ask for the skin's index 0 on its
-    /// own line: that needs a green line, which HS mode does not add.
+    /// own line: that needs a green line of its own.
     const INDEXED: &str = "osu file format v14\r\n\r\n[General]\r\nSampleSet: Soft\r\n\r\n[TimingPoints]\r\n0,500,4,2,2,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
+    /// [`INDEXED`] with a green line at 3002 ms: a circle at 3000 ms has no room for a green line of
+    /// its own before it (ADR 0042 point 4), so index 0 there is left out.
+    const CROWDED_INDEXED: &str = "osu file format v14\r\n\r\n[General]\r\nSampleSet: Soft\r\n\r\n[TimingPoints]\r\n0,500,4,2,2,70,1,0\r\n3002,-100,4,2,2,70,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n";
+    /// [`MAP`] with a green line at 2003 ms, inside the slider head's and body's lookups: a body
+    /// volume has no room for its green line.
+    const CROWDED_HEAD: &str = "osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n2003,-100,4,1,0,70,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
 
     fn read(text: &str) -> OsuFile {
         OsuFile::read(text.as_bytes().to_vec()).file
@@ -455,13 +461,27 @@ mod tests {
         assert!(rolled.left_out.is_empty(), "{:?}", rolled.left_out);
         assert_eq!(rolled.out.hit_objects().len(), 2, "one new circle for the group");
         assert_eq!(rolled.circles.len(), 1);
+        let text = String::from_utf8(rolled.out.to_bytes()).unwrap();
+        assert!(text.contains("256,192,3000,1,"), "{text}");
+        // The line gives index 0 just before the circle's lookup and gives index 2 back 6 ms later.
+        assert!(text.contains("3000,-100,4,2,0,70,0,0\r\n3006,-100,4,2,2,70,0,0\r\n"), "{text}");
+    }
+
+    #[test]
+    fn a_body_volume_in_hs_mode_is_written_with_one_green_line_pair() {
+        let base = read(MAP);
+        let opened = dec(&base);
+        let mut drawn = opened.clone();
+        drawn.set_body_volume(0, 40);
+        let rolled = roll(&base, &drawn, &opened, true);
+        assert!(rolled.left_out.is_empty(), "{:?}", rolled.left_out);
         let green = rolled.out.timing_points().iter().filter(|tp| !tp.uninherited()).count();
-        assert!(green >= 1, "a green line sets index 0 for the circle");
+        assert_eq!(green, 2, "the body's line and the line that gives 70% back");
     }
 
     #[test]
     fn an_hs_group_written_before_keeps_its_one_circle() {
-        let base = read(INDEXED);
+        let base = read(CROWDED_INDEXED);
         let opened = dec(&base);
         let mut written = opened.clone();
         let loose = written.add_moment(SongTime::from_ms(3000.0), 80);
@@ -480,7 +500,7 @@ mod tests {
 
     #[test]
     fn a_body_volume_in_hs_mode_rolls_back_the_body_then_its_head() {
-        let base = read(MAP);
+        let base = read(CROWDED_HEAD);
         let opened = dec(&base);
         let mut drawn = opened.clone();
         drawn.set_body_volume(0, 40);

@@ -24,9 +24,9 @@ use std::collections::{BTreeMap, HashMap};
 /// How compile places a moment (Responsibility 9a).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
-    /// Save and Copy hitsounds: green lines may be added.
+    /// Save (HS mode included, Yoge 2026-11-28) and Copy hitsounds: green lines may be added.
     GreenLines,
-    /// Generate hitsound diff, New hitsound diff and HS mode: values on each object only.
+    /// Generate hitsound diff and New hitsound diff: values on each object only.
     OnObjects,
 }
 

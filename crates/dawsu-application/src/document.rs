@@ -328,6 +328,10 @@ pub(crate) fn compile_pass(
     let mut removed_circles = BTreeSet::new();
     let (out, mut problems) = if hs {
         let groups = dawsu_hitsounding::hs::hs_groups(file, hits);
+        // Save adds the green lines a hit needs in HS mode too (Yoge 2026-11-28): under a timing line
+        // with a custom index, a skin sound (index 0) on a circle can only play through a green line
+        // of its own (lazer LegacyDecoder.cs:192-200, an object's index 0 takes the line's index).
+        // On objects only, every such hit was left out. Generate and New hitsound diff stay on objects.
         match dawsu_hitsounding::hs::compile_hs(file, hits, Placement::GreenLines, cancel, progress) {
             dawsu_hitsounding::hs::CompiledHs::Done { mut file, mut problems, created } => {
                 let mut removed = BTreeSet::new();
@@ -384,6 +388,64 @@ pub(crate) fn compile_snapshot(
         loose_hits_saved_in_project, cancel, &mut |_, _| {},
     )
     .map(|(file, problems, _)| (file, problems))
+}
+/// Whether `hits`, the hits a Save wrote, compile back into `saved`, the difficulty that Save
+/// wrote. Recovery checks the last save with it. A Save that rendered sample mixes compiled the
+/// mixed moments a second time with the mix files in their place (`prepare_save`); those moments
+/// are read back from `saved` and compiled the same way, so a Save with mixes is reproduced too.
+pub(crate) fn reproduces_saved(
+    document: &Document,
+    hits: &Hitsounds,
+    hs: bool,
+    loose_hits_saved_in_project: bool,
+    files: &[String],
+    cancel: &dyn Fn() -> bool,
+) -> Result<bool, String> {
+    let saved = document.file.original_bytes();
+    let (out, problems) = compile_snapshot(document, hits, hs, loose_hits_saved_in_project, cancel)?;
+    if problems.is_empty() {
+        return Ok(out.to_bytes() == saved);
+    }
+    if !problems.iter().all(|problem| mixes::can_render(problem, Placement::GreenLines)) {
+        return Ok(false);
+    }
+    let (Decompiled::Done(mut target), Decompiled::Done(played)) = (
+        decompile(&out, files, cancel, &mut |_, _| {}),
+        decompile(&document.file, files, cancel, &mut |_, _| {}),
+    ) else {
+        return Ok(false);
+    };
+    // Lines added by compile have other ids than the same lines read back from disk, so a moment
+    // is found in `saved` by its time, its kind of place and its order among moments like it.
+    fn shape(place: dawsu_hitsounding::Place) -> (u8, usize) {
+        match place {
+            dawsu_hitsounding::Place::Circle(_) => (0, 0),
+            dawsu_hitsounding::Place::SpinnerEnd(_) => (1, 0),
+            dawsu_hitsounding::Place::SliderNode { node, .. } => (2, node),
+            dawsu_hitsounding::Place::NoObject => (3, 0),
+        }
+    }
+    let key = |hits: &Hitsounds, id: usize| {
+        let moment = &hits.moments()[id];
+        (moment.time().ms().to_bits(), shape(moment.place()))
+    };
+    let nth = |hits: &Hitsounds, id: usize| (0..id).filter(|other| key(hits, *other) == key(hits, id)).count();
+    for problem in &problems {
+        let Some(id) = target.moments().iter().position(|moment| moment.place() == problem.place) else {
+            return Ok(false);
+        };
+        let (want, order) = (key(&target, id), nth(&target, id));
+        let Some(read) = (0..played.moments().len()).filter(|other| key(&played, *other) == want).nth(order) else {
+            return Ok(false);
+        };
+        let moment = &played.moments()[read];
+        let layers: Vec<_> = moment.hits().map(|lane| (lane.clone(), moment.hit_volume(lane))).collect();
+        target.set_moment_state(dawsu_hitsounding::MomentId(id), moment.volume(), layers);
+    }
+    Ok(match compile(&out, &target, Placement::GreenLines, cancel, &mut |_, _| {}) {
+        Compiled::Done { file, problems } => problems.is_empty() && file.to_bytes() == saved,
+        Compiled::Cancelled => return Err("Save cancelled".into()),
+    })
 }
 pub(crate) struct PrepareSaveInput<'a> {
     pub(crate) file: OsuFile,
@@ -451,9 +513,7 @@ pub(crate) fn prepare_save(
         }
         return Err("Editable hit gains need a writable editor project to save safely.".into());
     }
-    // Save adds the green lines a hit needs in HS mode too (Yoge 2026-11-28): on a mapset whose green
-    // lines carry a custom index, a skin sound (index 0) on a circle needs a line of its own, and
-    // values-on-objects-only left every such hit out. Generate and New hitsound diff stay on objects.
+    // Save adds the green lines a hit needs in HS mode too (Yoge 2026-11-28), as `compile_pass` does.
     let placement = Placement::GreenLines;
     let mut mix_files = mixes::MixFiles::default();
     let mut final_mix_target: Option<Hitsounds> = None;

@@ -2854,13 +2854,16 @@ Mode:0
         assert_eq!(std::fs::read(&f.map).unwrap(), MAP);
     }
 
-    const SLIDER_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
+    /// A circle and a slider, with a green line 3 ms after the slider's tail: it sits inside the
+    /// 6 ms a green line for the tail would need (ADR 0042 point 4).
+    const CROWDED_TAIL_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n2503,-100,4,1,0,70,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
 
-    /// HS mode; a set placed on a slider tail that also has a soft clap, which no tail can hold
-    /// beside the set's drum sounds, so Save leaves the tail out (F052).
+    /// HS mode; a set placed on a slider tail that also has a soft clap. Beside the set's drum
+    /// sounds that needs a mix with an index of its own, and the green line for it has no room
+    /// before the next timing line, so Save leaves the tail out (F052).
     fn left_out_placement(name: &str) -> (Fixture, Application, Vec<(String, i32)>) {
         let f = fixture(name);
-        std::fs::write(&f.map, SLIDER_MAP).unwrap();
+        std::fs::write(&f.map, CROWDED_TAIL_MAP).unwrap();
         let mut app = app(&f);
         let map = open(&mut app, &f.map);
         app.set_hs_mode(true);

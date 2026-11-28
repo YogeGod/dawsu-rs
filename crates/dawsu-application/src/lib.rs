@@ -59,7 +59,9 @@ pub use document::{
 use app_save_io::{problem_description, recorded_pending};
 #[cfg(test)]
 use app_save_io::{load, project_hits, restore_project_hits};
-use document::{Pass, PreparedSave, compile_pass, compile_snapshot, last_written};
+use document::{Pass, PreparedSave, compile_pass, last_written, reproduces_saved};
+#[cfg(test)]
+use document::compile_snapshot;
 #[cfg(test)]
 use document::{PrepareSaveInput, compile_for_save, prepare_save, unfinished_record};
 pub use base_layer::{

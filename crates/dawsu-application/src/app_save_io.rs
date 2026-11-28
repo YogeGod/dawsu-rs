@@ -3052,15 +3052,56 @@ pub(crate) fn project_hits(document: &Document) -> Vec<project::ProjectHit> {
 /// What Save would leave out of the opened difficulty, without rendering any sample mix.
 fn left_out_on_open(document: &Document, cancel: &dyn Fn() -> bool) -> Result<Vec<roll_back::LeftOut>, String> {
     let hits = document.composer.hitsounds();
-    let placement = if document.hs_mode { Placement::OnObjects } else { Placement::GreenLines };
+    // Save adds green lines in HS mode too, so this lists what that Save would leave out.
+    let placement = Placement::GreenLines;
     let inputs = roll_back::Inputs {
         base: &document.compile_base, drawn: hits, written: &document.written, hs: document.hs_mode,
         owned: &document.owned_hs_circles, loose_in_project: true, roll_back: true,
     };
+    let root = document.path.parent().ok_or("Missing mapset folder")?;
     roll_back::compile_with_roll_back(
-        &inputs, &|problem| mixes::can_render(problem, placement), &mut |pass, _, _| Ok(Ok(pass.out.clone())),
+        &inputs, &|problem| mixes::can_render(problem, placement),
+        &mut |pass, _, mixable| mix_stand_in(pass, &mixable, root, &document.pending, cancel),
         cancel, &mut |_, _| {},
     ).map(|rolled| rolled.left_out)
+}
+
+/// Save's mix compile without rendering: each moment Save would mix gets one sample at a custom
+/// index no timing line holds, as a mix file has an index of its own. Compile then refuses what
+/// Save's mix compile would refuse, such as a slider node whose green line another lookup reads.
+fn mix_stand_in(
+    pass: &crate::Pass,
+    mixable: &[dawsu_hitsounding::SaveProblem],
+    root: &Path,
+    pending: &pending::Pending,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Result<dawsu_osu_format::OsuFile, Vec<dawsu_hitsounding::SaveProblem>>, String> {
+    if mixable.is_empty() {
+        return Ok(Ok(pass.out.clone()));
+    }
+    let files = pending::listing(root, pending)?;
+    let mut target = match dawsu_hitsounding::decompile(&pass.out, &files, cancel, &mut |_, _| {}) {
+        dawsu_hitsounding::Decompiled::Done(target) => target,
+        dawsu_hitsounding::Decompiled::Cancelled => return Err("Save check cancelled".into()),
+        dawsu_hitsounding::Decompiled::UnsupportedMode { .. } => return Ok(Ok(pass.out.clone())),
+    };
+    let unused = pass.out.timing_points().iter().map(|point| point.sample_index().unwrap_or(0).max(0) as u32).max().unwrap_or(0) + 1;
+    let lane = SampleIdentity::Standard {
+        set: dawsu_foundation::SampleSet::Normal,
+        sound: dawsu_foundation::Sound::Hit(dawsu_foundation::Hitsound::Normal),
+        index: dawsu_foundation::CustomIndex::new(unused),
+    };
+    for problem in mixable {
+        if let Some(id) = target.moments().iter().position(|moment| moment.place() == problem.place) {
+            let volume = target.moments()[id].volume();
+            target.set_moment_state(dawsu_hitsounding::MomentId(id), volume, [(lane.clone(), volume)]);
+        }
+    }
+    match dawsu_hitsounding::compile(&pass.out, &target, Placement::GreenLines, cancel, &mut |_, _| {}) {
+        dawsu_hitsounding::Compiled::Done { file, problems } if problems.is_empty() => Ok(Ok(file)),
+        dawsu_hitsounding::Compiled::Done { problems, .. } => Ok(Err(problems)),
+        dawsu_hitsounding::Compiled::Cancelled => Err("Save check cancelled".into()),
+    }
 }
 
 /// Project rows for loose moments, one group each. Each row names its moment's volume, so a row is

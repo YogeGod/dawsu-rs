@@ -1,6 +1,6 @@
 //! Working hits and lanes that can be reopened without compiling or writing the difficulty.
 
-use super::{Document, compile_snapshot};
+use super::{Document, reproduces_saved};
 use dawsu_editor::EditHistory;
 use dawsu_foundation::{
     CustomIndex, Hitsound, SampleIdentity, SampleSet, SliderSound, SongTime, Sound,
@@ -538,14 +538,14 @@ impl RecoveryCopy {
         let restored = working.hits.apply(base.clone(), cancel)?;
         let saved = if let Some(last_save) = &self.checkpoint.last_save {
             let hits = last_save.hits.apply(base.clone(), cancel)?;
-            let (file, problems) = compile_snapshot(
+            if !reproduces_saved(
                 document,
                 &hits,
                 last_save.hs_mode,
                 loose_hits_saved_in_project,
+                self.files(),
                 &|| cancel.load(Ordering::Relaxed),
-            )?;
-            if !problems.is_empty() || file.to_bytes() != document.file.original_bytes() {
+            )? {
                 return Err(
                     "The recovery copy could not reproduce the last saved difficulty.".into(),
                 );

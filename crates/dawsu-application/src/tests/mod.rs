@@ -24,6 +24,16 @@ fn open(app: &mut Application, path: PathBuf) {
 
 const SLIDER_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
 
+/// [`SLIDER_MAP`] with a green line 3 ms after the slider's tail, giving the same values as the red
+/// line. It sits inside the 6 ms a green line for the tail would need (ADR 0042 point 4), so Save
+/// cannot give the tail an index or volume of its own and leaves such a tail out, in HS mode too.
+const LEFT_OUT_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n2503,-100,4,1,0,70,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
+
+/// [`SLIDER_MAP`] with a green line 3 ms after the slider's start, giving the same values as the red
+/// line. A slider body volume needs a green line from the start to just after the body's lookup
+/// (ADR 0042 point 6); this one sits inside it, so Save leaves the body and its head out.
+const LEFT_OUT_HEAD_MAP: &[u8] = b"osu file format v14\r\n\r\n[General]\r\nSampleSet: Normal\r\n\r\n[Difficulty]\r\nSliderMultiplier:1.4\r\nSliderTickRate:1\r\n\r\n[TimingPoints]\r\n0,500,4,1,0,70,1,0\r\n2003,-100,4,1,0,70,0,0\r\n\r\n[HitObjects]\r\n256,192,1000,1,0,0:0:0:0:\r\n100,100,2000,2,0,L|200:100,1,140\r\n";
+
 fn wav(path: &Path, frame: i16) {
     let mut wav = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0w\x01\0\x02\0\x10\0data\x02\0\0\0".to_vec();
     wav.extend(frame.to_le_bytes());
@@ -62,7 +72,7 @@ fn open_left_out_fixture(scratch: &Scratch, project: bool) -> (Application, Path
     let folder = scratch.path("mapset");
     std::fs::create_dir_all(&folder).unwrap();
     let map = folder.join("a.osu");
-    std::fs::write(&map, SLIDER_MAP).unwrap();
+    std::fs::write(&map, LEFT_OUT_MAP).unwrap();
     let mut app = Application::headless();
     if project {
         app.project_root = Some(scratch.path("projects"));
