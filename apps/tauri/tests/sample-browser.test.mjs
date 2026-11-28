@@ -523,3 +523,17 @@ test("tag chips and Find similar sound query sample_library_action, cap rows at 
   assert.equal(model().similarTo, null);
   assert.equal(invoked.filter(([cmd]) => cmd === "sample_library_action").length, countBeforeClear);
 });
+
+test("the Browser names dawsu!'s mix samples Mix and a short id, like their lanes, not a cut-off hash", async () => {
+  // After Export the mapset list showed "dawsu-mix-77ca292da2e6545c9adb9540ffd3137bca129272..." cut off.
+  const { context, model, labels } = await browserPage();
+  const hash = "77ca292da2e6545c9adb9540ffd3137bca129272aaaaaaaaaaaaaaaaaaaaaaaa";
+  runInContext(`scene = {path: "copy.osu", lanes: [
+    {key: "m1", sourceKey: "m1", name: "dawsu-mix-${hash}.wav", sample: "dawsu-mix-${hash}.wav"},
+    {key: "m2", sourceKey: "m2", name: "x", sample: "dawsu-mix-a1d4f23b75ecfa80f98e2b96c1f6ef2d5f3a7a71bbbbbbbbbbbbbbbbbbbbbbbb-2.wav"},
+    {key: "kick", sourceKey: "kick", name: "Kick", sample: "kick.wav"},
+  ]};
+  renderPanelLayout();`, context);
+  assert.deepEqual(labels(), ["Mix 77ca29", "Mix a1d4f2 · 2", "kick.wav"]);
+  assert.equal(model().rows[0].title, `dawsu-mix-${hash}.wav`, "the full file name stays in the tooltip");
+});
