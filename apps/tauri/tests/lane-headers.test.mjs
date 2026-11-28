@@ -432,3 +432,11 @@ test("a numbered layer row leaves out the icon its main lane already shows, so '
   const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
   assert.match(part, /\{#if names && !row\.layer\}<span class="tile"/);
 });
+
+test("a lane row's sample-set tag shows whole or not at all, never sliced to 'So|'", async () => {
+  // The slot shrank first and clipped the tag mid-word when the row was hovered in the 250px column.
+  const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
+  const slot = part.match(/\.tag-slot\s*\{([^}]*)\}/)[1];
+  assert.match(slot, /container-type:\s*inline-size;/);
+  assert.match(part, /@container \(width < \d+px\)\s*\{\s*\.lane:is\(:hover, :focus-within\) \.tag\s*\{\s*display:\s*none;/);
+});

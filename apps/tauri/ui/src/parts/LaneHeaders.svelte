@@ -387,12 +387,14 @@
     flex: none;
     color: var(--editor-accent);
   }
-  /* The tag gives way before the name: its slot shrinks first and clips it. */
+  /* The tag gives way before the name: its slot takes only the row's spare width, and the tag
+     hides when that is too narrow for the widest tag ("Normal"), so it never shows sliced. */
   .tag-slot {
     display: flex;
     min-width: 0;
-    flex: 0 100 auto;
+    flex: 1 1 0;
     overflow: hidden;
+    container-type: inline-size;
   }
   .tag {
     display: none;
@@ -408,6 +410,11 @@
   }
   .lane:is(:hover, :focus-within) .tag {
     display: inline-block;
+  }
+  @container (width < 56px) {
+    .lane:is(:hover, :focus-within) .tag {
+      display: none;
+    }
   }
   .vst-tag {
     flex: none;
