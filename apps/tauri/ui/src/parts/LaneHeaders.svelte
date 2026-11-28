@@ -65,7 +65,7 @@
         {@attach attachStripWheel(on.stripWheel, () => row.row)}>{row.number}</span>
       <!-- A numbered layer hangs under its main lane, which folds it like a folder. -->
       {#if row.layer}<span class="layer-guide" aria-hidden="true"></span>{/if}
-      {#if names}<span class="tile" aria-hidden="true"><svg viewBox="0 0 16 16">{@html laneIcons[row.icon] ?? laneIcons.file}</svg></span>{/if}
+      {#if names && !row.layer}<span class="tile" aria-hidden="true"><svg viewBox="0 0 16 16">{@html laneIcons[row.icon] ?? laneIcons.file}</svg></span>{/if}
       <button type="button" class="lane-mute ms" aria-label={"Mute " + row.display} aria-pressed={row.muted}
         onclick={() => on.mix(row.row, "mute")}>M</button>
       <button type="button" class="lane-solo ms" aria-label={"Solo " + row.display} aria-pressed={row.solo}

@@ -426,3 +426,9 @@ test("dawsu!'s own mix samples read as Mix and a short id, not a 64-character ha
   assert.deepEqual(lanes(evaluate).map(row => [row.name, row.tag]), [["Mix 77ca29", "Mix"], ["Mix a1d4f2 · 2", "Mix"], ["Kick", "File"]]);
   assert.match(lanes(evaluate)[0].title, new RegExp(`dawsu-mix-${hash}\\.wav`), "the full file name stays in the tooltip");
 });
+
+test("a numbered layer row leaves out the icon its main lane already shows, so 'Whistle 2' fits whole", async () => {
+  // In the 250px column a layer row gave its name 61 px and showed "Whis... 2" / "Nor... 2".
+  const part = await readFile(new URL("../ui/src/parts/LaneHeaders.svelte", import.meta.url), "utf8");
+  assert.match(part, /\{#if names && !row\.layer\}<span class="tile"/);
+});
