@@ -588,6 +588,12 @@ export function attachIpc(ctx) {
     if (!heldPendingSeek) ctx.anchorPlayhead(drawn);
     if (state.view.tool !== previousTool) ctx.refreshToolCursor();
     ctx.setQuasimodePreset?.(state.view.keyPreset);
+    // The first view and every preset switch (the first-launch chooser too) fetch the shortcuts again.
+    const shortcutPreset = state.view.keyPreset ?? "";
+    if (shortcutPreset !== state.lastShortcutPreset) {
+      state.lastShortcutPreset = shortcutPreset;
+      ctx.refreshShortcuts?.().catch(() => {});
+    }
     if (!state.view.hasDocument || state.view.showHome) {
       state.scene = null;
       state.pendingDrawHits = [];

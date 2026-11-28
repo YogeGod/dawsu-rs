@@ -7,6 +7,7 @@ import { flushSync } from "svelte";
 import * as commandList from "./commands.js";
 import { followGroup, nextGroup, stepInGroup } from "./snap.js";
 import { samePlayhead, sameUiView } from "./view.js";
+import { toolDisplayKeyFor } from "./quasimode.js";
 
 // The editor state app.js last showed. show() sends view and scene on every update (every 85 ms
 // during playback); playhead isolates ~85 ms playback/time updates from view so unrelated parts
@@ -62,6 +63,8 @@ export class Bridge {
   previewWindow = $state(false);
   // The Quick start tour's step (1-5), or 0 while it is closed. Kept in this window only.
   quickStart = $state(0);
+  // Goes up each time the editor's shortcuts are fetched again, so tool keys shown in the UI follow them.
+  shortcutsRev = $state(0);
   // Active coverage review filter ("all", "empty", or "orphaned") and last jumped issue time.
   coverageFilter = $state("all");
   coverageFocusTime = $state(null);
@@ -148,6 +151,15 @@ export class Bridge {
 
   openQuickStart() {
     this.quickStart = 1;
+  }
+
+  // The key shown for `tool` in tooltips and the tour; reactive on the preset and shortcutsRev.
+  toolDisplayKey(tool) {
+    const preset = this.view?.keyPreset;
+    void this.shortcutsRev;
+    // null from the editor means unbound; only a missing editor falls back to the preset default.
+    const key = this.callAction("toolDisplayKey", tool);
+    return key === undefined ? toolDisplayKeyFor(null, preset, tool) : key;
   }
 
   setNodeGraphViewer(viewer) {
@@ -309,6 +321,7 @@ export class Bridge {
     toggleMapPreview: () => this.toggleMapPreview(),
     mapPreviewOn: () => this.mapPreview,
     openQuickStart: () => this.openQuickStart(),
+    shortcutsChanged: () => { this.shortcutsRev++; },
     setNodeGraphViewer: viewer => this.setNodeGraphViewer(viewer),
     nodeGraphViewer: () => this.nodeGraphViewer,
     bottomTab: () => this.bottomTab,

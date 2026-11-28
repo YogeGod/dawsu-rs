@@ -118,7 +118,7 @@ test("hintsFor returns tool-aware timeline hints, panel hints, and empty for unk
   assert.ok(hintsFor("mixer", "Select").some(item => item.keys === "Drag fader"));
   assert.ok(hintsFor("browser", "Select").length >= 2);
   assert.ok(hintsFor("inspector", "Select").length >= 2);
-  assert.ok(hintsFor("overview", "Select").length >= 2);
+  assert.ok(hintsFor("overview", "Select").length >= 1);
   assert.deepEqual(hintsFor("unknown", "Select"), []);
   assert.deepEqual(hintsFor(null, "Select"), []);
   assert.deepEqual(hintsFor("", "Draw"), []);
@@ -133,12 +133,32 @@ test("hintsFor returns tool-aware timeline hints, panel hints, and empty for unk
   assert.equal(hasPriorityStatus("", { fault: "Stopped" }), true);
 });
 
+test("wheel hints follow the key preset; the ruler and overview have no wheel", () => {
+  const zoom = (tool, preset) => hintsFor("timeline", tool, preset).find(item => item.action === "Zoom")?.keys;
+  for (const tool of ["Draw", "Erase", "Mute", "Grab", "Ramp"]) {
+    assert.equal(zoom(tool, "DAW"), "Ctrl+Wheel", tool);
+    assert.equal(zoom(tool, "osu!"), "Alt+Wheel", tool);
+  }
+  assert.equal(zoom("Draw", undefined), "Ctrl+Wheel", "no preset yet reads as DAW");
+  const seek = preset => hintsFor("timeline", "Grab", preset).filter(item => item.action === "Seek");
+  assert.deepEqual(seek("osu!"), [{ keys: "Wheel", action: "Seek" }]);
+  assert.deepEqual(seek("DAW"), []);
+  for (const preset of ["DAW", "osu!"]) {
+    for (const zone of ["ruler", "overview"]) {
+      assert.ok(!hintsFor(zone, "Select", preset).some(item => /Wheel/.test(item.keys)), `${preset} ${zone}`);
+    }
+  }
+});
+
 test("StatusBar renders kbd hover hints when bridge.hint is set and falls back cleanly", () => {
   const withHint = shown({ busy: false, tool: "Draw", status: "Ready" }, map, "", "timeline");
   assert.match(withHint, /id="hint-bar"/);
   assert.match(withHint, /<kbd>Click<\/kbd><span>Place hit<\/span>/);
   assert.match(withHint, /<kbd>Right-click<\/kbd><span>Delete<\/span>/);
   assert.match(withHint, /id="status"[^>]*hidden/);
+  assert.match(withHint, /<kbd>Ctrl\+Wheel<\/kbd><span>Zoom<\/span>/, "DAW zooms with Ctrl+Wheel");
+  const osuHint = shown({ busy: false, tool: "Draw", status: "Ready", keyPreset: "osu!" }, map, "", "timeline");
+  assert.match(osuHint, /<kbd>Alt\+Wheel<\/kbd><span>Zoom<\/span>/, "osu! zooms with Alt+Wheel");
 
   const cleared = shown({ busy: false, tool: "Draw", status: "Ready" }, map, "", null);
   assert.doesNotMatch(cleared, /id="hint-bar"/);

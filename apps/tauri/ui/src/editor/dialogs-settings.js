@@ -398,7 +398,7 @@ export function attachSettingsDialogs(ctx) {
         try {
           await task();
           if (state.modalKind !== "shortcut-editor" || state.view.error) return;
-          shortcuts = await invoke("editor_shortcuts");
+          shortcuts = await ctx.refreshShortcuts();
           summary.textContent = state.view.status ?? "";
           editing = null;
           render();

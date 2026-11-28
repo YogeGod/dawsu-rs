@@ -49,8 +49,8 @@
   let landing = $state(null);
   let erasing = $state([]);
 
-  // The key that picks Draw, read again when the key preset changes.
-  const drawKey = $derived((bridge.view?.keyPreset, bridge.callAction("toolKey", "Draw") ?? null));
+  // The key that picks Draw, read again when the key preset or shortcuts change.
+  const drawKey = $derived((bridge.view?.keyPreset, bridge.shortcutsRev, bridge.callAction("toolKey", "Draw") ?? null));
 
   // Once per summary, so no paint or pointer move has to read every note.
   const index = $derived(noteIndex(notes));

@@ -16,7 +16,7 @@
   const problemTip = $derived(problemTooltip(problems));
   const status = $derived(statusText(bridge.statusNotice, view));
   const hints = $derived(hasScene && !hasPriorityStatus(bridge.statusNotice, view)
-    ? hintsFor(bridge.hint, view?.tool)
+    ? hintsFor(bridge.hint, view?.tool, view?.keyPreset)
     : []);
   const showHints = $derived(hints.length > 0);
   const path = $derived(scene?.path ?? "");

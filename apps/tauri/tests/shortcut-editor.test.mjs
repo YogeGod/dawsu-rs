@@ -5,7 +5,8 @@ import { createContext, runInContext } from "node:vm";
 import { bootEditor } from "./editor-runtime.mjs";
 
 
-async function editor() {
+async function editor({ imported = [] } = {}) {
+  let importedRows = [];
   const elements = new Map();
   const calls = [];
   const edits = [];
@@ -44,7 +45,9 @@ async function editor() {
           ["play", "Play or pause", ["Space"]],
           ["volumeUp", "Increase volume by 5", ["Ctrl+Numpad +", "Alt+Up"]],
           ["generate", "Generate hitsound difficulty", []],
+          ...importedRows,
         ]};
+        if (name === "import_key_file") { importedRows = imported; return true; }
         if (name === "editor_help") return [
           ["Hitsound – Hit editing", [["Ctrl+Z", "Undo"]]],
           ["Hitsound – Hit editing (mouse)", [["Click", "Play or pause"]]],
@@ -235,4 +238,14 @@ test("key names match the editor's key list", async () => {
   assert.equal(name("F12", "F12", {alt: true}), "Alt+F12");
   assert.equal(name("PageDown", "PageDown"), "PageDown");
   assert.equal(name("F13", "F13"), null);
+});
+
+test("Import… fetches the shortcuts again, so a tool's new key works without opening a menu", async () => {
+  const ui = await editor({ imported: [["toolDraw", "Draw", ["D"]]] });
+  assert.notEqual(runInContext('toolKey("Draw")', ui.context), "d");
+  ui.button("Import…", ui.elements.get("dialog-actions")).click();
+  await ui.settle();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(runInContext('toolKey("Draw")', ui.context), "d");
+  assert.equal(runInContext('toolDisplayKey("Draw")', ui.context), "D");
 });

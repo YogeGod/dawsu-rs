@@ -3,13 +3,22 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
 import { bootEditor } from "./editor-runtime.mjs";
+import { presetSummary } from "../ui/src/lib/controls.js";
+
+// What editor_shortcuts answers for each preset (crates/dawsu-editor/src/tools.rs).
+const toolShortcuts = preset => ({ preset, entries: [
+  ["toolSelect", "Select and move", ["1"]], ["toolDraw", "Draw", [preset === "osu!" ? "2" : "3"]],
+  ["toolErase", "Erase", ["4"]],
+] });
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 
-async function launch(preferences) {
+async function launch(preferences, { onShortcuts = null } = {}) {
   const elements = new Map();
   const options = [];
   const actions = [];
   const keys = [];
+  const shortcutFetches = [];
   const documentEvents = new Map();
   const listeners = new Map();
   const createElement = () => ({
@@ -34,14 +43,20 @@ async function launch(preferences) {
     document,
     window: { __TAURI__: {
       core: {
-        invoke: async (name, { action }) => {
+        invoke: async (name, args = {}) => {
+          if (name === "editor_shortcuts") {
+            const current = preferences.preset ?? "DAW";
+            shortcutFetches.push(current);
+            return onShortcuts ? onShortcuts(current) : toolShortcuts(current);
+          }
           assert.equal(name, "editor_view");
+          const { action } = args;
           if (action?.kind === "key_preset") {
             actions.push(action.name);
             preferences.preset = action.name;
           }
           if (action?.kind === "key" || action?.kind === "command") keys.push(action);
-          return { firstLaunch: preferences.preset == null, busy: false, hasDocument: false };
+          return { firstLaunch: preferences.preset == null, busy: false, hasDocument: false, keyPreset: preferences.preset ?? "DAW" };
         },
       },
       event: { listen(name, handler) { listeners.set(name, handler); } },
@@ -55,7 +70,8 @@ async function launch(preferences) {
   return {
     dialog: document.getElementById("dialog"),
     title: document.getElementById("dialog-title").textContent,
-    options, actions, keys, settle: () => runInContext("pending", context),
+    options, actions, keys, shortcutFetches, settle: () => runInContext("pending", context),
+    run: code => runInContext(code, context),
     get: id => document.getElementById(id), documentEvents, listeners, window: context.window,
     openTimeline: () => runInContext("scene = {}", context),
     pressKey(key, code, { ctrlKey = false, target = "button" } = {}) {
@@ -186,3 +202,51 @@ for (const [label, preset] of [["DAW-like", "DAW"], ["osu! Editor", "osu!"]]) {
     assert.deepEqual(returning.actions, []);
   });
 }
+
+test("the preset chooser says what each preset's wheel, zoom and tool keys do", async () => {
+  const first = await launch({});
+  const body = first.get("dialog-body").children.map(node => node.textContent);
+  assert.deepEqual(body, [presetSummary("osu!"), presetSummary("DAW")]);
+  assert.doesNotMatch(body[0], /1\s*[–-]\s*3/);
+  for (const text of body) assert.match(text, /Wheel zooms/);
+});
+
+test("picking osu! Editor on first launch fetches the shortcuts again, so Draw's key is 2 at once", async () => {
+  const first = await launch({});
+  await tick();
+  assert.deepEqual(first.shortcutFetches, ["DAW"], "the first view fetches the shortcuts");
+  // A menu opened before the pick caches the DAW shortcuts.
+  first.run(`setQuasimodeShortcuts(${JSON.stringify(toolShortcuts("DAW"))})`);
+  assert.equal(first.run('toolKey("Draw")'), "3");
+  first.options.find(button => button.textContent === "osu! Editor").click();
+  await first.settle();
+  await tick();
+  assert.deepEqual(first.shortcutFetches, ["DAW", "osu!"]);
+  assert.equal(first.run('toolKey("Draw")'), "2");
+  assert.equal(first.run('toolDisplayKey("Erase")'), "4");
+});
+
+test("rapid preset switches drop stale editor_shortcuts answers and swallow rejections without looping", async () => {
+  const pending = [];
+  const ui = await launch({ preset: "DAW" }, {
+    onShortcuts: preset => new Promise((resolve, reject) => pending.push({ preset, resolve, reject })),
+  });
+  assert.equal(pending.length, 1);
+  pending.shift().reject(new Error("offline"));
+  await tick();
+  await ui.run("act(null)");
+  await tick();
+  assert.deepEqual(ui.shortcutFetches, ["DAW"], "a rejected fetch does not retry on every view");
+
+  await ui.run('act({ kind: "key_preset", name: "osu!" })');
+  await ui.run('act({ kind: "key_preset", name: "DAW" })');
+  assert.equal(pending.length, 2);
+  const [osuReq, dawReq] = pending;
+  dawReq.resolve(toolShortcuts("DAW"));
+  await tick();
+  assert.equal(ui.run('toolKey("Draw")'), "3");
+  osuReq.resolve(toolShortcuts("osu!"));
+  await tick();
+  assert.equal(ui.run('toolKey("Draw")'), "3", "stale osu! answer must not overwrite newer DAW shortcuts");
+  assert.equal(ui.run('toolDisplayKey("Draw")'), "3");
+});

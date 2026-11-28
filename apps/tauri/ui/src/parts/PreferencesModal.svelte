@@ -122,7 +122,8 @@
 
   async function loadShortcuts() {
     try {
-      const res = await invoke("editor_shortcuts");
+      // Through the editor, so tool keys elsewhere follow a rebind, reset or preset switch.
+      const res = await (bridge.callAction("refreshShortcuts") ?? invoke("editor_shortcuts"));
       shortcuts = (res?.entries ?? []).map(([id, label, keys]) => ({ id, label, keys: keys ?? [] }));
       preset = res?.preset ?? "DAW";
     } catch {}

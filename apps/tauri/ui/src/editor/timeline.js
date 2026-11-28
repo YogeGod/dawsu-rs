@@ -6,6 +6,7 @@ import {
   minZoom, nameOf, objectReach, objectSize, rulerBandHeight, sampleFolderNames, snapTimeInScene,
   snapToActiveGridInScene, visibleVolumeLanes,
 } from "./helpers.js";
+import { wheelIntent } from "../lib/controls.js";
 import { chordMarkTitle } from "../lib/rollPaint.js";
 import { volumeBubbleAtMoment } from "../lib/volumeBubble.js";
 
@@ -1397,12 +1398,9 @@ export function attachTimeline(ctx) {
         }
         return;
       }
-      const rows = ctrlKey && shiftKey;
-      const horizontal = deltaX && !deltaY;
-      const snap = !horizontal && (osu ? ctrlKey : altKey && !ctrlKey);
-      const zoomTime = !horizontal && (osu ? altKey && !ctrlKey : ctrlKey);
-      const pan = horizontal || (!osu && shiftKey);
-      const seek = osu && (shiftKey || x >= 0);
+      const { rows, snap, zoom: zoomTime, pan, seek } = wheelIntent({
+        osu, ctrl: ctrlKey, shift: shiftKey, alt: altKey, horizontal: Boolean(deltaX && !deltaY), overGrid: x >= 0,
+      });
       if (!(rows || snap || zoomTime || pan || seek) || (!deltaX && !deltaY)) return;
       event.preventDefault();
       if (state.view.busy || state.drag) return;

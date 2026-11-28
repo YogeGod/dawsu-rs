@@ -3,14 +3,15 @@
 
 export const STORAGE_KEY = "dawsu.quickStartDone";
 
-export const STEPS = [
+// The cards, with the Draw key of the current preset and shortcuts (null when Draw has none).
+export const stepsFor = ({ drawKey = null } = {}) => [
   {
     title: "Pick a sound for each row",
     body: "The Browser on the left holds your samples. Click one to hear it, then Use in active lane to give that row its sound.",
   },
   {
     title: "Draw a hit on a circle",
-    body: "Each row plays one sound. With Draw (3), click a row under a circle and the hit snaps onto it. Press Space to hear it with the song.",
+    body: `Each row plays one sound. With ${drawKey ? `Draw (${drawKey})` : "Draw"}, click a row under a circle and the hit snaps onto it. Press Space to hear it with the song.`,
   },
   {
     title: "Set how loud each hit is",
@@ -22,11 +23,11 @@ export const STEPS = [
   },
   {
     title: "Save and export",
-    body: "Save writes the hitsounds into the .osu file. Export… packs the mapset when you are ready to share it.",
+    body: "Save writes the hitsounds into the .osu file. Export… copies your hitsounds into the other difficulties.",
   },
 ];
 
-export const STEP_COUNT = STEPS.length;
+export const STEP_COUNT = stepsFor().length;
 
 // Steps are 1-based, as the header shows them.
 export const clampStep = step => Math.min(STEP_COUNT, Math.max(1, Math.trunc(Number(step)) || 1));
