@@ -73,12 +73,30 @@ export function snapshot(folder) {
   const walk = dir => {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else files.set(relative(folder, path).replaceAll("\\", "/"), createHash("sha256").update(readFileSync(path)).digest("hex"));
+      // A file the editor's cleanup removes between the listing and the read is simply gone.
+      try {
+        if (statSync(path).isDirectory()) walk(path);
+        else files.set(relative(folder, path).replaceAll("\\", "/"), createHash("sha256").update(readFileSync(path)).digest("hex"));
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
     }
   };
   walk(folder);
   return files;
+}
+
+/** A snapshot once the folder holds still: two in a row, `gap` ms apart, that agree. */
+export async function settledSnapshot(folder, { gap = 300, tries = 20 } = {}) {
+  let last = snapshot(folder);
+  for (let i = 0; i < tries; i++) {
+    await sleep(gap);
+    const now = snapshot(folder);
+    const same = now.size === last.size && [...now].every(([name, hash]) => last.get(name) === hash);
+    if (same) return now;
+    last = now;
+  }
+  return last;
 }
 
 /** What changed between two snapshots. */

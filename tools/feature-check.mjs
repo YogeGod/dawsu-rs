@@ -17,11 +17,11 @@
 //
 // This is not the merge gate (tools/everyday-check.mjs is); it is the run that tells whether the
 // features still work as intended. Windows only in practice; see tools/robot/harness.mjs.
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FEATURES, markdown } from "./robot/features.mjs";
-import { checkFreshness, createRobot, diffSnapshots, parseArgs, sleep, snapshot } from "./robot/harness.mjs";
+import { checkFreshness, createRobot, diffSnapshots, parseArgs, settledSnapshot, sleep, snapshot } from "./robot/harness.mjs";
 import { pickAndCopy } from "./robot/maps.mjs";
 import { controlPoints, readOsu, soundMoments } from "./robot/osu-sounds.mjs";
 
@@ -691,18 +691,26 @@ function defineSteps(robot, picked) {
     const source = soundMoments(readFileSync(copy));
     const copied = soundMoments(after);
     const problems = [];
+    const rendered = [];
     let matched = 0;
     for (const moment of copied) {
       const from = source.find(s => Math.abs(s.time - moment.time) <= 5);
       if (!from) continue;
       matched++;
+      // Copy may render a moment into one mix file (dawsu-mix-*.wav): it must be in the mapset.
+      const mix = moment.samples.find(s => s.name === "file" && /^dawsu-mix-/i.test(s.file ?? ""));
+      if (mix) {
+        if (!existsSync(join(mapFolder, mix.file))) problems.push(`${Math.round(moment.time)} ms: plays ${mix.file}, which is not in the mapset`);
+        else rendered.push(Math.round(moment.time));
+        continue;
+      }
       const want = families(from.samples).filter(n => !/hitnormal/.test(n));
       const got = families(moment.samples).filter(n => !/hitnormal/.test(n));
       if (JSON.stringify(want) !== JSON.stringify(got)) problems.push(`${Math.round(moment.time)} ms: ${got.join("+") || "none"}, source ${want.join("+") || "none"}`);
     }
     expect(matched > 0, "no target object shares a time with the source");
     expect(!problems.length, `${problems.length} of ${matched} matched moments differ: ${problems.slice(0, 4).join("; ")}`);
-    return `${matched} matched moments carry the source's additions`;
+    return `${matched} matched moments carry the source's additions${rendered.length ? `; ${rendered.length} rendered as a mix file (${rendered.slice(0, 3).join(", ")} ms)` : ""}`;
   });
 
   define("Generate hitsound difficulty: the new difficulty plays at the source's times", ["F053", "F054"], async () => {
@@ -751,8 +759,8 @@ function defineSteps(robot, picked) {
     await dialogShown("Revert mapset to original?");
     await dialogButton("Revert mapset").click();
     await until(() => !window.view.busy && !document.getElementById("dialog").open, null, "the revert did not finish", 30000);
-    await sleep(500);
-    const reverted = snapshot(mapFolder);
+    // Revert's file cleanup finishes a moment after the editor stops being busy.
+    const reverted = await settledSnapshot(mapFolder);
     const wrong = existing.filter(name => reverted.get(name) !== copyBefore.get(name));
     expect(!wrong.length, `not back to the original: ${wrong.join(", ")}`);
     await fromMenu("File", "Undo revert");
