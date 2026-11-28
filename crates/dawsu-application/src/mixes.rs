@@ -48,7 +48,7 @@ pub(crate) fn can_render(problem: &SaveProblem, placement: Placement) -> bool {
         && matches!(&problem.kind, ProblemKind::NeedsSampleMix(layers) if !layers.is_empty())
 }
 
-fn mix_place(place: Place) -> Option<(ObjectId, Option<usize>)> {
+pub(crate) fn mix_place(place: Place) -> Option<(ObjectId, Option<usize>)> {
     match place {
         Place::Circle(id) | Place::SpinnerEnd(id) => Some((id, None)),
         Place::SliderNode { object, node } => Some((object, Some(node))),
@@ -1224,7 +1224,7 @@ fn replace_moment(
     replace_moment_with_volume(target, moment, samples, 100);
 }
 
-fn replace_moment_with_volume(
+pub(crate) fn replace_moment_with_volume(
     target: &mut Hitsounds,
     moment: MomentId,
     samples: impl IntoIterator<Item = SampleIdentity>,
