@@ -224,7 +224,10 @@
       await closeExport({
         flush: () => (previewTimer !== null ? preview() : undefined),
         invoke,
-        onclose: onclose && (() => onclose({ wroteHitsoundOnly: wrote && choices.writeMode === "hitsound_only" })),
+        onclose: onclose && (() => onclose({
+          wroteHitsoundOnly: wrote && choices.writeMode === "hitsound_only",
+          writeId: wrote ? lastRun : null,
+        })),
       });
     } catch (error) {
       closed = false;

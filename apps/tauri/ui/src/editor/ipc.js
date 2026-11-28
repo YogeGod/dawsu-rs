@@ -486,8 +486,9 @@ export function attachIpc(ctx) {
     // The same message again is news only when the map became saved with it (a second Save).
     if (status === state.announcedWrite && !(before.dirty && !after.dirty)) return;
     state.announcedWrite = status;
-    state.writeToasts = (state.writeToasts ?? 0) + 1;
     if (title === "Hitsound-only export written") {
+      // The Export modal already told this write when it closed (its status came too late): once.
+      if (state.toldExportWriteId != null) return;
       toastHitsoundOnly(status);
       return;
     }
@@ -514,6 +515,7 @@ export function attachIpc(ctx) {
   }
 
   function toastHitsoundOnly(body) {
+    state.hitsoundToasts = (state.hitsoundToasts ?? 0) + 1;
     const actions = [{ label: "Open folder", onClick: () => {
       invoke("open_editor_folder", { folder: "last_export" }).catch(error => ctx.setStatusNotice(String(error)));
     } }];
@@ -523,27 +525,35 @@ export function attachIpc(ctx) {
   }
 
   // A second identical hitsound-only write looks like the first in the view, so the Export modal
-  // says when it closes on its own write: unless a write was told since it opened, it is told again.
+  // says when it closes on its own write: unless a hitsound-only write was told since it opened,
+  // it is told again. Only hitsound-only toasts count, so a Save told meanwhile hides nothing.
+  // toldExportWriteId is the write the close told: a late view of it is not told twice.
   function exportOpened() {
-    state.writeToastsAtExportOpen = state.writeToasts ?? 0;
+    state.hitsoundToastsAtExportOpen = state.hitsoundToasts ?? 0;
+    state.toldExportWriteId = null;
   }
 
-  function exportClosed(wroteHitsoundOnly) {
+  function exportClosed(wroteHitsoundOnly, writeId = null) {
     if (!wroteHitsoundOnly) return Promise.resolve();
     return run(async () => {
       await update(null, false);
+      if (state.toldExportWriteId != null) return;
       // A view that looks unchanged takes show's idle fast path, which tells nothing: tell it here.
-      if ((state.writeToasts ?? 0) !== state.writeToastsAtExportOpen) return;
-      state.announcedWrite = null;
+      if ((state.hitsoundToasts ?? 0) !== state.hitsoundToastsAtExportOpen) {
+        state.toldExportWriteId = writeId ?? true;
+        return;
+      }
       if (/^Exported \d+ hitsound-only file\(s\)/.test(state.view?.status ?? "")) {
+        state.announcedWrite = null;
         announceWrite(state.view, state.view, !!state.scene);
+        state.toldExportWriteId = writeId ?? true;
         return;
       }
       // The window saw its own write finish, but a later message (a background stem load) replaced
       // the Exported status before a view showed it: still tell the write.
       if (!state.scene) return;
-      state.writeToasts = (state.writeToasts ?? 0) + 1;
       toastHitsoundOnly("Exported the hitsound-only files (mapset untouched).");
+      state.toldExportWriteId = writeId ?? true;
     });
   }
 
