@@ -97,8 +97,10 @@
     border: 1px solid var(--editor-border);
     background: #08080a;
   }
+  /* Label and Browse... on top, the picker under them at full width: skin names are long. */
   .skin-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto;
     align-items: center;
     gap: 5px;
     margin-top: 6px;
@@ -110,7 +112,8 @@
     flex: none;
   }
   .skin-select {
-    flex: 1;
+    grid-column: 1 / -1;
+    grid-row: 2;
     min-width: 0;
     height: 24px;
     padding: 0 6px;
